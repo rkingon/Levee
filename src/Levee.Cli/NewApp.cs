@@ -29,7 +29,7 @@ internal static partial class NewApp
             {name} is ready. Next:
               cd {Path.GetRelativePath(workingDirectory, root)}
               dotnet tool restore && dotnet build
-              dotnet levee db schema --jobs      # the owner's DDL; then each table's: dotnet levee db isolate <table> <column>
+              dotnet levee db schema --jobs      # the owner's DDL; then each table's: dotnet levee db isolate <table> <column> (or share <table>)
               dotnet levee db grants <app_role> --jobs
             """);
     }
