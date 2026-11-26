@@ -111,18 +111,28 @@ public static class LeveeJson
                     index++;
                 }
                 break;
-            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && value is System.Collections.IDictionary entries:
-                foreach (System.Collections.DictionaryEntry entry in entries)
+            // Entries are written in the order they enumerate, so each is matched to its JSON by position: a key's own spelling
+            // (a date, an enum, a converter's) never has to be reproduced.
+            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && value is System.Collections.IEnumerable entries:
+                var at = 0;
+                foreach (var entry in entries)
                 {
-                    var key = json.DictionaryKeyPolicy?.ConvertName(entry.Key.ToString() ?? "") ?? entry.Key.ToString() ?? "";
-                    if (map.TryGetPropertyValue(key, out var item))
+                    if (at < map.Count)
                     {
-                        Redact(item, entry.Value, json);
+                        Redact(map[at], ValueOf(entry), json);
                     }
+                    at++;
                 }
                 break;
         }
     }
+
+    private static object? ValueOf(object? entry) => entry switch
+    {
+        System.Collections.DictionaryEntry e => e.Value,
+        null => null,
+        _ => entry.GetType().GetProperty("Value")?.GetValue(entry),
+    };
 
     private static string? Find(System.Text.Json.Serialization.Metadata.JsonTypeInfo info, JsonSerializerOptions json, HashSet<Type> seen)
     {

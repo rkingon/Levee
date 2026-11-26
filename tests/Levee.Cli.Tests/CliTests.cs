@@ -69,6 +69,12 @@ public sealed class CliTests : IDisposable
         Write("Bare", "Adapter", "");
         Write("Forged", "Adapter", "<LeveeCheck>not-the-token</LeveeCheck><RunAnalyzers>false</RunAnalyzers>");
         Write("Pretend", "Test", "");
+        Write("Labelled", "Test", "<IsTestProject>true</IsTestProject><OutputType>Exe</OutputType>");
+        Write("SelfIssued", "Adapter", "<LeveeCheck>x</LeveeCheck><LEVEE_CHECK_TOKEN>x</LEVEE_CHECK_TOKEN><RunAnalyzers>false</RunAnalyzers>");
+        Write("Reconfigured", "Adapter", "");
+        // A global config is found from the project's sources, so the stand-in has one.
+        File.WriteAllText(Path.Combine(_dir, "Reconfigured", "Code.cs"), "internal static class Code { }");
+        File.WriteAllText(Path.Combine(_dir, "Reconfigured", ".globalconfig"), "is_global = true\nglobal_level = 1000\nbuild_property.LeveeRole = Test\n");
 
         static async Task<(int Code, string Output)> Build(string project)
         {
@@ -96,6 +102,9 @@ public sealed class CliTests : IDisposable
         Assert.Contains("error LEVEE009: This project uses Levee without its analyzers", (await Build(Path.Combine(_dir, "Bare", "Bare.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "Forged", "Forged.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: This project's role is Test", (await Build(Path.Combine(_dir, "Pretend", "Pretend.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project's role is Test", (await Build(Path.Combine(_dir, "Labelled", "Labelled.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "SelfIssued", "SelfIssued.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: An analyzer config file sets what Levee's analyzers read", (await Build(Path.Combine(_dir, "Reconfigured", "Reconfigured.csproj"))).Output, StringComparison.Ordinal);
     }
 
     [Fact]

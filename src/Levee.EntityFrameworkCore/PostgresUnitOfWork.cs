@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace Levee.EntityFrameworkCore;
@@ -22,6 +23,9 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<AmbientTransaction>();
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
         services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
+        // The guard is on TContext alone: a second context would reach the database around every operation.
+        services.AddSingleton<IValidateOptions<OneContext>>(new OneContextValidation(services, typeof(TContext)));
+        services.AddOptions<OneContext>().ValidateOnStart();
         return services;
     }
 }
@@ -39,19 +43,56 @@ public static class LeveeOwner
     /// <summary>Lets the context run commands outside an operation until disposed.</summary>
     public static IDisposable Run()
     {
+        var scope = new Scope(Active.Value);
         Active.Value = true;
-        return new Scope();
+        return scope;
     }
 
-    private sealed class Scope : IDisposable
+    private sealed class Scope(bool outer) : IDisposable
     {
-        public void Dispose() => Active.Value = false;
+        public void Dispose() => Active.Value = outer;
+    }
+}
+
+internal sealed class OneContext;
+
+internal sealed class OneContextValidation(IServiceCollection services, Type context) : IValidateOptions<OneContext>
+{
+    public ValidateOptionsResult Validate(string? name, OneContext options)
+    {
+        var others = services
+            .Select(d => d.ServiceType)
+            .Where(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) && t.GenericTypeArguments[0] != context)
+            .Select(t => t.GenericTypeArguments[0].Name)
+            .Distinct()
+            .ToList();
+        return others.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(
+                $"{string.Join(", ", others)} is a DbContext besides {context.Name}, Levee's unit of work: it reaches the database outside "
+                + $"every operation's transaction. Map its entities in {context.Name}; a Tool's owner work builds its own context.");
     }
 }
 
 /// <summary>
-/// Refuses a command run outside a transaction: on the app's context, that's outside every operation (a seeder, a context
-/// a Host resolved), so not authorized, not scoped, not read-only when it should be, not audited, and committed on its own.
+/// The transactions Levee's units of work hold open: a command in any other (EF's own around SaveChanges) is outside every
+/// operation. Each leaves as its unit of work ends, since Npgsql hands the same transaction object to the connection's next.
+/// </summary>
+internal static class LeveeTransactions
+{
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<System.Data.Common.DbTransaction, object> Began = [];
+
+    public static void Add(System.Data.Common.DbTransaction transaction) => Began.AddOrUpdate(transaction, Began);
+
+    public static void Remove(System.Data.Common.DbTransaction transaction) => Began.Remove(transaction);
+
+    public static bool Contains(System.Data.Common.DbTransaction? transaction) => transaction is not null && Began.TryGetValue(transaction, out _);
+}
+
+/// <summary>
+/// Refuses a command run outside a transaction the unit of work began: on the app's context, that's outside every operation (a
+/// seeder, a context a Host resolved, SaveChanges in EF's own transaction), so not authorized, not scoped, not read-only when it
+/// should be, not audited, and committed on its own.
 /// </summary>
 internal sealed class OutsideOperationGuard : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
 {
@@ -59,13 +100,17 @@ internal sealed class OutsideOperationGuard : Microsoft.EntityFrameworkCore.Diag
 
     private static void Check(System.Data.Common.DbCommand command)
     {
-        if (command.Transaction is null && !LeveeOwner.IsActive)
+        if (!LeveeTransactions.Contains(command.Transaction) && !LeveeOwner.IsActive && !IsProbe(command))
         {
             throw new InvalidOperationException(
-                "The app's DbContext ran a command outside an operation's unit of work. Send an operation through the Dispatcher; "
+                $"The app's DbContext ran a command outside an operation's unit of work ({command.CommandText.Split('\n')[0]}). Send an operation through the Dispatcher; "
                 + "a Tool's owner work runs inside LeveeOwner.Run().");
         }
     }
+
+    /// <summary>EF's connection probe (CanConnect, a health check): it reads nothing and can change nothing.</summary>
+    private static bool IsProbe(System.Data.Common.DbCommand command) =>
+        command.Transaction is null && command.CommandText.Trim().Equals("SELECT 1", StringComparison.OrdinalIgnoreCase) && command.Parameters.Count == 0;
 
     public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> ReaderExecuting(
         System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
@@ -130,9 +175,12 @@ internal sealed class AmbientTransaction : IAmbientTransaction
     public (System.Data.Common.DbConnection Connection, System.Data.Common.DbTransaction Transaction)? Current { get; set; }
 }
 
-internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTransaction ambient) : IUnitOfWorkFactory
+internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTransaction ambient, IOptions<OneContext> one) : IUnitOfWorkFactory
     where TContext : DbContext
 {
+    // Outside a host nothing validates on start: the first operation does.
+    private readonly OneContext _one = one.Value;
+
     public Error? Classify(Exception exception)
     {
         for (var e = exception; e is not null; e = e.InnerException)
@@ -169,6 +217,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             throw new InvalidOperationException($"{typeof(TContext).Name} already has a transaction: an operation's unit of work opens its own.");
         }
         var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        LeveeTransactions.Add(tx.GetDbTransaction());
         try
         {
             if (scope.ReadOnly)
@@ -183,6 +232,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
         }
         catch
         {
+            LeveeTransactions.Remove(tx.GetDbTransaction());
             await tx.DisposeAsync();
             throw;
         }
@@ -215,6 +265,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async ValueTask DisposeAsync()
     {
         ambient.Current = null;
+        LeveeTransactions.Remove(tx.GetDbTransaction());
         if (!_committed)
         {
             try

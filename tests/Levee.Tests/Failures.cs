@@ -387,3 +387,62 @@ public sealed class SecondAuditFixTests
         Assert.DoesNotContain("example.com", Assert.Single(store.Audited).Input, StringComparison.Ordinal);
     }
 }
+
+internal sealed class TimingOut : IOperationOutcome
+{
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => throw new TaskCanceledException("The recorder's own HTTP call timed out.");
+}
+
+public sealed record Visitor([property: Personal] string Email);
+
+[Operation("probe.visits", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record LogVisits(Dictionary<DateOnly, Visitor> ByDay, Dictionary<Tier, Visitor> ByTier, IReadOnlyDictionary<string, Visitor> ByName) : IOperation<Unit>;
+
+public enum Tier { Gold }
+
+internal sealed class LogVisitsHandler : IOperationHandler<LogVisits, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(LogVisits operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed class ThirdAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Fact]
+    public async Task A_recorder_timing_out_after_the_commit_leaves_the_result_standing()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes(), more: s => s.AddSingleton<IOperationOutcome, TimingOut>()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, store.Commits);
+    }
+
+    [Fact]
+    public async Task Personal_data_under_any_dictionary_key_is_redacted()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        await dispatcher.SendAsync(new LogVisits(
+            new() { [new DateOnly(2026, 1, 1)] = new("ada@example.com") },
+            new() { [Tier.Gold] = new("bob@example.com") },
+            new Dictionary<string, Visitor> { ["Cy"] = new("cy@example.com") }), Admin, CancellationToken.None);
+
+        var audited = Assert.Single(store.Audited).Input;
+        Assert.DoesNotContain("example.com", audited, StringComparison.Ordinal);
+        Assert.Contains("2026-01-01", audited, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_expando_is_redacted_by_each_value_it_holds()
+    {
+        System.Dynamic.ExpandoObject bag = new();
+        ((IDictionary<string, object?>)bag)["who"] = new Visitor("bob@example.com");
+
+        Assert.DoesNotContain("example.com", LeveeJson.Redact(bag, typeof(System.Dynamic.ExpandoObject)), StringComparison.Ordinal);
+    }
+}

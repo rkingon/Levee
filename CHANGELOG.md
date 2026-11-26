@@ -17,7 +17,9 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 - **Ports and adapters.** `[Port]` (one adapter, a `SelectedBy` setting, or a `Many` set), `[Adapter]` with lifetimes,
   `IAdapters<TPort>`, repositories as ports; only the chosen adapter is registered. `IFlush`, `IAmbientTransaction`.
 - **Personal data and secrets.** `[Secret]` (write-only, never stored unsealed) and `[Personal]` (redacted in the audit
-  and outcomes), at any depth of an input.
+  and outcomes), at any depth of an input: nested records, collections, dictionary values under any key, derived types.
+  Inputs are typed all the way down (LEVEE104 refuses `object`, raw JSON, `dynamic`, non-generic collections), so no
+  member hides from either.
 - **The strict wire.** `LeveeJson`: unknown members and missing required members refused; schemas for every contract.
 - **Jobs.** `IJobs`: an operation enqueued in its caller's transaction, authorized as the caller, run as a `JobPrincipal`
   in the caller's scope; `IJobPrincipals` restores the app's own principal.
@@ -28,8 +30,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 - The catalog, handler and adapter registration, and port binding, generated across the app's assemblies; a Contracts
   project's own `LeveeCatalog` for clients.
 - LEVEE001–020 and LEVEE101–111, each with `Fix:` in its message and a long form in `dotnet levee explain`. Turning them
-  off, by property, config severity, a generated-file header or a Test role on a project that isn't a test, is itself
-  refused (an IDE's design-time pass excepted).
+  off, by property, config severity, a global config, a generated-file header or a Test role on a project with no test
+  framework, is itself refused (an IDE's design-time pass excepted).
 
 ### Levee.EntityFrameworkCore
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level
@@ -37,7 +39,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   conflicts, constraints, contention, an unreachable store).
 - `LeveeSchema`: the scope functions, the append-only audit added to only through `levee_audit_write` (stamped by the
   database), isolation policies and the runtime role's grants, qualified by schema.
-- The app's context refuses commands outside an operation; `LeveeOwner.Run()` for a Tool's owner work.
+- The app's context refuses commands outside a transaction its unit of work began (EF's connection probe aside), and a
+  second context fails the host's start; `LeveeOwner.Run()` for a Tool's owner work.
 
 ### Levee.Oxbow
 - Oxbow (0.2.0-alpha.3) enlisted in the unit of work; operations as jobs, retried when transient (after the failure's own

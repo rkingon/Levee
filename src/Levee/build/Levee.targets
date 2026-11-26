@@ -14,15 +14,29 @@
     beside the code. dotnet levee check compiles once without them on purpose (LeveeCheck), then analyzes every project.
   -->
   <!--
-    An IDE's design-time pass compiles nothing (SkipCompilerExecution), so it's spared; check's own pass is recognised by a
-    token it passes both as a property and in its environment, which a project file can't set for itself.
+    An IDE's design-time pass compiles nothing (SkipCompilerExecution), so it's spared. check's own pass is recognised by a
+    token it passes as a property and in its environment: the environment is read directly, since a project file can set a
+    property of any name, but no process's environment.
   -->
   <Target Name="_LeveeRulesRun" BeforeTargets="CoreCompile"
-          Condition="'$(LeveeRole)' != '' and '$(SkipCompilerExecution)' != 'true' and !('$(LeveeCheck)' != '' and '$(LeveeCheck)' == '$(LEVEE_CHECK_TOKEN)')">
-    <Error Code="LEVEE006" Condition="'$(LeveeRole)' == 'Test' and '$(IsTestProject)' != 'true'"
-           Text="This project's role is Test, which the code rules don't hold, but it isn't a test project. Fix: give it the role it is; a test project references Microsoft.NET.Test.Sdk, which marks it (dotnet levee explain LEVEE006)" />
+          Condition="'$(LeveeRole)' != '' and '$(SkipCompilerExecution)' != 'true' and !('$(LeveeCheck)' != '' and '$(LeveeCheck)' == '$([System.Environment]::GetEnvironmentVariable(`LEVEE_CHECK_TOKEN`))')">
+    <ItemGroup>
+      <_LeveeTestFramework Include="@(PackageReference)" Condition="'%(Identity)' == 'Microsoft.NET.Test.Sdk' or '%(Identity)' == 'Microsoft.Testing.Platform' or '%(Identity)' == 'xunit' or '%(Identity)' == 'xunit.v3' or '%(Identity)' == 'xunit.v3.core' or '%(Identity)' == 'MSTest' or '%(Identity)' == 'MSTest.TestFramework' or '%(Identity)' == 'NUnit' or '%(Identity)' == 'TUnit' or '%(Identity)' == 'TUnit.Core'" />
+      <!-- A global config of the project's own can set the role the analyzers read, over the one MSBuild gives them. -->
+      <_LeveeConfig Include="@(GlobalAnalyzerConfigFiles);@(EditorConfigFiles)" Exclude="$(GeneratedMSBuildEditorConfigFile)" />
+    </ItemGroup>
+    <ReadLinesFromFile File="%(_LeveeConfig.FullPath)" Condition="Exists('%(_LeveeConfig.FullPath)')">
+      <Output TaskParameter="Lines" ItemName="_LeveeConfigLine" />
+    </ReadLinesFromFile>
+    <ItemGroup>
+      <_LeveeConfigOverride Include="@(_LeveeConfigLine)" Condition="$([System.String]::Copy('%(Identity)').Trim().ToLowerInvariant().StartsWith('build_property.levee'))" />
+    </ItemGroup>
+    <Error Code="LEVEE006" Condition="'$(LeveeRole)' == 'Test' and ('$(IsTestProject)' != 'true' or '@(_LeveeTestFramework)' == '')"
+           Text="This project's role is Test, which the code rules don't hold, but it isn't a test project. Fix: give it the role it is; a test project sets IsTestProject and references a test framework (Microsoft.NET.Test.Sdk, xunit.v3, MSTest, NUnit, TUnit) (dotnet levee explain LEVEE006)" />
     <Error Code="LEVEE006" Condition="'$(RunAnalyzers)' == 'false' or '$(RunAnalyzersDuringBuild)' == 'false'"
            Text="This project turns its analyzers off (RunAnalyzers or RunAnalyzersDuringBuild), and every Levee rule with them. Fix: remove the property; suppress one rule beside the code, with a reason (dotnet levee explain LEVEE006)" />
+    <Error Code="LEVEE006" Condition="'@(_LeveeConfigOverride)' != ''"
+           Text="An analyzer config file sets what Levee's analyzers read from MSBuild (@(_LeveeConfigOverride->'%(Identity)', ', ')), over the project's own properties. Fix: remove those lines; set LeveeRole and the rest in the project file (dotnet levee explain LEVEE006)" />
     <Error Code="LEVEE009" Condition="'@(Analyzer->AnyHaveMetadataValue(`Filename`, `Levee.Analyzers`))' != 'true'"
            Text="This project uses Levee without its analyzers, so none of its rules run here. Fix: reference Levee without ExcludeAssets or PrivateAssets naming analyzers (dotnet levee explain LEVEE009)" />
   </Target>

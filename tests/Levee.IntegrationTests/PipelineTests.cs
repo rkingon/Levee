@@ -10,6 +10,7 @@ using Npgsql;
 using Oxbow;
 using Sample.Adapters;
 using Sample.Contracts;
+using Sample.Domain;
 
 namespace Levee.IntegrationTests;
 
@@ -397,16 +398,71 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         using var host = Build();
         await using var scope = host.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
+        var (tenant, _) = NewTenant();
+        var now = TimeProvider.System.GetUtcNow();
 
+        var raw = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
+        // Two rows: EF wraps them in a transaction of its own, which isn't an operation's.
+        db.Set<Note>().AddRange(Note.Create(Guid.CreateVersion7(now), tenant, "one", now), Note.Create(Guid.CreateVersion7(now), tenant, "two", now));
+        var saved = await Assert.ThrowsAnyAsync<Exception>(() => db.SaveChangesAsync(Ct));
+        db.ChangeTracker.Clear();
+
+        Assert.Contains("outside an operation's unit of work", raw.Message, StringComparison.Ordinal);
+        Assert.Contains("outside an operation's unit of work", saved.ToString(), StringComparison.Ordinal);
+        using (LeveeOwner.Run())
+        {
+            using (LeveeOwner.Run())
+            {
+            }
+            // The guard steps aside for owner work, an inner Run's end included; the role and row-level security still hold it.
+            Assert.Equal(0, await db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
+        }
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
+        Assert.True(await db.Database.CanConnectAsync(Ct));
+    }
+
+    [Fact]
+    public async Task A_transaction_an_operation_finished_lets_nothing_through_after_it()
+    {
+        // One pooled connection: Npgsql hands a connection's transaction object to its next transaction, so the operation's vouches for nothing after it.
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(postgres.App) { MaxPoolSize = 1 }.ConnectionString));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        builder.Services.AddSingleton<IAccessPolicy, TenantAccess>();
+        using var host = builder.Build();
+        var (tenant, ada) = NewTenant();
+        var now = TimeProvider.System.GetUtcNow();
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new CreateNote(Guid.CreateVersion7(now), tenant, "inside"), ada, Ct)).IsSuccess);
+
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
+        await using var own = await db.Database.BeginTransactionAsync(Ct);
         var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
 
         Assert.Contains("outside an operation's unit of work", refused.Message, StringComparison.Ordinal);
-        using (LeveeOwner.Run())
-        {
-            // The guard steps aside for owner work; the role and row-level security still hold it.
-            Assert.Equal(0, await db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
-        }
     }
+
+    [Fact]
+    public async Task A_second_context_is_refused_at_start()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddDbContext<SideDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+
+        Assert.Contains("SideDbContext is a DbContext besides SampleDbContext", refused.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class SideDbContext(DbContextOptions<SideDbContext> options) : DbContext(options);
 
     [Fact]
     public async Task The_audit_is_stamped_by_the_database_not_its_caller()

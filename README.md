@@ -154,7 +154,8 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   ([docs/subscriptions.md](docs/subscriptions.md)).
 - Jobs with `[Secret]` inputs are sealed at rest with Oxbow's args encryption: `AddLeveeJobs(sealSecrets: true)` and
   `AddArgsEncryption()`. Without it they're refused.
-- `OperationContext.Now` is the operation's one time, at Postgres's microseconds.
+- `OperationContext.Now` is the handler's one time, at Postgres's microseconds. The audit's own time is the database's
+  `now()`, so a caller can't backdate it.
 - Only the dispatcher commits, but an adapter may flush: `IFlush` sends pending writes inside the open transaction, so a
   later query or set-based statement sees them, and refuses outside an operation. `SaveChanges` stays banned (LEVEE004).
 - Jobs run for whoever enqueued them: register an `IJobPrincipals` to turn that subject back into the app's own principal.
@@ -245,7 +246,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE013 | A Host names or holds nothing of Application's or Domain's (`var` included): it reaches them through the dispatcher. |
 | LEVEE014 | A Composition project's public surface is extension methods that register and map, taking and returning none of Application's, Domain's or an adapter's types. |
 | LEVEE015 | Composition wires the application (constructs, binds, registers) and never calls into it, delegates included: what it maps goes through the dispatcher. |
-| LEVEE016 | An Application class implements no Kernel or Contracts interface: it's reached only through operations. |
+| LEVEE016 | An Application or Domain type implements no Kernel, Contracts or package interface (Levee's and its own ports' aside): it's reached only through operations. |
 | LEVEE017 | A Tool is an executable nothing references. |
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |

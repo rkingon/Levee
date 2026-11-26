@@ -7,6 +7,7 @@ using Levee.Generated;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using Sample.Adapters;
 using Sample.Contracts;
@@ -26,7 +27,8 @@ namespace Levee.Benchmarks
     public class PipelineBenchmarks
     {
         private const string Tenant = "bench";
-        private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17-alpine").Build();
+            // fsync off: the disk's flush time would swamp what's measured, and differs by machine more than anything else.
+        private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder("postgres:17-alpine").WithCommand("-c", "fsync=off").Build();
         private IHost _host = null!;
         private Dispatcher _dispatcher = null!;
         private readonly BenchMember _caller = new("ada@bench", Tenant);
@@ -51,6 +53,8 @@ namespace Levee.Benchmarks
             var app = new NpgsqlConnectionStringBuilder(owner) { Username = "app", Password = "app" }.ConnectionString;
 
             var builder = Host.CreateApplicationBuilder();
+            // EF logs every command at Information: writing those to the console would be measured too.
+            builder.Logging.ClearProviders();
             builder.Configuration["Sample:BannedWords"] = "none";
             builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(app));
             builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
@@ -75,6 +79,7 @@ namespace Levee.Benchmarks
         [Benchmark(Baseline = true, Description = "read: EF in a transaction, by hand")]
         public async Task<int> ReadByHand()
         {
+            using var owner = LeveeOwner.Run();
             await using var scope = _host.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
             await using var tx = await db.Database.BeginTransactionAsync();
@@ -92,11 +97,26 @@ namespace Levee.Benchmarks
         [Benchmark(Description = "write: EF in a transaction, by hand")]
         public async Task WriteByHand()
         {
+            using var owner = LeveeOwner.Run();
             await using var scope = _host.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
             await using var tx = await db.Database.BeginTransactionAsync();
             await db.Database.ExecuteSqlAsync($"select set_config('levee.scope', {Tenant}, true)");
             await db.Database.ExecuteSqlAsync($"insert into notes (id, tenant, text, created_at) values ({Guid.CreateVersion7(TimeProvider.System.GetUtcNow())}, {Tenant}, {"by hand"}, now())");
+            await tx.CommitAsync();
+        }
+
+        [Benchmark(Description = "write: the same statements and audit, by hand")]
+        public async Task WriteAsDispatchedByHand()
+        {
+            using var owner = LeveeOwner.Run();
+            await using var scope = _host.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
+            var now = TimeProvider.System.GetUtcNow();
+            await using var tx = await db.Database.BeginTransactionAsync();
+            await db.Database.ExecuteSqlAsync($"select set_config('levee.scope', {Tenant}, true), set_config('levee.platform', {"off"}, true)");
+            await db.Database.ExecuteSqlAsync($"select levee_audit_write({Guid.CreateVersion7(now)}, {Tenant}, {_caller.Subject}, {"notes.create"}, {"{}"}::jsonb)");
+            await db.Database.ExecuteSqlAsync($"insert into notes (id, tenant, text, created_at) values ({Guid.CreateVersion7(now)}, {Tenant}, {"by hand"}, {now})");
             await tx.CommitAsync();
         }
 

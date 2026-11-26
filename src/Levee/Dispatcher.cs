@@ -386,9 +386,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 await recorder.RecordAsync(outcome, ct);
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e)
             {
-                // The operation's own result stands: a recorder failing is its bug, not the caller's.
+                // The operation's own result stands, committed or not: a recorder failing, or timing out, is its bug, not the caller's.
                 LogOutcomeFailed(log, e, outcome.Operation.Name, recorder.GetType().Name);
             }
         }

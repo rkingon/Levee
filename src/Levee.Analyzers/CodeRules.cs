@@ -51,7 +51,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlCall(c)), OperationKind.Invocation, OperationKind.ObjectCreation);
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlText(c)), OperationKind.SimpleAssignment);
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnScopeSetting(c)), OperationKind.Literal, OperationKind.Binary,
-                    OperationKind.InterpolatedString);
+                    OperationKind.InterpolatedString, OperationKind.FieldReference, OperationKind.LocalReference);
             }
         });
     }
@@ -127,23 +127,104 @@ public sealed class CodeRules : DiagnosticAnalyzer
     /// <summary>
     /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit
     /// by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own concatenation),
-    /// it would move the operation into another tenant's rows, or forge its record. Reading them is fine.
+    /// it would move the operation into another tenant's rows, or forge its record. Reading them is fine. A setting's bare
+    /// name is judged where it's used: by the SQL it's passed with.
     /// </summary>
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
         var operation = context.Operation;
-        // The whole constant once, not each piece of it.
-        if (operation.ConstantValue is not { HasValue: true, Value: string text } || operation.Parent?.ConstantValue is { HasValue: true, Value: string })
+        // The whole string once, at its outermost piece.
+        if (operation.Parent is IInterpolatedStringTextOperation or IInterpolationOperation or IInterpolatedStringOperation
+            || operation.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, Type.SpecialType: SpecialType.System_String }
+            || operation.Parent?.ConstantValue is { HasValue: true, Value: string }
+            || Flatten(operation) is not { } text)
         {
             return;
         }
-        var flat = new string(text.ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or ',' or '|' or '(' or ')' or '+')).ToArray());
-        var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform");
-        var sets = flat.Contains("set_config") || SettingStatement.IsMatch(text.Replace("\"", "").Replace("'", "")) || flat is "levee.scope" or "levee.platform";
-        if (names && sets || flat.Contains("levee_audit_write"))
+        var flat = Flat(text);
+        var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
+            || flat.Contains("levee." + Hole);
+        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write")
+            || (flat is "levee.scope" or "levee.platform" && (SetAtUse(operation) || LocalSetLater(operation)));
+        if (refused)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, operation.Syntax.GetLocation(), "SQL setting Levee's scope or writing its audit"));
         }
+    }
+
+    private const char Hole = '\u0001';
+
+    /// <summary>A string's text, each piece that isn't a constant a <see cref="Hole"/>.</summary>
+    private static string? Flatten(IOperation value) => value switch
+    {
+        { ConstantValue: { HasValue: true, Value: string text } } => text,
+        IInterpolatedStringOperation interpolated => string.Concat(interpolated.Parts.Select(p => p switch
+        {
+            IInterpolatedStringTextOperation t => t.Text.ConstantValue.Value as string,
+            IInterpolationOperation i => Flatten(i.Expression) ?? Hole.ToString(),
+            _ => Hole.ToString(),
+        })),
+        IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, Type.SpecialType: SpecialType.System_String } b =>
+            (Flatten(b.LeftOperand) ?? Hole.ToString()) + (Flatten(b.RightOperand) ?? Hole.ToString()),
+        IConversionOperation conversion => Flatten(conversion.Operand),
+        _ => null,
+    };
+
+    private static readonly Regex SqlComment = new(@"--[^\n]*|/\*.*?\*/", RegexOptions.Singleline | RegexOptions.CultureInvariant);
+
+    private static string Flat(string text) =>
+        new(SqlComment.Replace(text, " ").ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or ',' or '|' or '(' or ')' or '+')).ToArray());
+
+    private static bool Sets(string text)
+    {
+        var clean = SqlComment.Replace(text, " ");
+        return Flat(clean).Contains("set_config") || SettingStatement.IsMatch(clean.Replace("\"", "").Replace("'", ""));
+    }
+
+    /// <summary>A bare setting name held in a local: judged at each of the local's uses, as part of the string or call it reaches.</summary>
+    private static bool LocalSetLater(IOperation name)
+    {
+        if (name.Parent is not IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declarator })
+        {
+            return false;
+        }
+        var root = name;
+        while (root.Parent is not null)
+        {
+            root = root.Parent;
+        }
+        foreach (var use in root.Descendants().OfType<ILocalReferenceOperation>().Where(r => SymbolEqualityComparer.Default.Equals(r.Local, declarator.Symbol)))
+        {
+            IOperation outer = use;
+            while (outer.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } or IInterpolationOperation or IInterpolatedStringOperation or IConversionOperation)
+            {
+                outer = outer.Parent;
+            }
+            if ((outer != use && Flatten(outer) is { } sql && Sets(sql)) || SetAtUse(outer))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Whether the call a bare setting name is passed to sets a setting.</summary>
+    private static bool SetAtUse(IOperation name)
+    {
+        for (var at = name.Parent; at is not null and not IBlockOperation and not ISymbolInitializerOperation and not IVariableDeclarationGroupOperation; at = at.Parent)
+        {
+            var arguments = at switch
+            {
+                IInvocationOperation i => i.Arguments,
+                IObjectCreationOperation o => o.Arguments,
+                _ => default,
+            };
+            if (!arguments.IsDefault)
+            {
+                return arguments.Any(a => a.Value != name && Flatten(a.Value) is { } sql && Sets(sql));
+            }
+        }
+        return false;
     }
 
     // SET [LOCAL|SESSION] levee.…, or RESET levee.…, once quotes are gone ("levee"."scope").
@@ -162,7 +243,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
         // A context of its own is a connection of its own; EF's design-time factory (dotnet ef) is the one exception.
-        else if (!Roles.Composes(role) && Derives(type, "Microsoft.EntityFrameworkCore.DbContext")
+        else if (role != Role.Tool && Derives(type, "Microsoft.EntityFrameworkCore.DbContext")
             && context.ContainingSymbol.ContainingType?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") != true)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
@@ -173,14 +254,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
-    private static void OnMethodGroup(OperationAnalysisContext context, Role role)
-    {
-        var method = ((IMethodReferenceOperation)context.Operation).Method;
-        if (!Roles.Composes(role) && LocatorMembers.Contains(method.Name) && IsLocator(method))
-        {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ServiceLocation, context.Operation.Syntax.GetLocation(), method.Name));
-        }
-    }
+    private static void OnMethodGroup(OperationAnalysisContext context, Role role) =>
+        OnCall(context, role, ((IMethodReferenceOperation)context.Operation).Method);
 
     private static bool IsLevee(INamedTypeSymbol? type, string name) =>
         type is not null && type.Name == name && type.ContainingNamespace?.ToDisplayString() == "Levee";
@@ -200,9 +275,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static readonly ImmutableHashSet<string> DataSourceMembers = ImmutableHashSet.Create(
         "CreateConnection", "OpenConnection", "OpenConnectionAsync", "CreateCommand", "CreateBatch");
 
-    private static void OnInvocation(OperationAnalysisContext context, Role role)
+    private static void OnInvocation(OperationAnalysisContext context, Role role) =>
+        OnCall(context, role, ((IInvocationOperation)context.Operation).TargetMethod);
+
+    private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
     {
-        var method = ((IInvocationOperation)context.Operation).TargetMethod;
         if ((IsLevee(method.ContainingType, "OperationDescriptor") && method.Name is "Create" or "CreateSubscription")
             || (IsLevee(method.ContainingType, "LeveeServiceCollectionExtensions") && method.Name == "AddLeveePart"))
         {
@@ -219,6 +296,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (role != Role.Tool && ((DataSourceMembers.Contains(method.Name) && Derives(method.ContainingType, "System.Data.Common.DbDataSource"))
             || (method.Name == "CreateConnection" && Derives(method.ContainingType, "System.Data.Common.DbProviderFactory"))
             || (method.Name is "Clone" or "CloneWith" && Derives(method.ContainingType, "System.Data.Common.DbConnection"))
+            || (method.Name == "GetDbConnection" && method.ContainingType.ToDisplayString() == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions")
             || (method.Name == "CreateInstance" && method.ContainingType.ToDisplayString() == "System.Activator"
                 && (Derives(made, "System.Data.Common.DbConnection") || Derives(made, "Microsoft.EntityFrameworkCore.DbContext")))
             || (method.Name is "CreateDbContext" or "CreateDbContextAsync"

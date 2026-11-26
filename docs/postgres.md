@@ -45,10 +45,15 @@ and contention or an unreachable database is `Unavailable` (so jobs retry it).
 
 ## Outside an operation
 
-The context refuses every command run outside a transaction: a seeder, a context a Host resolved, a hosted loop. None of
-those is authorized, scoped or audited, so none runs. A Tool's owner work (migrations, the role bootstrap) runs inside
-`LeveeOwner.Run()`, which the build allows only in a Tool (LEVEE018).
+The app's context refuses every command that isn't in a transaction the unit of work began: a seeder, a context a Host
+resolved, a hosted loop, `SaveChanges` in EF's own transaction. None of those is authorized, scoped or audited, so none
+runs. EF's connection probe (`SELECT 1`, from `CanConnect` and the health check on the context) is let through: it reads
+and changes nothing. A Tool's owner work (migrations, the role bootstrap) runs inside `LeveeOwner.Run()`, which the build
+allows only in a Tool (LEVEE018); runs nest.
 
-The build also refuses connections of the app's own (`new NpgsqlConnection`, a data source's connections, a context
-factory), SQL that sets the scope settings or writes the audit by hand, and transaction control (LEVEE004, LEVEE018).
+The guard is on the context `AddLeveePostgres` names, so another context registered beside it (`AddDbContext`,
+`AddDbContextFactory`) fails the host's start: map its entities in the one context. The build refuses the other ways to
+a connection of the app's own: `new NpgsqlConnection`, a data source's connections, a context factory, `new` on a
+context outside a Tool, the context's own connection (`GetDbConnection`; `IAmbientTransaction` has the operation's), SQL
+that sets the scope settings or writes the audit by hand, and transaction control (LEVEE004, LEVEE018).
 See the [trust model](decisions.md#trust-model) for where these guarantees stop.

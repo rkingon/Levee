@@ -577,13 +577,20 @@ public sealed class OperationGenerator : IIncrementalGenerator
     private static readonly HashSet<string> UntypedNames =
     [
         "System.Text.Json.JsonElement", "System.Text.Json.JsonDocument", "System.Text.Json.Nodes.JsonNode", "System.Text.Json.Nodes.JsonObject",
-        "System.Text.Json.Nodes.JsonArray", "System.Text.Json.Nodes.JsonValue",
+        "System.Text.Json.Nodes.JsonArray", "System.Text.Json.Nodes.JsonValue", "System.Array",
+        "System.Collections.Specialized.OrderedDictionary", "System.Collections.Specialized.HybridDictionary",
+        "System.Collections.Specialized.ListDictionary",
     ];
+
+    // Non-generic collections (ArrayList, Hashtable, IEnumerable) and the dynamic types (ExpandoObject) hold objects.
+    private static bool IsUntypedNamespace(ITypeSymbol type) =>
+        type.ContainingNamespace?.ToDisplayString() is "System.Collections" or "System.Dynamic";
 
     /// <summary>The path to the first member of an input, at any depth, typed as anything at all (object, raw JSON, dynamic), or null.</summary>
     private static string? Untyped(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
     {
-        if (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Dynamic || UntypedNames.Contains(type.OriginalDefinition.ToDisplayString()))
+        if (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Dynamic || UntypedNames.Contains(type.OriginalDefinition.ToDisplayString())
+            || IsUntypedNamespace(type))
         {
             return path.Length == 0 ? type.ToDisplayString() : path;
         }
@@ -611,13 +618,32 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return null;
         }
-        foreach (var property in named.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && p.DeclaredAccessibility == Accessibility.Public && !p.IsIndexer))
+        // What the wire carries: public properties, and any field or property [JsonInclude] adds.
+        foreach (var member in named.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
         {
-            var at = path.Length == 0 ? property.Name : $"{path}.{property.Name}";
-            if (Untyped(property.Type, seen, at) is { } found)
+            var included = member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+            var memberType = member switch
+            {
+                IPropertySymbol { IsIndexer: false } p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
+                IFieldSymbol f when included => f.Type,
+                _ => null,
+            };
+            var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
+            if (memberType is not null && Untyped(memberType, seen, at) is { } found)
             {
                 return found;
             }
+        }
+        foreach (var derived in named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute"))
+        {
+            if (derived.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol subtype && Untyped(subtype, seen, path) is { } inDerived)
+            {
+                return inDerived;
+            }
+        }
+        if (named.BaseType is { SpecialType: not SpecialType.System_Object } baseType && Untyped(baseType, seen, path) is { } inBase)
+        {
+            return inBase;
         }
         return null;
     }

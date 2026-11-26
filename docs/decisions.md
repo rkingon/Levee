@@ -37,7 +37,8 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 | `LeveeProblems` public | B | An app's own HTTP routes answer failures exactly as `MapLeveeOperations` does. |
 | A job honours its failure's `RetryAfter` | the maintainer, with the failure contract | A vendor's rate limit says when to come back; Oxbow's backoff would guess. Built in Oxbow first (`JobRetryException`, 0.2.0-alpha.3), since a worker choosing its delay is Oxbow's to offer. |
 | MCP: inputs the server binds, rendered results, a server with no dispatcher | A | `LeveeMcpOptions` | What kept A's own MCP server: a turn's id filled by the server, a page shown as an image, and a stdio server beside the client. Without them, the rule "no hand-written projections" couldn't hold. |
-| A run-time guard against commands outside an operation; the audit stamped by the database; the analyzers-off check keyed on what can't be set from a project file; untyped input members refused; the catalog the generator's alone (LEVEE020) | a second independent audit | Each claim a probe could still falsify is either held at run time now, or restated as exactly as strong as the code. |
+| A run-time guard against commands outside an operation; the audit stamped by the database; the analyzers-off check keyed on an environment token; untyped input members refused; the catalog the generator's alone (LEVEE020) | a second independent audit | Each claim a probe could still falsify is either held at run time now, or restated as exactly as strong as the code. |
+| The guard keyed on Levee's own transactions, one context per app, `GetDbConnection` and `new` contexts a Tool's; the check token read from the environment; global configs and a Test role without a test framework refused; untyped containers and `[JsonInclude]` fields refused; dictionary keys redacted by position; a recorder never fails a committed operation | a third independent audit | The same stance: each falsified claim is held now, by a test that fires and one that doesn't, or restated. |
 | `ProblemView` in `Levee` | A | A client (an SDK) reads failures with Levee's own type, not a copy that drifts. |
 | SSE keep-alive and recheck | A | A stream outlives the authorization it opened with: a revoked key or a lost membership (admissions run at open and at each recheck) ends it, and idle proxies don't. |
 | The audit written only through `levee_audit_write`; side connections, scope settings and analyzers-off refused; recursive redaction | an independent audit | Each let code of the app's step around a guarantee the README claimed: forge the audit, leave the transaction, change its scope, or turn the rules off. |
@@ -50,10 +51,13 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 Levee's guarantees are against mistakes: code that compiles in the wrong shape, and writes the contract didn't declare.
 
 - **The build** refuses every way it knows for code of the app's to step around the pipeline: committing, opening a
-  connection of its own, naming the scope settings, service location, I/O in the core, calling the application from a Host.
-  Each is a rule with a test that proves it fires, and turning the rules off is itself refused (LEVEE006, LEVEE009).
-- **At run time,** what the build can't see is held anyway: the app's context refuses any command outside an operation's
-  transaction (a seeder, a resolved context, a hosted loop); an undeclared write fails in a read-only transaction; a write
+  connection of its own, setting the scope settings, service location, I/O in the core, calling the application from a
+  Host. Each is a rule with a test that proves it fires. Turning the rules off is itself refused (LEVEE006, LEVEE009): by
+  property, by config severity or a global config's `build_property.Levee*`, by a generated-file header, or by a Test role
+  on a project with no test framework. A project that references a test framework and calls itself a test is believed.
+- **At run time,** what the build can't see is held anyway: the app's context refuses any command outside a transaction
+  the unit of work began (a seeder, a resolved context, a hosted loop, EF's own `SaveChanges` transaction), and a second
+  context fails the host's start; an undeclared write fails in a read-only transaction; a write
   outside the operation's scope fails row-level security; and the runtime role adds to the audit only through
   `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a record.
 - **Not covered:** hostile code running as the app's role. The scope is a transaction setting the unit of work sets, and
