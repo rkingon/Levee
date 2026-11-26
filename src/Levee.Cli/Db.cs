@@ -37,7 +37,7 @@ internal static partial class Db
                 if (args.Flag("jobs"))
                 {
                     output.WriteLine(OxbowSchema.GetGrants(role));
-                    output.WriteLine($"revoke insert, update, delete on oxbow_migration from {role};");
+                    output.WriteLine($"revoke insert, update, delete on {schema}.oxbow_migration from {role};");
                 }
                 return;
             case var other:

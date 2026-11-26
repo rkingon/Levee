@@ -141,12 +141,13 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AdapterPlacement, location, type.Name,
                     $"implements port {contract.Name} in a {role} project. Fix: move it to an Adapter project and mark it [Adapter]"));
             }
-            else if (role == Role.Adapter && !PortLike(contract)
+            // An interface of static members only (static abstract) can't be called through, so it's no way in.
+            else if (role == Role.Adapter && !PortLike(contract) && !(contract.GetMembers().Any() && contract.GetMembers().All(m => m.IsStatic))
                 && roleOf(contract.ContainingAssembly) is Role.Application or Role.Domain or Role.Kernel or Role.Contracts)
             {
                 // A shared interface an adapter implements is a way to drive it (a migrator, a store) around the dispatcher.
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AdapterPlacement, location, type.Name,
-                    $"implements {contract.Name}, which isn't a port. Fix: if the application needs {contract.Name} from outside, declare it a [Port] in Application; for work run as the database's owner (migrations, bootstrap), call the adapter from a Tool project"));
+                    $"implements {contract.Name}, which isn't a port. Fix: if the application needs {contract.Name} from outside, declare it a [Port] in Application; if it's a shape several adapters share (a vendor's credentials, a transport's contract), move it to an Infrastructure project; for work run as the database's owner (migrations, bootstrap), call the adapter from a Tool project"));
             }
         }
     }

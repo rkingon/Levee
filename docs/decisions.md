@@ -19,6 +19,7 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 | Composition exposing helpers and constants | B | Only registration is public | Anything else public is a way into the application around the dispatcher (LEVEE014). |
 | Error codes built at run time (`{field}.required`, `externalId.tooLong`) | A | One stable code per failure (`notes.invalid`) with what's wrong per field in `Error.Fields` | A code is what a client branches on, so it can't vary by field; the field is detail. A code per field is a contract that grows with every property. |
 | Sign-in endpoints that run internal operations as a principal taken from the request | A | Keep them in the Host | Turning credentials into a principal is authentication, the Host's job. They dispatch internal operations, which `/ops` rightly refuses. |
+| MCP tool names chosen per tool, for names outside clients already call | B | Those tools are a public API: a `Projection`, the app's own | `Levee.Mcp` names by a fixed rule because it's internal; a public tool name is a product's contract. |
 | Named SSE events per item type | A | The client reads `message` events | One event name for items keeps every subscription's wire the same; the item says what it is. |
 
 ## Built
@@ -88,6 +89,7 @@ Where the apps disagreed before Levee, and what it chose.
 
 | Question | From | Where it stands |
 |---|---|---|
+| A process that works no queue still checks Oxbow's schema at startup, so it can't start with the database down | B | Oxbow's to offer (a client-only mode); until then, readiness waits on the database. |
 | A transaction opened lazily, for operations that never touch the database | B | Deferred: real work, and it matters under load. |
 | The current operation inside `HttpClient` handlers | B | Deferred: B's admission-based workaround holds. |
 | An operation's result in `IOperationOutcome` | B | Deferred: results can carry secrets, so it needs a redaction story first. |

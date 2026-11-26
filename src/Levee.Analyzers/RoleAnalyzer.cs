@@ -54,7 +54,7 @@ public sealed class RoleAnalyzer : DiagnosticAnalyzer
             foreach (var entry in allowed.Where(Framework))
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.PackageReference, Location.None, role, entry,
-                    $"<LeveeAllowedReferences> admits only pure libraries, and {entry} is framework. Fix: remove it; take settings as a plain record Composition binds, and declare a port in Application for anything {entry} does, implemented in an Adapter"));
+                    $"<LeveeAllowedReferences> admits only pure libraries, and {entry} is framework. Fix: remove {entry} from <LeveeAllowedReferences> (what an allowed abstractions package brings with it is already allowed); take settings as a plain record Composition binds, and declare a port in Application for anything {entry} does, implemented in an Adapter"));
             }
         }
         foreach (var assembly in context.Compilation.SourceModule.ReferencedAssemblySymbols)

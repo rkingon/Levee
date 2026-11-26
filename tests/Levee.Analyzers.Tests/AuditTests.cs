@@ -127,4 +127,15 @@ public sealed class AuditTests
 
         Assert.DoesNotContain("LEVEE017", output.Ids);
     }
+
+    [Theory]
+    [InlineData("public interface ICredentials<TSelf> where TSelf : ICredentials<TSelf> { static abstract TSelf Empty { get; } }", "Vendor : App.Kernel.ICredentials<Vendor> { public static Vendor Empty => new(); }", false)]
+    [InlineData("public interface IMigrator { void Migrate(); }", "Vendor : App.Kernel.IMigrator { public void Migrate() { } }", true)]
+    public async Task An_interface_of_static_members_is_no_way_in(string kernel, string adapter, bool refused)
+    {
+        var shared = await Compile("Kernel", $"namespace App.Kernel;\n{kernel}", "App.Kernel");
+        var output = await Compile("Adapter", $"namespace App;\ninternal sealed class {adapter}", "App.Adapters", shared.Reference());
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE011"));
+    }
 }
