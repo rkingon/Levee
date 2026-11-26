@@ -242,15 +242,16 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Theory]
-    [InlineData(false, "Idempotency.None")]
-    [InlineData(true, "is a secret")]
-    public async Task An_operation_unfit_to_run_as_a_job_is_refused(bool secret, string why)
+    [InlineData(Unfit.Repeats, "Idempotency.None")]
+    [InlineData(Unfit.Secret, "is a secret")]
+    [InlineData(Unfit.Streams, "streams")]
+    public async Task An_operation_unfit_to_run_as_a_job_is_refused(Unfit unfit, string why)
     {
         var logs = new Logs();
         using var host = Build(logs: logs);
         var (acme, ada) = NewTenant();
 
-        var result = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new EnqueueUnfit(acme, secret), ada, Ct);
+        var result = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new EnqueueUnfit(acme, unfit), ada, Ct);
 
         // A bug, not a refusal: the caller gets only the trace; the log has why, under it.
         Assert.Equal((ErrorKind.Internal, LeveeErrors.Internal), (result.Error!.Kind, result.Error.Code));
@@ -304,7 +305,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         using var host = Build(seal: true);
         var (acme, ada) = NewTenant();
 
-        var result = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new EnqueueUnfit(acme, Secret: true), ada, Ct);
+        var result = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new EnqueueUnfit(acme, Unfit.Secret), ada, Ct);
 
         Assert.True(result.IsSuccess);
         Assert.Equal(1, await postgres.CountAsync(

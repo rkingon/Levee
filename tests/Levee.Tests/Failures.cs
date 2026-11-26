@@ -143,6 +143,26 @@ internal sealed class ForeverHandler : ISubscriptionHandler<Forever, Tick>
     }
 }
 
+[Operation("probe.firehose", "member", Platform = true)]
+public sealed record Firehose : ISubscription<Tick>;
+
+internal sealed class FirehoseHandler : ISubscriptionHandler<Firehose, Tick>
+{
+    public async IAsyncEnumerable<Tick> SubscribeAsync(Firehose subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        for (var i = 0; ; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            // Large and fast: the channel is never empty while the client reads.
+            yield return new Tick(i);
+            if (i % 1000 == 0)
+            {
+                await Task.Yield();
+            }
+        }
+    }
+}
+
 [Operation("probe.mine", "member", CallerScoped = true)]
 public sealed record Mine : IOperation<string>;
 

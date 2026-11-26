@@ -86,9 +86,11 @@ public sealed record EnqueueElsewhere(string Tenant, string Victim) : IOperation
     string IScopedOperation.ScopeKey => Tenant;
 }
 
-/// <summary>Enqueues an operation that can't run as a job: one that isn't safe to repeat, or one that carries a secret.</summary>
+public enum Unfit { Repeats, Secret, Streams }
+
+/// <summary>Enqueues an operation that can't run as a job: one that isn't safe to repeat, carries a secret, or streams.</summary>
 [Operation("probe.enqueue_unfit", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
-public sealed record EnqueueUnfit(string Tenant, bool Secret) : IOperation<Unit>, IScopedOperation
+public sealed record EnqueueUnfit(string Tenant, Unfit Why) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
 }
@@ -112,9 +114,30 @@ internal sealed class EnqueueUnfitHandler(IJobs jobs) : IOperationHandler<Enqueu
 {
     public async Task<Result<Unit>> HandleAsync(EnqueueUnfit operation, OperationContext context, CancellationToken ct)
     {
-        IOperation unfit = operation.Secret ? new WithSecret(operation.Tenant, "1234") : new Trespass(operation.Tenant, operation.Tenant);
+        IOperation unfit = operation.Why switch
+        {
+            Unfit.Secret => new WithSecret(operation.Tenant, "1234"),
+            Unfit.Streams => new WatchNotes(operation.Tenant),
+            _ => new Trespass(operation.Tenant, operation.Tenant),
+        };
         await jobs.EnqueueAsync(unfit, null, ct);
         return Unit.Value;
+    }
+}
+
+[Operation("probe.watch_notes", "member")]
+public sealed record WatchNotes(string Tenant) : ISubscription<int>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class WatchNotesHandler : ISubscriptionHandler<WatchNotes, int>
+{
+    public async IAsyncEnumerable<int> SubscribeAsync(WatchNotes subscription, SubscriptionContext context,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Yield();
+        yield return 1;
     }
 }
 

@@ -81,6 +81,11 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             ?? throw new InvalidOperationException("A job is enqueued only from inside an operation, in its transaction.");
         var descriptor = dispatcher.Catalog.Find(operation.GetType())
             ?? throw new ArgumentException($"{operation.GetType().Name} isn't in the catalog.", nameof(operation));
+        if (descriptor.Streams)
+        {
+            throw new InvalidOperationException(
+                $"{descriptor.Name} streams, and a job runs an operation that answers once. Enqueue an operation that does the work instead.");
+        }
         if (descriptor.Idempotency == Idempotency.None)
         {
             throw new InvalidOperationException(

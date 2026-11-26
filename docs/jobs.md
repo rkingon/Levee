@@ -18,7 +18,7 @@ await jobs.EnqueueAsync(new SendReceipt(order.Id), new JobOptions { Queue = "mai
 - **Enqueued in the caller's transaction:** if the operation rolls back, the job was never enqueued.
 - **Run as a `JobPrincipal`** for whoever enqueued it, in the scope their credentials carried (a caller-scoped
   operation's). Register an `IJobPrincipals` to turn that subject back into the app's own principal.
-- **At least once.** An operation declaring `Idempotency.None` can't be enqueued. One carrying a `[Secret]` anywhere in its
+- **At least once.** An operation declaring `Idempotency.None` can't be enqueued, nor a subscription (a job answers once). One carrying a `[Secret]` anywhere in its
   input is refused unless jobs seal their inputs.
 - **Failures:** a transient one (`Unavailable`, `internal`) is retried with Oxbow's backoff, or after the failure's own
   `RetryAfter` when it has one (a vendor's rate limit); anything else cancels the job.

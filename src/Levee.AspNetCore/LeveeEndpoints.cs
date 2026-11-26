@@ -155,7 +155,8 @@ public static class LeveeEndpointRouteBuilderExtensions
                 {
                     yield break;
                 }
-                while (channel.Reader.TryRead(out var next))
+                // Up to the recheck's deadline: a producer that keeps the channel full mustn't put the recheck off.
+                while (DateTimeOffset.UtcNow < recheckAt && channel.Reader.TryRead(out var next))
                 {
                     yield return next;
                     if (next.EventType == "error")
