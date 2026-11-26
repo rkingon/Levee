@@ -151,14 +151,19 @@ public sealed class SixthAuditTests
 
     [Theory]
     [InlineData("Adapter", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", true)]
-    [InlineData("Adapter", "public sealed class Side { private readonly Npgsql.NpgsqlDataSource? _source; }", true)]
+    [InlineData("Adapter", "public sealed class Side(Lazy<Npgsql.NpgsqlConnection> connection) { }", true)]
     [InlineData("Host", "public sealed class Side(Npgsql.NpgsqlDataSource source) { }", true)]
+    [InlineData("Host", "public static class Endpoints { public static Func<Npgsql.NpgsqlConnection, int> Delete => (Npgsql.NpgsqlConnection c) => 0; }", true)]
+    [InlineData("Host", "public static class Side { public static object? Go(IServiceProvider sp) => sp.GetService(typeof(Npgsql.NpgsqlConnection)); }", true)]
+    [InlineData("Host", "public static class Side { public static object? Go(IServiceProvider sp) => sp.GetService(typeof(Npgsql.NpgsqlDataSource)); }", false)]
+    [InlineData("Adapter", "public sealed record Tx(System.Data.Common.DbConnection Connection);", false)]
+    [InlineData("Adapter", "public sealed class Ledger { private System.Data.Common.DbConnection? Connection => null; }", false)]
     [InlineData("Tool", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", false)]
     public async Task A_connection_the_container_hands_over_is_one_of_its_own(string role, string declaration, bool refused)
     {
         var output = await Compile(role, Data + declaration + "\npublic static class Entry { public static void Main() { } }");
 
-        Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
+        Assert.True(refused == output.Ids.Contains("LEVEE018"), string.Join("\n", output.Errors.Select(e => e.GetMessage(System.Globalization.CultureInfo.InvariantCulture))));
     }
 
     [Fact]

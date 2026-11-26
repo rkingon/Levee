@@ -154,7 +154,8 @@ public sealed class OperationCatalog
 
     public OperationDescriptor? Find(Type inputType) => _byType.GetValueOrDefault(inputType);
 
-    internal static Result<IOperation> Deserialize(OperationDescriptor descriptor, JsonElement input, JsonSerializerOptions json)
+    // refused: told of an exception the input's own type threw that isn't a validation's, so its message stays in the log.
+    internal static Result<IOperation> Deserialize(OperationDescriptor descriptor, JsonElement input, JsonSerializerOptions json, Action<Exception>? refused = null)
     {
         try
         {
@@ -169,11 +170,17 @@ public sealed class OperationCatalog
         {
             return Error.InvalidInput(e, descriptor.Name);
         }
-        // A record that validates in its constructor, or an app's converter (a typed id, a value object), refusing the client's
-        // value, whatever it throws.
-        catch (Exception e) when (e is not OperationCanceledException)
+        // A record that validates in its constructor, or an app's converter (a typed id), refusing the client's value.
+        catch (Exception e) when (e is ArgumentException or FormatException or OverflowException)
         {
             return Error.InvalidInput(new JsonException(e.Message, "$", null, null, e), descriptor.Name);
+        }
+        // Anything else it throws (a value object's own exception, a bug) still refuses the input, but its message may hold
+        // anything, so the client hears only that, and the log the rest.
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            refused?.Invoke(e);
+            return Error.Validation(LeveeErrors.InvalidInput, $"{descriptor.Name}: its input was refused.");
         }
     }
 }

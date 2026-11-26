@@ -248,6 +248,31 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                 + "tenant's operations would see and change all of its rows. Fix: in the migration that creates it, EnableScopeIsolation(table, column) for a "
                 + "table of one scope's rows, or ShareAcrossScopes(table) for one every scope reads and only platform operations write.");
         }
+        // A view reads with its owner's rights unless it's security_invoker: owned by a superuser or a role that bypasses
+        // row-level security, it hands every scope every row.
+        var views = db.Model.GetRelationalModel().Views
+            .Select(v => v.Schema is { } schema ? $"{Quote(schema)}.{Quote(v.Name)}" : Quote(v.Name))
+            .Distinct()
+            .ToArray();
+        if (views.Length == 0)
+        {
+            return;
+        }
+        var around = await db.Database.SqlQuery<string>($"""
+            select v as "Value"
+            from unnest({views}) v
+            left join pg_catalog.pg_class c on c.oid = to_regclass(v)
+            left join pg_catalog.pg_roles r on r.oid = c.relowner
+            where c.oid is null
+              or not (coalesce(c.reloptions @> array['security_invoker=true'], false) or (not r.rolsuper and not r.rolbypassrls))
+            """).ToListAsync(ct);
+        if (around.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{string.Join(", ", around.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))} reads around "
+                + "row-level security (or doesn't exist yet): a view reads with its owner's rights, and its owner is a superuser or bypasses "
+                + "it. Fix: create the view with (security_invoker = true), or have it owned by a role that is neither.");
+        }
     }
 
     private void Verify()
@@ -274,8 +299,9 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                         // Any other integrity rule, or a trigger's refusal, at a statement or at COMMIT (deferred): not transient.
                         _ when pg.SqlState.StartsWith("23", StringComparison.Ordinal) || pg.SqlState == PostgresErrorCodes.RaiseException =>
                             Error.Conflict(LeveeErrors.ConstraintViolation, $"The database refused it ({pg.ConstraintName ?? pg.MessageText})."),
-                        // A data exception: a value its column's type refuses, such as a scope key that isn't the policy's uuid.
-                        _ when pg.SqlState.StartsWith("22", StringComparison.Ordinal) =>
+                        // A value its column's type refuses, such as a scope key that isn't the policy's uuid. The rest of class 22
+                        // (division by zero, a bad regex) is the SQL's own bug.
+                        "22P02" or "22003" or "22001" or "22007" or "22008" or "22021" =>
                             Error.Validation(LeveeErrors.InvalidValue, $"The database refused a value: {pg.MessageText}."),
                         PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected =>
                             Error.Unavailable(LeveeErrors.Contention, "It collided with another change; try again."),

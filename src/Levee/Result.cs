@@ -134,7 +134,10 @@ public static class LeveeErrors
     /// </summary>
     public const string Stale = "store.stale";
 
-    /// <summary>The store refused a value as its column's type (a scope key that isn't a uuid, a number out of range).</summary>
+    /// <summary>
+    /// The store refused a value as its column's type: invalid text for the type (a scope key that isn't the policy's uuid),
+    /// out of range, too long, a malformed date. The rest of SQL's data exceptions are the query's own bug.
+    /// </summary>
     public const string InvalidValue = "store.invalid_value";
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)

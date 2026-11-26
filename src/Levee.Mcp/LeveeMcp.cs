@@ -115,10 +115,10 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         var schema = LeveeJson.Schema(d.InputType, levee.Json);
         if (schema is JsonObject root)
         {
-            (root["properties"] as JsonObject)?.ToList().Where(p => bound.Contains(p.Key)).ToList().ForEach(p => ((JsonObject)root["properties"]!).Remove(p.Key));
+            (root["properties"] as JsonObject)?.ToList().Where(p => bound.Contains(p.Key, StringComparer.OrdinalIgnoreCase)).ToList().ForEach(p => ((JsonObject)root["properties"]!).Remove(p.Key));
             if (root["required"] is JsonArray required)
             {
-                foreach (var name in required.Where(n => n is not null && bound.Contains(n.GetValue<string>())).ToList())
+                foreach (var name in required.Where(n => n is not null && bound.Contains(n.GetValue<string>(), StringComparer.OrdinalIgnoreCase)).ToList())
                 {
                     required.Remove(name);
                 }
@@ -148,8 +148,15 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
             ? (name, input, ct) => remote(request, name, input, ct)
             : await InProcessAsync(request);
         var bound = mcp.Bind is { } bind ? await bind(request, descriptor) : null;
-        return await CallAsync(send, request.Params?.Arguments, bound, cancellationToken);
+        var log = request.Services?.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()?.CreateLogger("Levee.Mcp");
+        return await CallAsync(send, request.Params?.Arguments, bound, cancellationToken, log);
     }
+
+    private static readonly Action<Microsoft.Extensions.Logging.ILogger, string, Exception?> RenderFailedMessage =
+        Microsoft.Extensions.Logging.LoggerMessage.Define<string>(Microsoft.Extensions.Logging.LogLevel.Error, new(1, "RenderFailed"),
+            "Rendering {Operation}'s result failed; answered as JSON");
+
+    private static void RenderFailed(Microsoft.Extensions.Logging.ILogger log, Exception e, string operation) => RenderFailedMessage(log, operation, e);
 
     private async Task<Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>>> InProcessAsync(RequestContext<CallToolRequestParams> request)
     {
@@ -163,7 +170,8 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
 
     /// <summary>The call itself: the arguments, bound inputs over them, as the operation's input; the result or the problem as the answer.</summary>
     internal async Task<CallToolResult> CallAsync(Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send,
-        IDictionary<string, JsonElement>? arguments, IReadOnlyDictionary<string, JsonElement>? bound, CancellationToken ct)
+        IDictionary<string, JsonElement>? arguments, IReadOnlyDictionary<string, JsonElement>? bound, CancellationToken ct,
+        Microsoft.Extensions.Logging.ILogger? log = null)
     {
         // A bound input is the server's alone: whatever the model sent for it is dropped, and the server must supply it.
         var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
@@ -188,7 +196,20 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         {
             return Failed(result.Error);
         }
-        if (mcp.Render?.Invoke(descriptor, result.Value) is { } rendered)
+        // After the commit: a Render that fails is the server's bug, and the result still goes back, as JSON.
+        IList<ContentBlock>? rendered = null;
+        try
+        {
+            rendered = mcp.Render?.Invoke(descriptor, result.Value);
+        }
+        catch (Exception e)
+        {
+            if (log is not null)
+            {
+                RenderFailed(log, e, descriptor.Name);
+            }
+        }
+        if (rendered is not null)
         {
             return new CallToolResult { Content = rendered };
         }

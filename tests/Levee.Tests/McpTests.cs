@@ -120,6 +120,25 @@ public sealed class McpTests
     }
 
     [Fact]
+    public async Task A_render_that_fails_answers_the_result_as_json()
+    {
+        var (send, tools) = Build(new LeveeMcpOptions { Render = (_, _) => throw new InvalidOperationException("The renderer's bug.") });
+
+        var said = await tools.Single(t => t.ProtocolTool.Name == "probe_echo")
+            .CallAsync(send, new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("hi") }, null, CancellationToken.None);
+
+        Assert.Equal("""{"said":"hi"}""", Assert.IsType<TextContentBlock>(Assert.Single(said.Content)).Text);
+    }
+
+    [Fact]
+    public void A_bound_input_leaves_the_schema_in_any_casing()
+    {
+        var (_, tools) = Build(new LeveeMcpOptions { BoundInputs = ["Text"], Bind = (_, _) => default });
+
+        Assert.False(tools.Single(t => t.ProtocolTool.Name == "probe_echo").ProtocolTool.InputSchema.GetProperty("properties").TryGetProperty("text", out _));
+    }
+
+    [Fact]
     public void A_server_with_no_dispatcher_projects_a_catalog_it_sends_over_the_wire()
     {
         var services = new ServiceCollection();

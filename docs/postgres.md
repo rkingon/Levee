@@ -29,7 +29,9 @@ what `LeveeSchema.Grants(role)` prints:
 - every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
   Every table the app's context writes to, however it's mapped (split across tables, beside a view, found through the
   search path), must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the
-  app's own): one without is found before the first operation, which fails with the fix. A forgotten policy fails closed
+  app's own), and every view it reads must be `security_invoker` or owned by a role that is neither a superuser nor
+  bypasses row-level security (a view reads with its owner's rights, so otherwise it hands every scope every row): one
+  that isn't is found before the first operation, which fails with the fix. A forgotten policy fails closed
   rather than opening the table to every tenant. A table the context doesn't map isn't checked;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps

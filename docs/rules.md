@@ -324,7 +324,9 @@ Every other rule holds: it drives the application only through the dispatcher, l
 
 A connection of its own (`new NpgsqlConnection`, a `DbDataSource`'s, an `IDbContextFactory`'s context, a design-time
 factory's `CreateDbContext`, which is `dotnet ef`'s to call, `new` on a context, the context's own connection through
-`GetDbConnection`, or EF's accessor to its internal services, `GetService<T>`) is outside the operation's transaction, or can be: not read-only when the operation declares only reads, not rolled back with it, not audited, and
+`GetDbConnection`, EF's accessor to its internal services, `GetService<T>`, or a connection or data source the container
+hands over, to a constructor, an endpoint's or action's parameter, or an injected property) is outside the operation's
+transaction, or can be: not read-only when the operation declares only reads, not rolled back with it, not audited, and
 free to set its own scope.
 
 ```csharp
@@ -335,8 +337,10 @@ await using var connection = await dataSource.OpenConnectionAsync(ct);
 internal sealed class Ledger(AppDbContext db, IAmbientTransaction ambient) : ILedger { ... }
 ```
 
-A record that must survive the operation rolling back (a paid vendor call) is an internal operation, dispatched as the
-system. Work as the database's owner is a Tool's.
+Holding the operation's own connection, from `IAmbientTransaction`, in a field or a record is fine: it's the
+transaction's. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
+dispatched as the system. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
+to configure the context with.
 
 ## LEVEE019: Aggregate roots live in Domain
 

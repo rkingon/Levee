@@ -77,7 +77,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, options.Json);
+        var subscription = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -173,7 +173,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.Streams, $"{descriptor.Name} streams: subscribe to it.");
         }
-        var operation = OperationCatalog.Deserialize(descriptor, input, options.Json);
+        var operation = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
@@ -247,7 +247,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return found.Error;
         }
-        var operation = OperationCatalog.Deserialize(found.Value, input, options.Json);
+        var operation = OperationCatalog.Deserialize(found.Value, input, options.Json, e => LogInputRefused(log, e, found.Value.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
@@ -402,10 +402,28 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>
-    /// The operation's own result stands, committed or not: a recorder failing (to be built, to record, within
-    /// <see cref="LeveeOptions.OutcomeTimeout"/>, to be disposed) is its bug, not the caller's.
+    /// The operation's own result stands, committed or not: a recorder failing (to be built, to record, to be disposed) is its
+    /// bug, not the caller's, and the caller waits on them all for no longer than <see cref="LeveeOptions.OutcomeTimeout"/>.
     /// </summary>
     private async Task RecordOutcomeAsync(OperationOutcome outcome, CancellationToken ct)
+    {
+        // Not disposed when the recorders outlast it: they may still hold its token.
+        var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(options.OutcomeTimeout);
+        // On the pool, the scope and every recorder in it: one that blocks before its first await is bounded too.
+        var recording = Task.Run(() => RecordAllAsync(outcome, bounded.Token), CancellationToken.None);
+        try
+        {
+            await recording.WaitAsync(options.OutcomeTimeout, CancellationToken.None);
+            bounded.Dispose();
+        }
+        catch (TimeoutException e)
+        {
+            LogOutcomeFailed(log, e, outcome.Operation.Name, $"the recorders, past {options.OutcomeTimeout}");
+        }
+    }
+
+    private async Task RecordAllAsync(OperationOutcome outcome, CancellationToken ct)
     {
         var recorder = "the recorders' scope";
         try
@@ -416,11 +434,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 recorder = each.GetType().Name;
                 try
                 {
-                    // Bounded: after the commit the caller is waiting, and a recorder that hangs is its bug.
-                    using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    bounded.CancelAfter(options.OutcomeTimeout);
-                    // On the pool: a recorder that blocks before its first await is bounded too.
-                    await Task.Run(() => each.RecordAsync(outcome, bounded.Token), CancellationToken.None).WaitAsync(options.OutcomeTimeout, CancellationToken.None);
+                    await each.RecordAsync(outcome, ct);
                 }
                 catch (Exception e)
                 {
@@ -461,6 +475,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     [LoggerMessage(Level = LogLevel.Error, Message = "Recording how {Operation} ended failed in {Recorder}")]
     private static partial void LogOutcomeFailed(ILogger logger, Exception exception, string operation, string recorder);
 
+    [LoggerMessage(Level = LogLevel.Warning, Message = "{Operation}'s input was refused by its own type")]
+    private static partial void LogInputRefused(ILogger logger, Exception exception, string operation);
+
     [LoggerMessage(Level = LogLevel.Error, Message = "{Input}, the input of an operation, couldn't be serialized for its outcome")]
     private static partial void LogUnredactable(ILogger logger, Exception exception, string input);
 
@@ -500,8 +517,9 @@ public sealed class LeveeOptions
     public TimeSpan SubscriptionRecheck { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// How long each <see cref="IOperationOutcome"/> has to record how an operation ended. The caller waits for them, after
-    /// the commit too, so one that takes longer is cancelled, logged, and left running, unawaited.
+    /// How long the <see cref="IOperationOutcome"/> recorders, together, have to record how an operation ended: built,
+    /// recording and disposed. The caller waits for them, after the commit too, so past it they're cancelled, logged, and left
+    /// running, unawaited.
     /// </summary>
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }

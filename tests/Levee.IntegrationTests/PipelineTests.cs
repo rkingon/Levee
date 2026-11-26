@@ -552,6 +552,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
                 create table split_detail (id uuid primary key, note text);
                 create table viewed (id uuid primary key, tenant text not null);
                 create view viewed_v as select * from viewed;
+                create view viewed_invoker_v with (security_invoker = true) as select * from viewed;
+                grant select on viewed_v, viewed_invoker_v to app;
                 create schema by_path;
                 grant usage on schema by_path to app;
                 create table by_path.found_by_path (id uuid primary key, tenant text not null);
@@ -561,7 +563,9 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
 
         Assert.Contains("split_detail", await Refusal<SplitDb>(postgres.App), StringComparison.Ordinal);
-        Assert.Null(await RefusalOrNull<ViewedDb>(postgres.App));
+        // The fixture's owner is a superuser, as a container's is: a plain view reads every row.
+        Assert.Contains("viewed_v reads around row-level security", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
+        Assert.Null(await RefusalOrNull<InvokerViewedDb>(postgres.App));
         Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
     }
 
@@ -612,6 +616,74 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
             modelBuilder.Entity<Ledger>(e =>
             {
                 e.ToTable("viewed").ToView("viewed_v");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    private sealed class InvokerViewedDb(DbContextOptions<InvokerViewedDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("viewed").ToView("viewed_invoker_v");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    [Fact]
+    public async Task Postgres_own_refusals_are_classified_as_they_happen()
+    {
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var create = new NpgsqlCommand("create table plans (id uuid primary key, tenant text not null); "
+                + LeveeSchema.Shared("plans") + " insert into plans values ('00000000-0000-0000-0000-000000000001', 'any');", owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddDbContext<PlansDb>(o => o.UseNpgsql(postgres.App));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<PlansDb>();
+        using var host = builder.Build();
+        async Task<Error?> Refused(Func<PlansDb, Task> work)
+        {
+            await using var scope = host.Services.CreateAsyncScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>();
+            await using var unit = await factory.BeginAsync(new WorkScope("acme", ReadOnly: false), Ct);
+            try
+            {
+                await work(scope.ServiceProvider.GetRequiredService<PlansDb>());
+                return null;
+            }
+            catch (Exception e)
+            {
+                return factory.Classify(e);
+            }
+        }
+
+        // A scope's write to a shared row: row-level security hides it from the update, so no row changes.
+        var stale = await Refused(async db =>
+        {
+            db.Update(new Ledger(Guid.Parse("00000000-0000-0000-0000-000000000001"), "mine"));
+            await db.SaveChangesAsync(Ct);
+        });
+        var value = await Refused(db => db.Database.ExecuteSqlRawAsync("select 'not-a-uuid'::uuid", Ct));
+        var bug = await Refused(db => db.Database.ExecuteSqlRawAsync("select 1/0", Ct));
+
+        Assert.Equal(LeveeErrors.Stale, stale?.Code);
+        Assert.Equal(LeveeErrors.InvalidValue, value?.Code);
+        Assert.Null(bug);
+    }
+
+    private sealed class PlansDb(DbContextOptions<PlansDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("plans");
                 e.Property(l => l.Id).HasColumnName("id");
                 e.Property(l => l.Tenant).HasColumnName("tenant");
             });

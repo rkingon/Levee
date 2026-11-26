@@ -48,7 +48,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
             if (role != Role.Tool)
             {
-                start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Field, SymbolKind.Property);
+                start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Property);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnLambda(c)), OperationKind.AnonymousFunction);
             }
             // A Tool runs as the owner before the app exists: its transaction and its connections are its own.
             if (role != Role.Tool)
@@ -276,26 +277,57 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     /// <summary>
     /// A connection or data source taken from the container (Npgsql's AddNpgsqlDataSource registers both) is a connection of
-    /// its own just the same: its commands run outside the operation's transaction.
+    /// its own just the same: its commands run outside the operation's transaction. Judged where the container hands it over
+    /// (a constructor, an endpoint's or action's parameter, an injected property), so holding the operation's own connection,
+    /// from IAmbientTransaction, in a field or a record is fine.
     /// </summary>
     private static void OnHeld(SymbolAnalysisContext context)
     {
         var held = context.Symbol switch
         {
-            IMethodSymbol { MethodKind: MethodKind.Constructor } constructor => constructor.Parameters.Select(p => ((ISymbol)p, p.Type)),
-            IFieldSymbol { IsImplicitlyDeclared: false } field => [(field, field.Type)],
-            IPropertySymbol { IsImplicitlyDeclared: false } property => [(property, property.Type)],
+            // A record is data its maker fills (the ambient connection and transaction), not a service the container builds.
+            IMethodSymbol { MethodKind: MethodKind.Constructor } constructor when !constructor.ContainingType.IsRecord => constructor.Parameters.Cast<ISymbol>(),
+            IMethodSymbol { DeclaredAccessibility: Accessibility.Public, MethodKind: MethodKind.Ordinary } action
+                when Derives(action.ContainingType, "Microsoft.AspNetCore.Mvc.ControllerBase") => action.Parameters.Cast<ISymbol>(),
+            IMethodSymbol method => method.Parameters.Where(Injected).Cast<ISymbol>(),
+            IPropertySymbol property when Injected(property) => [property],
             _ => [],
         };
-        foreach (var (symbol, type) in held)
+        foreach (var symbol in held)
         {
-            if ((Derives(type as INamedTypeSymbol, "System.Data.Common.DbConnection") || Derives(type as INamedTypeSymbol, "System.Data.Common.DbDataSource"))
-                && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
-            {
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, location, $"{symbol.Name}, a {type.Name} it holds,"));
-            }
+            Report(context.ReportDiagnostic, symbol, symbol is IParameterSymbol p ? p.Type : ((IPropertySymbol)symbol).Type);
         }
     }
+
+    /// <summary>A minimal API's handler takes its services as parameters: a lambda's are handed over by the container.</summary>
+    private static void OnLambda(OperationAnalysisContext context)
+    {
+        foreach (var parameter in ((IAnonymousFunctionOperation)context.Operation).Symbol.Parameters)
+        {
+            Report(context.ReportDiagnostic, parameter, parameter.Type);
+        }
+    }
+
+    private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is
+        "FromServicesAttribute" or "FromKeyedServicesAttribute" or "InjectAttribute");
+
+    private static void Report(Action<Diagnostic> report, ISymbol symbol, ITypeSymbol type)
+    {
+        if (Connection(type) is { } connection && symbol.Locations.FirstOrDefault() is { IsInSource: true } location
+            && !Known.IsLeveeGenerated(location.SourceTree))
+        {
+            report(Diagnostic.Create(Descriptors.SideConnection, location, $"{symbol.Name}, a {connection.Name} the container hands it,"));
+        }
+    }
+
+    /// <summary>A connection or data source type, or one wrapped (Lazy&lt;T&gt;, IEnumerable&lt;T&gt;, Func&lt;T&gt;).</summary>
+    private static INamedTypeSymbol? Connection(ITypeSymbol? type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named, "System.Data.Common.DbConnection") || Derives(named, "System.Data.Common.DbDataSource") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(Connection).FirstOrDefault(c => c is not null),
+        IArrayTypeSymbol array => Connection(array.ElementType),
+        _ => null,
+    };
 
     private static void OnMethodGroup(OperationAnalysisContext context, Role role) =>
         OnCall(context, role, ((IMethodReferenceOperation)context.Operation).Method);
@@ -362,6 +394,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
             || IsLeveeUnitOfWork(method)))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
+        }
+        else if (role != Role.Tool && LocatorMembers.Contains(method.Name) && IsLocator(method)
+            && (method.TypeArguments.Select(Connection).FirstOrDefault(c => c is not null)
+                ?? (context.Operation as IInvocationOperation)?.Arguments.Select(a => (a.Value as ITypeOfOperation)?.TypeOperand).Select(Connection).FirstOrDefault(c => c is not null)) is { } located
+            // Composition and a Host resolve the data source to configure the context with; a connection is the side door.
+            && (!Roles.Composes(role) || Derives(located, "System.Data.Common.DbConnection")))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"{method.Name}<{located.Name}>"));
         }
         else if (!Roles.Composes(role) && LocatorMembers.Contains(method.Name) && IsLocator(method))
         {

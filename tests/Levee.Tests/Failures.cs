@@ -725,3 +725,55 @@ public sealed class SixthAuditFixTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"{clock.Elapsed}");
     }
 }
+
+public sealed record Leaky
+{
+    public Leaky(string value) => Value = value.Length > 0 ? value : throw new InvalidOperationException("connection=Host=db;Password=hunter2");
+
+    public string Value { get; }
+}
+
+[Operation("probe.leaky", "member", Platform = true)]
+public sealed record LeakyInput(Leaky Value) : IOperation<Unit>;
+
+internal sealed class LeakyInputHandler : IOperationHandler<LeakyInput, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(LeakyInput operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+internal sealed class SlowToBuild : IOperationOutcome
+{
+    public SlowToBuild() => Thread.Sleep(3000);
+
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => Task.CompletedTask;
+}
+
+public sealed class SeventhAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Fact]
+    public async Task An_inputs_own_exception_tells_the_client_only_that_it_was_refused()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendFromClientAsync("probe.leaky", System.Text.Json.JsonDocument.Parse("""{"value":{"value":""}}""").RootElement.Clone(), Admin, CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
+        Assert.DoesNotContain("hunter2", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_recorder_slow_to_build_is_bounded_too()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes(), more: s => s
+            .AddScoped<IOperationOutcome, SlowToBuild>()
+            .AddSingleton(new LeveeOptions { OutcomeTimeout = TimeSpan.FromMilliseconds(100) })).GetRequiredService<Dispatcher>();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"{clock.Elapsed}");
+    }
+}

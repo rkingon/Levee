@@ -36,7 +36,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 
 ### Levee.EntityFrameworkCore
 - Every table the app's context writes to, however it's mapped, has forced row-level security and a policy (`Isolation`,
-  `Shared`, or the app's own), checked before the first operation: a forgotten policy fails closed. Refusals classified
+  `Shared`, or the app's own), and every view it reads is `security_invoker` or owned by a role row-level security holds,
+  checked before the first operation: a forgotten policy fails closed. Refusals classified
   as `store.stale` (no row to change) and `store.invalid_value` besides the others.
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level
   security, COMMIT never cancelled by the caller, store failures classified (undeclared writes, scope violations,
@@ -61,4 +62,4 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   results, and a remote mode for a server with no dispatcher of its own.
 
 ### Levee.Cli
-- `dotnet levee`: `new`, `generate operation`, `catalog`, `check`, `explain`, `db schema|isolate|grants`.
+- `dotnet levee`: `new`, `generate operation`, `catalog`, `check`, `explain`, `db schema|isolate|share|grants`.
