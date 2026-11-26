@@ -108,6 +108,7 @@ Where the apps disagreed before Levee, and what it chose.
 | A conventional stale-write conflict | An expected-version input over EF's concurrency tokens, one error code across every projection; the operation chooses whether it needs one. |
 | A contract diff | `dotnet levee` compares a published catalog with a candidate: new required inputs, removed error codes, renames that strand clients or queued jobs. |
 | Telemetry, through .NET's own APIs | A `Meter("Levee")` (operation duration, outcomes by kind and code) beside the `ActivitySource`, spans for subscriptions, jobs, authorization and admission under OpenTelemetry's conventions, the enqueuer's trace carried into its job, and the source and meter names for an app's exporter. No OpenTelemetry dependency in the core. |
+| Positioning | "The .NET framework that keeps your AI in check": wrong code fails the build with the fix in the error, and what the build can't see, Postgres refuses. The README's opening and every package's description lead with it. |
 | Port and adapter scaffolding | `dotnet levee generate port`: the Application port, the Adapter implementing it and its selection, for the vendor's behaviour to be filled in. |
 
 ## Open
