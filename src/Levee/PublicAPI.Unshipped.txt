@@ -444,3 +444,5 @@ virtual Levee.Principal.PrintMembers(System.Text.StringBuilder! builder) -> bool
 ~override Levee.Unit.ToString() -> string
 Levee.LeveeOptions.OutcomeTimeout.get -> System.TimeSpan
 Levee.LeveeOptions.OutcomeTimeout.set -> void
+const Levee.LeveeErrors.InvalidValue = "store.invalid_value" -> string!
+const Levee.LeveeErrors.Stale = "store.stale" -> string!

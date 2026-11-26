@@ -642,3 +642,86 @@ public sealed class MarksTests
         Assert.DoesNotContain("example.com", LeveeJson.Redact(new ViaBase { Email = "ada@example.com" }, typeof(ViaBase)), StringComparison.Ordinal);
     }
 }
+
+public sealed class ValueObjectValidationException(string message) : Exception(message);
+
+public sealed record Email
+{
+    public Email(string value) => Value = value.Contains('@', StringComparison.Ordinal) ? value : throw new ValueObjectValidationException("Not an email.");
+
+    public string Value { get; }
+}
+
+[Operation("probe.validated", "member", Platform = true)]
+public sealed record Validated(Email Email) : IOperation<Unit>;
+
+internal sealed class ValidatedHandler : IOperationHandler<Validated, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Validated operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed record Unserializable
+{
+    public string Broken => throw new InvalidOperationException("A getter's bug.");
+}
+
+[Operation("probe.unserializable", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AnswerUnserializable : IOperation<Unserializable>;
+
+internal sealed class AnswerUnserializableHandler : IOperationHandler<AnswerUnserializable, Unserializable>
+{
+    public Task<Result<Unserializable>> HandleAsync(AnswerUnserializable operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<Unserializable>>(new Unserializable());
+}
+
+internal sealed class Blocking : IOperationOutcome
+{
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct)
+    {
+        Thread.Sleep(3000);
+        return Task.CompletedTask;
+    }
+}
+
+public sealed class SixthAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    private static System.Text.Json.JsonElement Json(string json) => System.Text.Json.JsonDocument.Parse(json).RootElement.Clone();
+
+    [Fact]
+    public async Task Any_exception_from_an_inputs_own_type_is_invalid_input()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendFromClientAsync("probe.validated", Json("""{"email":{"value":"nope"}}"""), Admin, CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_result_that_cant_be_serialized_rolls_the_write_back()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendFromClientAsync("probe.unserializable", Json("{}"), Admin, CancellationToken.None);
+
+        Assert.Equal(ErrorKind.Internal, result.Error!.Kind);
+        Assert.Equal(0, store.Commits);
+    }
+
+    [Fact]
+    public async Task A_recorder_that_blocks_is_bounded_too()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes(), more: s => s
+            .AddSingleton<IOperationOutcome, Blocking>()
+            .AddSingleton(new LeveeOptions { OutcomeTimeout = TimeSpan.FromMilliseconds(100) })).GetRequiredService<Dispatcher>();
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"{clock.Elapsed}");
+    }
+}

@@ -133,3 +133,40 @@ public sealed class FifthAuditTests
         Assert.Contains("LEVEE104", output.Ids);
     }
 }
+
+/// <summary>What the sixth independent audit found.</summary>
+public sealed class SixthAuditTests
+{
+    private static Task<Probe.Output> Compile(string role, string source, string assembly = "App", params MetadataReference[] more) =>
+        Probe.CompileAsync(new Probe.Settings(role, Exe: role is "Tool" or "Host"), "using System;\nusing Levee;\n" + source, assembly, [GeneratorTests.Levee, .. more]);
+
+    private const string Data = """
+        namespace System.Data.Common { public abstract class DbConnection { } public abstract class DbDataSource { } }
+        namespace Npgsql
+        {
+            public sealed class NpgsqlConnection : System.Data.Common.DbConnection { }
+            public sealed class NpgsqlDataSource : System.Data.Common.DbDataSource { }
+        }
+        """;
+
+    [Theory]
+    [InlineData("Adapter", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", true)]
+    [InlineData("Adapter", "public sealed class Side { private readonly Npgsql.NpgsqlDataSource? _source; }", true)]
+    [InlineData("Host", "public sealed class Side(Npgsql.NpgsqlDataSource source) { }", true)]
+    [InlineData("Tool", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", false)]
+    public async Task A_connection_the_container_hands_over_is_one_of_its_own(string role, string declaration, bool refused)
+    {
+        var output = await Compile(role, Data + declaration + "\npublic static class Entry { public static void Main() { } }");
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
+    }
+
+    [Fact]
+    public async Task A_shared_bases_indexer_is_a_way_in()
+    {
+        var shared = await Compile("Kernel", "namespace App.Kernel;\npublic abstract class Lookup { public abstract string this[string key] { get; } }", "App.Kernel");
+        var output = await Compile("Application", "namespace App;\npublic sealed class Thing : App.Kernel.Lookup { public override string this[string key] => key; }", "App.Application", shared.Reference());
+
+        Assert.Contains("LEVEE016", output.Ids);
+    }
+}

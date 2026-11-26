@@ -178,13 +178,17 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return operation.Error;
         }
-        var result = await RunAsync(descriptor, operation.Value, principal, ct);
-        return result.IsSuccess
-            ? Result<JsonElement>.Success(JsonSerializer.SerializeToElement(result.Value, descriptor.ResultType, options.Json))
-            : result.Error;
+        // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
+        var result = await RunAsync(descriptor, operation.Value, principal,
+            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, options.Json), ct);
+        return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
-    private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct)
+    private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
+        await RunAsync(descriptor, operation, principal, answer: null, ct);
+
+    private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
+        Func<object?, object?>? answer, CancellationToken ct)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
@@ -192,7 +196,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         Result<object?> result;
         try
         {
-            result = scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, principal, scoped.Value, ct) : scoped.Error;
+            result = scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, principal, scoped.Value, answer, ct) : scoped.Error;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -333,7 +337,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         };
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, WorkScope scope,
-        CancellationToken ct)
+        Func<object?, object?>? answer, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -376,6 +380,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 }
                 return result;
             }
+            if (answer is not null)
+            {
+                result = Result<object?>.Success(answer(result.Value));
+            }
             if (descriptor.Audited)
             {
                 await unit.AuditAsync(new AuditEntry(context.Now, scope.Key, principal.Subject, descriptor.Name, Redact(operation)), ct);
@@ -411,7 +419,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                     // Bounded: after the commit the caller is waiting, and a recorder that hangs is its bug.
                     using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
                     bounded.CancelAfter(options.OutcomeTimeout);
-                    await each.RecordAsync(outcome, bounded.Token).WaitAsync(options.OutcomeTimeout, CancellationToken.None);
+                    // On the pool: a recorder that blocks before its first await is bounded too.
+                    await Task.Run(() => each.RecordAsync(outcome, bounded.Token), CancellationToken.None).WaitAsync(options.OutcomeTimeout, CancellationToken.None);
                 }
                 catch (Exception e)
                 {
@@ -492,7 +501,7 @@ public sealed class LeveeOptions
 
     /// <summary>
     /// How long each <see cref="IOperationOutcome"/> has to record how an operation ended. The caller waits for them, after
-    /// the commit too, so one that takes longer is cancelled, logged, and left behind.
+    /// the commit too, so one that takes longer is cancelled, logged, and left running, unawaited.
     /// </summary>
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }

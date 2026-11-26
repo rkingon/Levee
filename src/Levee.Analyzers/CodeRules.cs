@@ -46,6 +46,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
+            if (role != Role.Tool)
+            {
+                start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Field, SymbolKind.Property);
+            }
             // A Tool runs as the owner before the app exists: its transaction and its connections are its own.
             if (role != Role.Tool)
             {
@@ -267,6 +271,29 @@ public sealed class CodeRules : DiagnosticAnalyzer
         else if (type is not null && type.ContainingNamespace?.ToDisplayString() == "Levee" && type.Name is "OperationCatalog" or "OperationCatalogPart")
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.CatalogByHand, context.Operation.Syntax.GetLocation(), $"new {type.Name}"));
+        }
+    }
+
+    /// <summary>
+    /// A connection or data source taken from the container (Npgsql's AddNpgsqlDataSource registers both) is a connection of
+    /// its own just the same: its commands run outside the operation's transaction.
+    /// </summary>
+    private static void OnHeld(SymbolAnalysisContext context)
+    {
+        var held = context.Symbol switch
+        {
+            IMethodSymbol { MethodKind: MethodKind.Constructor } constructor => constructor.Parameters.Select(p => ((ISymbol)p, p.Type)),
+            IFieldSymbol { IsImplicitlyDeclared: false } field => [(field, field.Type)],
+            IPropertySymbol { IsImplicitlyDeclared: false } property => [(property, property.Type)],
+            _ => [],
+        };
+        foreach (var (symbol, type) in held)
+        {
+            if ((Derives(type as INamedTypeSymbol, "System.Data.Common.DbConnection") || Derives(type as INamedTypeSymbol, "System.Data.Common.DbDataSource"))
+                && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, location, $"{symbol.Name}, a {type.Name} it holds,"));
+            }
         }
     }
 

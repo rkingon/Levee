@@ -128,10 +128,19 @@ public static class LeveeErrors
     /// <summary>The store couldn't be reached, or timed out: try again.</summary>
     public const string StoreUnavailable = "store.unavailable";
 
+    /// <summary>
+    /// An update or delete found no row to change: another write changed it first (a concurrency token), or it isn't the
+    /// operation's scope's (row-level security hides it). Nothing was written; repeating it as it is can't help.
+    /// </summary>
+    public const string Stale = "store.stale";
+
+    /// <summary>The store refused a value as its column's type (a scope key that isn't a uuid, a number out of range).</summary>
+    public const string InvalidValue = "store.invalid_value";
+
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         Internal, Unauthenticated, UnknownOperation, InvalidInput, Streams, AnswersOnce, ScopeMissing, ScopeUndeclared, CallerUnscoped, Cancelled, NotImplemented,
-        UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable,
+        UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable, Stale, InvalidValue,
     };
 }
 

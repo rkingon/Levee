@@ -169,8 +169,9 @@ public sealed class OperationCatalog
         {
             return Error.InvalidInput(e, descriptor.Name);
         }
-        // A record that validates in its constructor, or an app's converter (a typed id), refusing the client's value.
-        catch (Exception e) when (e is ArgumentException or FormatException or OverflowException)
+        // A record that validates in its constructor, or an app's converter (a typed id, a value object), refusing the client's
+        // value, whatever it throws.
+        catch (Exception e) when (e is not OperationCanceledException)
         {
             return Error.InvalidInput(new JsonException(e.Message, "$", null, null, e), descriptor.Name);
         }

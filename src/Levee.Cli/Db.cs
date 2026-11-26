@@ -10,7 +10,7 @@ internal static partial class Db
     public static void Run(Args args, TextWriter output)
     {
         var schema = Identifier(args.Option("schema") ?? "public", "schema");
-        switch (args.Positional(0, "schema, isolate or grants"))
+        switch (args.Positional(0, "schema, isolate, share or grants"))
         {
             case "schema":
                 output.WriteLine("-- Levee: scope functions and the audit");

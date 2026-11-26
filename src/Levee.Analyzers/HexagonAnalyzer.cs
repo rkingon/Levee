@@ -268,7 +268,7 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         for (var t = type.BaseType; t is not null; t = t.BaseType)
         {
             if (t.ContainingAssembly is { } a && roleOf(a) is Role.Kernel or Role.Contracts
-                && t.GetMembers().Any(m => (m.IsAbstract || m.IsVirtual) && !m.IsOverride && !m.IsImplicitlyDeclared && m.CanBeReferencedByName
+                && t.GetMembers().Any(m => (m.IsAbstract || m.IsVirtual) && !m.IsOverride && !m.IsImplicitlyDeclared && (m.CanBeReferencedByName || m is IPropertySymbol { IsIndexer: true })
                     && !ValueMembers.Contains(m.Name) && m.DeclaredAccessibility != Accessibility.Private))
             {
                 return t;

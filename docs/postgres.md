@@ -15,7 +15,8 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
 `ShareAcrossScopes("plans")`.
-`LeveeSchema.Create(schema)` and the `schema` arguments put everything in a schema other than `public`; every object is
+`LeveeSchema.Create(schema)` and the `schema` arguments put Levee's objects and the app's tables in a schema other than
+`public` (Oxbow's tables stay in `public`); every object is
 qualified by it, so policies and grants hold whatever a role's `search_path` is.
 
 `tests/Levee.IntegrationTests/PostgresFixture.cs` is the whole setup, run against Postgres 16 and 17 in CI.
@@ -26,9 +27,10 @@ The app connects as a role that is not a superuser, owns nothing and doesn't byp
 what `LeveeSchema.Grants(role)` prints:
 
 - every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
-  Every table the app's context maps must have forced row-level security and a policy (`Isolation` or `Shared`, or one
-  of the app's own): one without is found before the first operation, which fails with the fix. A forgotten policy fails
-  closed rather than opening the table to every tenant. A table the context doesn't map isn't checked;
+  Every table the app's context writes to, however it's mapped (split across tables, beside a view, found through the
+  search path), must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the
+  app's own): one without is found before the first operation, which fails with the fix. A forgotten policy fails closed
+  rather than opening the table to every tenant. A table the context doesn't map isn't checked;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
@@ -44,9 +46,11 @@ what `LeveeSchema.Grants(role)` prints:
 4. The audit record, for a write, through `levee_audit_write`.
 5. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 
-Postgres's refusals come back classified: a write in a read-only transaction is `effects.undeclared`, a write outside
-the scope is `scope.violation`, a duplicate is `conflict`, any other constraint or trigger refusal is `store.constraint`,
-and contention or an unreachable database is `Unavailable` (so jobs retry it).
+Postgres's refusals come back classified: a write in a read-only transaction is `effects.undeclared`, a row inserted or
+moved outside the scope is `scope.violation`, an update or delete that finds no row to change (another write changed it
+first, or row-level security hides it from this scope) is `store.stale`, a duplicate is `conflict`, any other constraint
+or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
+`store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 
 ## Outside an operation
 

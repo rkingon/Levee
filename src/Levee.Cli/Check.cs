@@ -40,14 +40,16 @@ internal static partial class Check
         var token = Guid.NewGuid().ToString("N");
         var (compiled, log) = await DotnetAsync(new Dictionary<string, string> { ["LEVEE_CHECK_TOKEN"] = token },
             "build", solution, "-p:RunAnalyzers=false", $"-p:LeveeCheck={token}", "-nodeReuse:false", "-nologo", "-v:q");
-        if (!compiled)
+        // The generator's rules (LEVEE101-111) run in this pass too: a project they fail is a finding, not a broken app, though
+        // the projects that reference it can't compile past it.
+        var findings = new ConcurrentBag<Finding>(compiled ? [] : Parse(log));
+        if (!compiled && (findings.IsEmpty || OtherError().IsMatch(log)))
         {
             throw new CliException($"The app doesn't compile, analyzers aside; fix that first:{Environment.NewLine}{log}");
         }
 
         // The solution's projects, the ones it compiled: a template or a sample beside them isn't the app.
         var projects = ProjectsOf(solution);
-        var findings = new ConcurrentBag<Finding>();
         await Parallel.ForEachAsync(projects, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) }, async (project, _) =>
         {
             var (_, text) = await DotnetAsync("build", project, "--no-dependencies", "--no-restore", "-nologo", "-v:q");
@@ -81,6 +83,10 @@ internal static partial class Check
             }
         }
         await output.WriteLineAsync($"{distinct.Count} findings in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
+        if (!compiled)
+        {
+            await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");
+        }
         return 1;
     }
 
@@ -96,6 +102,9 @@ internal static partial class Check
                 m.Groups["line"].Success ? int.Parse(m.Groups["line"].Value, System.Globalization.CultureInfo.InvariantCulture) : null,
                 m.Groups["message"].Value.Trim()))
             .Distinct();
+
+    [GeneratedRegex(@"\berror (?!LEVEE)[A-Z]+\d+:")]
+    private static partial Regex OtherError();
 
     [GeneratedRegex(@"^(?:(?<file>[^:(]+(?::[^:(]+)?)(?:\((?<line>\d+),\d+\))?\s*:\s*)?error (?<rule>LEVEE\d+): (?<message>.*?)\s*\[(?<project>[^\]]+\.csproj)\]$")]
     private static partial Regex Diagnostic();

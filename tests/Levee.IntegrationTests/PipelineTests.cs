@@ -239,6 +239,9 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         Assert.Equal(LeveeErrors.StoreUnavailable, store.Classify(new NpgsqlException("down", new TimeoutException()))?.Code);
         Assert.Null(store.Classify(new InvalidOperationException("a bug")));
+        Assert.Equal((ErrorKind.Conflict, LeveeErrors.Stale), store.Classify(new DbUpdateConcurrencyException("0 rows")) is { } stale ? (stale.Kind, stale.Code) : default);
+        Assert.Equal((ErrorKind.Validation, LeveeErrors.InvalidValue),
+            store.Classify(new PostgresException("invalid input syntax for type uuid", "ERROR", "ERROR", PostgresErrorCodes.InvalidTextRepresentation)) is { } value ? (value.Kind, value.Code) : default);
     }
 
     [Theory]
@@ -533,10 +536,97 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
         await Begin();
 
-        Assert.Contains("public.ledger has no row-level security policy", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("ledger has no row-level security policy", refused.Message, StringComparison.Ordinal);
     }
 
     private sealed record Ledger(Guid Id, string Tenant);
+
+    [Fact]
+    public async Task A_table_reached_by_any_mapping_is_checked()
+    {
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var create = new NpgsqlCommand("""
+                create table split_main (id uuid primary key, tenant text not null);
+                create table split_detail (id uuid primary key, note text);
+                create table viewed (id uuid primary key, tenant text not null);
+                create view viewed_v as select * from viewed;
+                create schema by_path;
+                grant usage on schema by_path to app;
+                create table by_path.found_by_path (id uuid primary key, tenant text not null);
+                grant select on by_path.found_by_path to app;
+                """ + LeveeSchema.Isolation("split_main", "tenant") + LeveeSchema.Isolation("viewed", "tenant"), owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+
+        Assert.Contains("split_detail", await Refusal<SplitDb>(postgres.App), StringComparison.Ordinal);
+        Assert.Null(await RefusalOrNull<ViewedDb>(postgres.App));
+        Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
+    }
+
+    private async Task<string> Refusal<TContext>(string connection) where TContext : DbContext =>
+        await RefusalOrNull<TContext>(connection) ?? throw new InvalidOperationException($"{typeof(TContext).Name} passed.");
+
+    private async Task<string?> RefusalOrNull<TContext>(string connection) where TContext : DbContext
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddDbContext<TContext>(o => o.UseNpgsql(connection));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<TContext>();
+        using var host = builder.Build();
+        await using var scope = host.Services.CreateAsyncScope();
+        try
+        {
+            await using var unit = await scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct);
+            return null;
+        }
+        catch (InvalidOperationException e)
+        {
+            return e.Message;
+        }
+    }
+
+    private sealed class Split
+    {
+        public Guid Id { get; init; }
+        public string Tenant { get; init; } = "";
+        public string? Note { get; init; }
+    }
+
+    private sealed class SplitDb(DbContextOptions<SplitDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Split>(e =>
+            {
+                e.ToTable("split_main").SplitToTable("split_detail", t => t.Property(s => s.Note).HasColumnName("note"));
+                e.Property(s => s.Id).HasColumnName("id");
+                e.Property(s => s.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    private sealed class ViewedDb(DbContextOptions<ViewedDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("viewed").ToView("viewed_v");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    private sealed class PathDb(DbContextOptions<PathDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("found_by_path");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
 
     private sealed class LedgerDb(DbContextOptions<LedgerDb> options) : DbContext(options)
     {

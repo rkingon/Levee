@@ -25,7 +25,7 @@ services.AddMcpServer()
 ## Options
 
 - **`BoundInputs` and `Bind`:** inputs the server supplies rather than the model (a turn's id). They're taken out of every
-  schema; anything the model sends for them is dropped; `Bind` must supply each, or the call fails.
+  schema; anything the model sends for them, in any casing, is dropped; `Bind` must supply each, or the call fails.
 - **`Render`:** a result as content other than its JSON, such as an image the model should see.
 - **`Send` and `Catalog`:** an MCP server with no dispatcher of its own, beside the client (stdio), sending each call to
   the app's `/ops` over the wire, with the Contracts project's `LeveeCatalog` as its catalog.

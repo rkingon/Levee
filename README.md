@@ -36,7 +36,9 @@ dotnet levee db grants app_role --jobs            # what the runtime role needs
 ```
 
 `dotnet levee check` runs every rule over an app, project by project (compiled once without analyzers, then each
-analyzed alone), so one project's errors never hide another's: how a consumer sees what adopting Levee asks of it.
+analyzed alone), so one project's errors never hide another's, except that a project failing the generator's rules
+(LEVEE101-111) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
+asks of it.
 
 `generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write, a summary),
 never overwrites, and writes a handler that answers `not_implemented` until it's written. `db` prints; migrations
@@ -97,7 +99,9 @@ inferred. A port without `SelectedBy` has exactly one adapter; a repository (`IR
 attribute, and only an aggregate root has one. `[Port(Many = true)]` is a set every adapter serves (integrations,
 channels), taken as `IEnumerable<TPort>`; name its adapters (`[Adapter("ecs")]`) and it's routed too: `IAdapters<TPort>`
 gives one by name, made only when asked for (a launcher per workbench). An adapter serving several ports is one instance. An adapter is scoped to the operation unless it says
-`[Adapter(Lifetime = AdapterLifetime.Singleton)]` (a held connection, a listener). The Host composes and
+`[Adapter(Lifetime = AdapterLifetime.Singleton)]` (a client a vendor's SDK wants kept). A connection of its own, even
+one the container hands it, is outside every operation (LEVEE018): a listener that truly needs one suppresses at that
+line, with why. The Host composes and
 drives: it names nothing of Application's or Domain's, and reaches them only through the dispatcher (LEVEE013).
 
 ## An operation

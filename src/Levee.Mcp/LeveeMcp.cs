@@ -169,7 +169,8 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var (name, value) in arguments ?? new Dictionary<string, JsonElement>())
         {
-            if (!mcp.BoundInputs.Contains(name))
+            // In any casing: the wire binds names case-insensitively, so "TEXT" would reach a bound "text".
+            if (!mcp.BoundInputs.Contains(name, StringComparer.OrdinalIgnoreCase))
             {
                 merged[name] = value;
             }

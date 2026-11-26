@@ -35,8 +35,9 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   framework, is itself refused (an IDE's design-time pass excepted).
 
 ### Levee.EntityFrameworkCore
-- Every table the app's context maps has forced row-level security and a policy (`Isolation`, `Shared`, or the app's own),
-  checked before the first operation: a forgotten policy fails closed.
+- Every table the app's context writes to, however it's mapped, has forced row-level security and a policy (`Isolation`,
+  `Shared`, or the app's own), checked before the first operation: a forgotten policy fails closed. Refusals classified
+  as `store.stale` (no row to change) and `store.invalid_value` besides the others.
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level
   security, COMMIT never cancelled by the caller, store failures classified (undeclared writes, scope violations,
   conflicts, constraints, contention, an unreachable store).

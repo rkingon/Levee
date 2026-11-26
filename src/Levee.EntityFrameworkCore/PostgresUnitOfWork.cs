@@ -227,22 +227,25 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     /// </summary>
     private async Task VerifyIsolationAsync(CancellationToken ct)
     {
-        var tables = db.Model.GetEntityTypes()
-            .Where(e => e.GetTableName() is not null && e.GetViewName() is null && e.GetSqlQuery() is null)
-            .Select(e => $"{e.GetSchema() ?? db.Model.GetDefaultSchema() ?? "public"}.{e.GetTableName()}")
+        // Every table EF writes to, however it's mapped (split, beside a view), resolved as Postgres will: through the
+        // search path when EF names no schema. One that doesn't resolve can't be checked, so it fails too.
+        static string Quote(string name) => $"\"{name.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+        var tables = db.Model.GetRelationalModel().Tables
+            .Select(t => t.Schema is { } schema ? $"{Quote(schema)}.{Quote(t.Name)}" : Quote(t.Name))
             .Distinct()
             .ToArray();
         var open = await db.Database.SqlQuery<string>($"""
-            select n.nspname || '.' || c.relname as "Value"
-            from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-            where n.nspname || '.' || c.relname = any({tables})
-              and not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid))
+            select t as "Value"
+            from unnest({tables}) t
+            left join pg_catalog.pg_class c on c.oid = to_regclass(t)
+            where c.oid is null
+              or not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid))
             """).ToListAsync(ct);
         if (open.Count > 0)
         {
             throw new InvalidOperationException(
-                $"{string.Join(", ", open.Order(StringComparer.Ordinal))} has no row-level security policy, so every tenant's operations would "
-                + "see and change all of its rows. Fix: in the migration that creates it, EnableScopeIsolation(table, column) for a "
+                $"{string.Join(", ", open.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))} has no row-level security policy (or doesn't exist yet), so every "
+                + "tenant's operations would see and change all of its rows. Fix: in the migration that creates it, EnableScopeIsolation(table, column) for a "
                 + "table of one scope's rows, or ShareAcrossScopes(table) for one every scope reads and only platform operations write.");
         }
     }
@@ -271,11 +274,16 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                         // Any other integrity rule, or a trigger's refusal, at a statement or at COMMIT (deferred): not transient.
                         _ when pg.SqlState.StartsWith("23", StringComparison.Ordinal) || pg.SqlState == PostgresErrorCodes.RaiseException =>
                             Error.Conflict(LeveeErrors.ConstraintViolation, $"The database refused it ({pg.ConstraintName ?? pg.MessageText})."),
+                        // A data exception: a value its column's type refuses, such as a scope key that isn't the policy's uuid.
+                        _ when pg.SqlState.StartsWith("22", StringComparison.Ordinal) =>
+                            Error.Validation(LeveeErrors.InvalidValue, $"The database refused a value: {pg.MessageText}."),
                         PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected =>
                             Error.Unavailable(LeveeErrors.Contention, "It collided with another change; try again."),
                         _ when pg.IsTransient => Error.Unavailable(LeveeErrors.StoreUnavailable, "The database is busy; try again."),
                         _ => null,
                     };
+                case DbUpdateConcurrencyException:
+                    return Error.Conflict(LeveeErrors.Stale, "There was no row to change: another write changed it first, or it isn't this scope's.");
                 case NpgsqlException { IsTransient: true }:
                 case TimeoutException:
                     return Error.Unavailable(LeveeErrors.StoreUnavailable, "The database couldn't be reached; try again.");
