@@ -442,3 +442,5 @@ virtual Levee.Principal.PrintMembers(System.Text.StringBuilder! builder) -> bool
 ~override Levee.Enqueued.ToString() -> string
 ~override Levee.Unit.Equals(object obj) -> bool
 ~override Levee.Unit.ToString() -> string
+Levee.LeveeOptions.OutcomeTimeout.get -> System.TimeSpan
+Levee.LeveeOptions.OutcomeTimeout.set -> void

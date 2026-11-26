@@ -267,6 +267,9 @@ public sealed class CliTests : IDisposable
         Assert.Contains("revoke insert, update, delete on public.levee_audit from app;", grants, StringComparison.Ordinal);
         Assert.Contains("grant execute on function public.levee_audit_write", grants, StringComparison.Ordinal);
         Assert.Contains("revoke insert, update, delete on public.oxbow_migration from app;", grants, StringComparison.Ordinal);
+        // Oxbow's tables stay in public whatever the app's schema is.
+        Assert.Contains("on public.oxbow_migration from app;", (await Run(_dir, "db", "grants", "app", "--jobs", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
+        Assert.Contains("create policy levee_shared_read on public.plans for select using (true);", (await Run(_dir, "db", "share", "plans")).Output, StringComparison.Ordinal);
     }
 
     [Theory]

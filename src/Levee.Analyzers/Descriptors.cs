@@ -32,6 +32,10 @@ internal static class Descriptors
         "LEVEE004", "Only the dispatcher saves and commits",
         "{0} saves or controls a transaction, but the dispatcher commits each operation once. Fix: change tracked state and return; take IFlush if a later query in the same operation must see pending writes; return an error, and the dispatcher rolls back");
 
+    public static readonly DiagnosticDescriptor ScopeSetting = Rule(
+        "LEVEE004", "Only the dispatcher saves and commits",
+        "This SQL sets the scope row-level security trusts (levee.scope, levee.platform) or writes the audit, both the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited by the dispatcher");
+
     public static readonly DiagnosticDescriptor ServiceLocation = Rule(
         "LEVEE005", "No service location outside hosts",
         "{0} locates services. Fix: take the dependency through the constructor; to choose an adapter by setting, declare [Port(SelectedBy = \"...\")]; to choose one at run time by name, take IAdapters<TPort>");
@@ -91,6 +95,10 @@ internal static class Descriptors
     public static readonly DiagnosticDescriptor SideConnection = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
         "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; work as the database's owner is a Tool's");
+
+    public static readonly DiagnosticDescriptor OwnerRun = Rule(
+        "LEVEE018", "Data is reached only through the operation's unit of work",
+        "LeveeOwner.Run steps around the guard that keeps the app's context inside operations, for work as the database's owner. Fix: move migrations and bootstrap into a Tool project; everything else sends an operation through the Dispatcher");
 
     public static readonly DiagnosticDescriptor AggregatePlacement = Rule(
         "LEVEE019", "Aggregate roots live in Domain",

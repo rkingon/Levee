@@ -20,6 +20,7 @@ internal static class Cli
               A rule's why, the shape it refuses and the shape to write instead; every rule, without an id.
           dotnet levee db schema [--jobs] [--schema S]    The owner's DDL: Levee's functions and audit (and Oxbow's tables).
           dotnet levee db isolate <table> <column> [--type TYPE] [--schema S]   A table's row-level security policy.
+          dotnet levee db share <table> [--schema S]      A table every scope reads and only platform operations write.
           dotnet levee db grants <role> [--jobs] [--schema S]   What the app's runtime role needs.
           dotnet levee version
         """;

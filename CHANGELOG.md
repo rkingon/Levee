@@ -18,9 +18,9 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   `IAdapters<TPort>`, repositories as ports; only the chosen adapter is registered. `IFlush`, `IAmbientTransaction`.
 - **Personal data and secrets.** `[Secret]` (write-only, never stored unsealed) and `[Personal]` (redacted in the audit
   and outcomes), at any depth of an input: nested records, collections, dictionary values under any key, derived types,
-  and a mark on an abstract or interface member holding for its implementations.
-  Inputs are typed all the way down (LEVEE104 refuses `object`, raw JSON, `dynamic`, non-generic collections), so no
-  member hides from either.
+  and a mark on an abstract or interface member holding for the property that implements it.
+  Inputs are typed all the way down (LEVEE104 refuses `object`, raw JSON, `dynamic`, non-generic collections, the app's
+  own included), so no member hides from either. A subscription's input, which travels in its URL, holds no `[Secret]`.
 - **The strict wire.** `LeveeJson`: unknown members and missing required members refused; schemas for every contract.
 - **Jobs.** `IJobs`: an operation enqueued in its caller's transaction, authorized as the caller, run as a `JobPrincipal`
   in the caller's scope; `IJobPrincipals` restores the app's own principal.
@@ -35,6 +35,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   framework, is itself refused (an IDE's design-time pass excepted).
 
 ### Levee.EntityFrameworkCore
+- Every table the app's context maps has forced row-level security and a policy (`Isolation`, `Shared`, or the app's own),
+  checked before the first operation: a forgotten policy fails closed.
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level
   security, COMMIT never cancelled by the caller, store failures classified (undeclared writes, scope violations,
   conflicts, constraints, contention, an unreachable store).

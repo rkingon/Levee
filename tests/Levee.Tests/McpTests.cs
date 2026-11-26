@@ -89,13 +89,16 @@ public sealed class McpTests
         Assert.DoesNotContain(tools, t => t.ProtocolTool.Name == "platform_reset");
     }
 
-    [Fact]
-    public async Task A_bound_input_is_the_servers_not_the_models()
+    [Theory]
+    [InlineData("text")]
+    [InlineData("TEXT")]
+    [InlineData("Text")]
+    public async Task A_bound_input_is_the_servers_not_the_models(string spelling)
     {
         var (send, tools) = Build(new LeveeMcpOptions { BoundInputs = ["text"], Bind = (_, _) => ValueTask.FromResult<IReadOnlyDictionary<string, JsonElement>>(new Dictionary<string, JsonElement>()) });
         var echo = tools.Single(t => t.ProtocolTool.Name == "probe_echo");
 
-        var said = await echo.CallAsync(send, new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("from the model") },
+        var said = await echo.CallAsync(send, new Dictionary<string, JsonElement> { [spelling] = JsonSerializer.SerializeToElement("from the model") },
             new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("from the server") }, CancellationToken.None);
 
         Assert.False(echo.ProtocolTool.InputSchema.GetProperty("properties").TryGetProperty("text", out _));
@@ -132,15 +135,12 @@ public sealed class McpTests
         Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddMcpServer().WithLeveeOperations(_ => { }));
     }
 
-    [Theory]
-    [InlineData("text")]
-    [InlineData("TEXT")]
-    [InlineData("Text")]
-    public async Task A_bound_input_the_model_sends_is_dropped_and_one_Bind_omits_is_refused(string spelling)
+    [Fact]
+    public async Task A_bound_input_Bind_omits_is_refused_though_the_model_sent_it()
     {
         var (send, tools) = Build(new LeveeMcpOptions { BoundInputs = ["text"], Bind = (_, _) => default });
         var echo = tools.Single(t => t.ProtocolTool.Name == "probe_echo");
-        var fromModel = new Dictionary<string, JsonElement> { [spelling] = JsonSerializer.SerializeToElement("from the model") };
+        var fromModel = new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("from the model") };
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => echo.CallAsync(send, fromModel, new Dictionary<string, JsonElement>(), CancellationToken.None));
     }

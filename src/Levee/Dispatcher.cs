@@ -110,12 +110,21 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         CancellationToken ct)
     {
         var scoped = ScopeOf(descriptor, subscription, principal);
-        var denied = scoped.IsSuccess ? await AuthorizeAsync(descriptor, subscription, principal, scoped.Value, ct) : scoped.Error;
-        if (denied is null && scoped.IsSuccess)
+        Error? denied;
+        try
         {
-            denied = await AdmitAsync(descriptor, subscription, principal, scoped.Value, ct);
+            denied = scoped.IsSuccess ? await AuthorizeAsync(descriptor, subscription, principal, scoped.Value, ct) : scoped.Error;
+            if (denied is null && scoped.IsSuccess)
+            {
+                denied = await AdmitAsync(descriptor, subscription, principal, scoped.Value, ct);
+            }
         }
-        await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(subscription), scoped.IsSuccess ? scoped.Value : null, principal, denied), ct);
+        catch (Exception e) when (!(e is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            // A policy or an admission that throws is a bug, answered as one, the same as in an operation.
+            denied = Unexpected(e, descriptor);
+        }
+        await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(subscription), scoped.IsSuccess ? scoped.Value : null, principal, denied), ct);
         return denied is null
             ? Result<IAsyncEnumerable<object?>>.Success(Stream(descriptor, subscription, new SubscriptionContext(principal, descriptor, scoped.Value), CancellationToken.None))
             : denied;
@@ -188,7 +197,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // The caller stopped waiting: it still ended, rolled back, and the outcome is told so before the cancel goes on.
-            await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
                 Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was cancelled by its caller.")), CancellationToken.None);
             throw;
         }
@@ -198,7 +207,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             result = Unexpected(e, descriptor);
         }
         // After the commit, the caller's cancel can't undo the operation, so it doesn't stop it being told either.
-        await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+        await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
             result.IsSuccess ? null : result.Error), CancellationToken.None);
         activity?.SetTag("levee.outcome", result.IsSuccess ? "ok" : result.Error.Code);
         if (!result.IsSuccess)
@@ -244,8 +253,15 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return scope.Error;
         }
-        return await AuthorizeAsync(found.Value, operation.Value, principal, scope.Value, ct)
-            ?? await AdmitAsync(found.Value, operation.Value, principal, scope.Value, ct);
+        try
+        {
+            return await AuthorizeAsync(found.Value, operation.Value, principal, scope.Value, ct)
+                ?? await AdmitAsync(found.Value, operation.Value, principal, scope.Value, ct);
+        }
+        catch (Exception e) when (!(e is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            return Unexpected(e, found.Value);
+        }
     }
 
     /// <summary>
@@ -378,8 +394,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>
-    /// The operation's own result stands, committed or not: a recorder failing (to be built, to record, in time, to be
-    /// disposed) is its bug, not the caller's.
+    /// The operation's own result stands, committed or not: a recorder failing (to be built, to record, within
+    /// <see cref="LeveeOptions.OutcomeTimeout"/>, to be disposed) is its bug, not the caller's.
     /// </summary>
     private async Task RecordOutcomeAsync(OperationOutcome outcome, CancellationToken ct)
     {
@@ -392,7 +408,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 recorder = each.GetType().Name;
                 try
                 {
-                    await each.RecordAsync(outcome, ct);
+                    // Bounded: after the commit the caller is waiting, and a recorder that hangs is its bug.
+                    using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    bounded.CancelAfter(options.OutcomeTimeout);
+                    await each.RecordAsync(outcome, bounded.Token).WaitAsync(options.OutcomeTimeout, CancellationToken.None);
                 }
                 catch (Exception e)
                 {
@@ -410,11 +429,31 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
     private string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), options.Json);
 
+    /// <summary>
+    /// The input for an outcome, which is told after the commit: an input that can't be serialized (a getter that throws) is a
+    /// bug, logged, and the outcome is still told. The audit's own redaction fails the operation instead, before it commits.
+    /// </summary>
+    private string SafeRedact(IOperation operation)
+    {
+        try
+        {
+            return Redact(operation);
+        }
+        catch (Exception e)
+        {
+            LogUnredactable(log, e, operation.GetType().Name);
+            return "\"[unredactable]\"";
+        }
+    }
+
     [LoggerMessage(Level = LogLevel.Warning, Message = "Denied {Operation}: {Reason}")]
     private static partial void LogDenied(ILogger logger, string operation, string reason);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "Recording how {Operation} ended failed in {Recorder}")]
     private static partial void LogOutcomeFailed(ILogger logger, Exception exception, string operation, string recorder);
+
+    [LoggerMessage(Level = LogLevel.Error, Message = "{Input}, the input of an operation, couldn't be serialized for its outcome")]
+    private static partial void LogUnredactable(ILogger logger, Exception exception, string input);
 
     [LoggerMessage(Level = LogLevel.Error, Message = "{Operation} failed unexpectedly (trace {Trace})")]
     private static partial void LogUnexpected(ILogger logger, Exception exception, string operation, string trace);
@@ -450,4 +489,10 @@ public sealed class LeveeOptions
     /// membership), ending the stream when not: a subscription is authorized as it opens, and may outlive that.
     /// </summary>
     public TimeSpan SubscriptionRecheck { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long each <see cref="IOperationOutcome"/> has to record how an operation ended. The caller waits for them, after
+    /// the commit too, so one that takes longer is cancelled, logged, and left behind.
+    /// </summary>
+    public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }

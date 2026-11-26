@@ -26,7 +26,8 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
         services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
         // The guard is on TContext alone: a second context would reach the database around every operation.
-        services.AddSingleton<IValidateOptions<OneContext>>(new OneContextValidation(services, typeof(TContext)));
+        services.AddSingleton<IValidateOptions<OneContext>>(provider =>
+            new OneContextValidation(services, typeof(TContext), provider.GetRequiredService<IServiceScopeFactory>()));
         services.AddOptions<OneContext>().ValidateOnStart();
         return services;
     }
@@ -67,23 +68,46 @@ public static class LeveeOwner
 
 internal sealed class OneContext;
 
-internal sealed class OneContextValidation(IServiceCollection services, Type context) : IValidateOptions<OneContext>
+internal sealed class OneContextValidation(IServiceCollection services, Type context, IServiceScopeFactory scopes) : IValidateOptions<OneContext>
 {
     public ValidateOptionsResult Validate(string? name, OneContext options)
     {
-        // By its options (AddDbContext, AddDbContextFactory) or as itself (AddScoped<ReportsDb>() configured in OnConfiguring).
+        // By its options (AddDbContext, AddDbContextFactory), as itself or behind an interface (configured in OnConfiguring).
         var others = services
-            .Select(d => d.ServiceType)
+            .SelectMany(d => new[] { d.ServiceType, d.IsKeyedService ? d.KeyedImplementationType : d.ImplementationType,
+                (d.IsKeyedService ? d.KeyedImplementationInstance : d.ImplementationInstance)?.GetType() })
+            .OfType<Type>()
             .Select(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) ? t.GenericTypeArguments[0] : t)
             .Where(t => typeof(DbContext).IsAssignableFrom(t) && t != context)
             .Select(t => t.Name)
             .Distinct()
             .ToList();
-        return others.Count == 0
-            ? ValidateOptionsResult.Success
-            : ValidateOptionsResult.Fail(
+        if (others.Count > 0)
+        {
+            return ValidateOptionsResult.Fail(
                 $"{string.Join(", ", others)} is a DbContext besides {context.Name}, Levee's unit of work: it reaches the database outside "
                 + $"every operation's transaction. Map its entities in {context.Name}; a Tool's owner work builds its own context.");
+        }
+        using var scope = scopes.CreateScope();
+        return Unfit((DbContext)scope.ServiceProvider.GetRequiredService(context)) is { } problem
+            ? ValidateOptionsResult.Fail(problem)
+            : ValidateOptionsResult.Success;
+    }
+
+    /// <summary>What the context's own configuration would undo: the guard, or a transaction the caller begins.</summary>
+    public static string? Unfit(DbContext db)
+    {
+        var name = db.GetType().Name;
+        var interceptors = db.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()?.Interceptors;
+        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true)
+        {
+            return $"{name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
+                + $"DbContextOptions<{name}> in its constructor and configure it in AddDbContext, not OnConfiguring.";
+        }
+        return db.Database.CreateExecutionStrategy().RetriesOnFailure
+            ? $"{name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: remove it; a "
+                + "transient failure answers Unavailable, which a client may repeat and a job retries."
+            : null;
     }
 }
 
@@ -194,21 +218,40 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     // Outside a host nothing validates on start: the first operation does.
     private readonly OneContext _one = one.Value;
 
-    /// <summary>What the context's own configuration could undo, checked before its first transaction.</summary>
+    // Once a process: a table's policy comes with its migration, which runs before the app does.
+    private static int _isolated;
+
+    /// <summary>
+    /// Every table the context maps is held by row-level security, forced, with a policy: a migration that forgot one would
+    /// otherwise open the table to every tenant, since the runtime role is granted every table.
+    /// </summary>
+    private async Task VerifyIsolationAsync(CancellationToken ct)
+    {
+        var tables = db.Model.GetEntityTypes()
+            .Where(e => e.GetTableName() is not null && e.GetViewName() is null && e.GetSqlQuery() is null)
+            .Select(e => $"{e.GetSchema() ?? db.Model.GetDefaultSchema() ?? "public"}.{e.GetTableName()}")
+            .Distinct()
+            .ToArray();
+        var open = await db.Database.SqlQuery<string>($"""
+            select n.nspname || '.' || c.relname as "Value"
+            from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+            where n.nspname || '.' || c.relname = any({tables})
+              and not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid))
+            """).ToListAsync(ct);
+        if (open.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{string.Join(", ", open.Order(StringComparer.Ordinal))} has no row-level security policy, so every tenant's operations would "
+                + "see and change all of its rows. Fix: in the migration that creates it, EnableScopeIsolation(table, column) for a "
+                + "table of one scope's rows, or ShareAcrossScopes(table) for one every scope reads and only platform operations write.");
+        }
+    }
+
     private void Verify()
     {
-        var interceptors = db.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()?.Interceptors;
-        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true)
+        if (OneContextValidation.Unfit(db) is { } problem)
         {
-            throw new InvalidOperationException(
-                $"{typeof(TContext).Name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
-                + $"DbContextOptions<{typeof(TContext).Name}> in its constructor and configure it in AddDbContext, not OnConfiguring.");
-        }
-        if (db.Database.CreateExecutionStrategy().RetriesOnFailure)
-        {
-            throw new InvalidOperationException(
-                $"{typeof(TContext).Name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: "
-                + "remove it; a transient failure answers Unavailable, which a client may repeat and a job retries.");
+            throw new InvalidOperationException(problem);
         }
     }
 
@@ -259,6 +302,11 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             var key = scope.Key ?? "";
             var platform = scope.Platform ? "on" : "off";
             await db.Database.ExecuteSqlAsync($"select set_config('levee.scope', {key}, true), set_config('levee.platform', {platform}, true)", ct);
+            if (Volatile.Read(ref _isolated) == 0)
+            {
+                await VerifyIsolationAsync(ct);
+                Volatile.Write(ref _isolated, 1);
+            }
             ambient.Current = (db.Database.GetDbConnection(), tx.GetDbTransaction());
             return new PostgresUnitOfWork(db, tx, scope, ambient);
         }

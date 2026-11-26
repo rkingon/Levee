@@ -481,10 +481,75 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Contains("ReportsDb is a DbContext besides SampleDbContext", refused.Message, StringComparison.Ordinal);
     }
 
-    private sealed class ReportsDb : DbContext;
+    private sealed class ReportsDb : DbContext, IReportsDb;
+
+    private interface IReportsDb;
 
     [Fact]
-    public async Task A_context_the_guard_cant_reach_is_refused_before_its_first_transaction()
+    public async Task A_second_context_behind_an_interface_is_refused_at_start()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddScoped<IReportsDb, ReportsDb>();
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+
+        Assert.Contains("ReportsDb is a DbContext besides SampleDbContext", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_table_the_context_maps_without_a_policy_fails_closed_until_it_has_one()
+    {
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var create = new NpgsqlCommand("create table ledger (id uuid primary key, tenant text not null)", owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddDbContext<LedgerDb>(o => o.UseNpgsql(postgres.App));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<LedgerDb>();
+        using var host = builder.Build();
+        async Task Begin()
+        {
+            await using var scope = host.Services.CreateAsyncScope();
+            await using var unit = await scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct);
+        }
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(Begin);
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var isolate = new NpgsqlCommand(LeveeSchema.Isolation("ledger", "tenant"), owner);
+            await isolate.ExecuteNonQueryAsync(Ct);
+        }
+        await Begin();
+
+        Assert.Contains("public.ledger has no row-level security policy", refused.Message, StringComparison.Ordinal);
+    }
+
+    private sealed record Ledger(Guid Id, string Tenant);
+
+    private sealed class LedgerDb(DbContextOptions<LedgerDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("ledger");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    [Fact]
+    public async Task A_context_the_guard_cant_reach_is_refused_at_start()
     {
         var connection = postgres.App;
         var builder = Host.CreateApplicationBuilder();
@@ -494,9 +559,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SelfConfigured>();
         using var host = builder.Build();
-        await using var scope = host.Services.CreateAsyncScope();
 
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct));
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
 
         Assert.Contains("SelfConfigured doesn't carry Levee's guard", refused.Message, StringComparison.Ordinal);
     }
@@ -509,7 +573,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
-    public async Task A_retrying_strategy_is_refused_before_its_first_transaction()
+    public async Task A_retrying_strategy_is_refused_at_start()
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = "none";
@@ -517,9 +581,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
         using var host = builder.Build();
-        await using var scope = host.Services.CreateAsyncScope();
 
-        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct));
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
 
         Assert.Contains("EnableRetryOnFailure", refused.Message, StringComparison.Ordinal);
     }

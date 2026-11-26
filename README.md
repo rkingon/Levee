@@ -31,6 +31,7 @@ dotnet levee check                                # every LEVEE rule the app bre
 dotnet levee explain LEVEE004                     # a rule's why, the shape it refuses, the shape to write
 dotnet levee db schema --jobs                     # the owner's DDL: Levee's functions and audit, Oxbow's tables
 dotnet levee db isolate notes tenant_id --type uuid
+dotnet levee db share plans                       # a table every scope reads, only platform operations write
 dotnet levee db grants app_role --jobs            # what the runtime role needs
 ```
 
@@ -133,11 +134,13 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 - Every operation declares one scope (LEVEE106): its input's (`IScopedOperation`), its caller's (`CallerScoped = true`, from
   a principal that is an `IScopedPrincipal`: an API key issued to one tenant), or every scope (`Platform = true`). The
   dispatcher refuses a missing or blank scope key. A job runs in the scope its enqueuer carried. `ScopeKey` sets `levee.scope` for the
-  transaction, and `LeveeSchema.Isolation(table, column)` is the RLS policy that holds a table to it. Platform scope
+  transaction, and `LeveeSchema.Isolation(table, column)` is the RLS policy that holds a table to it (`Shared(table)` for one every scope
+  reads); a table the app's context maps without a policy fails before the first operation. Platform scope
   (`levee.platform`) sees every row, so the access policy decides who may run a platform operation
   (`AccessRequest.Operation.Platform`).
 - Every write is audited in the operation's own transaction (`levee_audit`, append-only, `[Secret]` and `[Personal]`
-  inputs redacted, a mark on an abstract or interface member holding for its implementations: an append-only record can never forget personal data, so it never holds it). Denial logs name the
+  inputs redacted, a mark on an abstract or interface member holding for the property that implements it (an explicit
+  implementation returning another property doesn't carry it: mark that one): an append-only record can never forget personal data, so it never holds it). Denial logs name the
   operation and the reason, not the caller.
   `[Secret]` is property-only: on a positional record it's `[property: Secret]`, and a bare one doesn't compile.
 - A job is an operation: `jobs.EnqueueAsync(new CreateNote(...))` is authorized as the caller, commits or rolls back
@@ -190,7 +193,8 @@ must be recorded, a declined application) is part of the result type.
   unreachable database are `Unavailable`. `Error.Unavailable(code, message, retryAfter)` carries a vendor's wait.
 - **Fields.** `Error.Validation(code, message, fields)` says what's wrong with each field by its path; malformed input
   names the field it broke on.
-- **Over HTTP**, every failure is `application/problem+json` (RFC 9457): `title`, `status`, `detail`, `code`, `kind`,
+- **Over HTTP**, every failure is `application/problem+json` (RFC 9457), a bug in a policy, an admission or an input's own
+  validation included: `title`, `status`, `detail`, `code`, `kind`,
   `transient`, `trace` and, for validation, `errors` by field. `Unavailable` with a wait sets `Retry-After`.
 
 ## MCP
@@ -218,10 +222,10 @@ Projections an app writes itself (typed REST routes, a webhook) answer failures 
 
 ## Postgres
 
-The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation`; the app connects
+The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation` or `Shared`; the app connects
 as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` gives it. That
 role adds to the audit only through `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a
-record. The app's context refuses any command outside an operation. [docs/postgres.md](docs/postgres.md) has the setup,
+record. The app's context refuses any command outside an operation, and a table it maps without a policy. [docs/postgres.md](docs/postgres.md) has the setup,
 and [the trust model](docs/decisions.md#trust-model) where the guarantees stop.
 
 ## Rules

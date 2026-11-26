@@ -94,7 +94,8 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them. The analyzer sees the name as a literal or a constant; a name put
+together at run time from pieces isn't seen, and is the trust model's to answer. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused.
 
@@ -114,7 +115,8 @@ var gateway = provider.GetRequiredService<IPayments>();
 internal sealed class PayHandler(IPayments payments) : IOperationHandler<Pay, Receipt> { ... }
 ```
 
-EF's accessor (`db.GetService<T>()`) is the same: it reaches the context's internal services, its connection among them.
+EF's accessor (`db.GetService<T>()`) is the same, and more: it reaches the context's internal services, its connection
+among them, so outside a Tool it's LEVEE018 too.
 
 `IKeyedServiceProvider` and `ActivatorUtilities` are service location by another name. To choose an adapter by
 configuration, declare `[Port(SelectedBy = "Providers:Payments")]`. To choose one at run
@@ -296,9 +298,10 @@ internal sealed class DispatchedDesk(Dispatcher dispatcher) : IWorkDesk
 }
 ```
 
-A shared abstract class (Kernel's or Contracts', with a member anyone may call, abstract or virtual) is a way in the same,
-so deriving from one is refused too; a protected hook (a value object's equality components) and a record's own value
-semantics aren't. A package's base class isn't checked.
+A shared base class (Kernel's or Contracts') with anything to override, abstract or virtual, public or protected, is a
+way in the same: whatever holds the base calls the override, directly or through a template method. Deriving from one is
+refused, except for value semantics (`Equals`, `GetHashCode`, `ToString`, `CompareTo`, a value object's
+`GetEqualityComponents`) and a record's own. A package's base class isn't checked.
 
 Application implements Levee's interfaces (handlers), its own ports' contracts and Domain's, never the shared ones. Domain
 is held the same way, structs as much as classes. An operation is exempt: a shared marker on a message is data.
@@ -321,7 +324,7 @@ Every other rule holds: it drives the application only through the dispatcher, l
 
 A connection of its own (`new NpgsqlConnection`, a `DbDataSource`'s, an `IDbContextFactory`'s context, a design-time
 factory's `CreateDbContext`, which is `dotnet ef`'s to call, `new` on a context, the context's own connection through
-`GetDbConnection`) is outside the operation's transaction, or can be: not read-only when the operation declares only reads, not rolled back with it, not audited, and
+`GetDbConnection`, or EF's accessor to its internal services, `GetService<T>`) is outside the operation's transaction, or can be: not read-only when the operation declares only reads, not rolled back with it, not audited, and
 free to set its own scope.
 
 ```csharp
@@ -379,7 +382,8 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
 - **Name**: lowercase snake_case segments joined by dots, area first: `notes.create`, `billing.invoice_lines.list`.
 - **Access**: the app's own vocabulary (`member`, `admin`, `platform-admin`); its `IAccessPolicy` decides it.
 - **Errors**: the codes its handler fails with, named like operations: `notes.too_long`.
-- **Subscriptions** only read: no `Effects`, no `Idempotency`, no `Errors`.
+- **Subscriptions** only read: no `Effects`, no `Idempotency`, no `Errors`. Their input travels in the URL, which proxies
+  and access logs keep, so it holds no `[Secret]` at any depth.
 - **Typed all the way down**: no member, at any depth (fields `[JsonInclude]` adds, a base record's, a declared derived
   type's, the items of a collection of the app's own), is `object`, `dynamic`, raw JSON, `Array` or a non-generic
   collection (`ArrayList`, `Hashtable`, `ExpandoObject`). Redaction and the secret check go by type, and the wire's schema says nothing about an untyped member.

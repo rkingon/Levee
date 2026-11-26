@@ -76,6 +76,23 @@ public static class LeveeSchema
     }
 
     /// <summary>
+    /// Row-level security on a table every scope reads (plans, countries, feature flags), which only a platform operation
+    /// writes. Every table the app's context maps has a policy, this one or <see cref="Isolation"/>: one with none is refused
+    /// before the first operation, so a forgotten policy fails closed instead of opening the table to every tenant.
+    /// </summary>
+    public static string Shared(string table, string schema = "public")
+    {
+        Identifier(schema, nameof(schema));
+        return $"""
+            alter table {table} enable row level security;
+            alter table {table} force row level security;
+            create policy levee_shared_read on {table} for select using (true);
+            create policy levee_shared_write on {table} for all
+              using ({schema}.levee_platform()) with check ({schema}.levee_platform());
+            """;
+    }
+
+    /// <summary>
     /// What the app's runtime role needs in <paramref name="schema"/>, run by the owner: every table's rows (RLS still holds it
     /// to its scope), now and as migrations add tables, and Levee's functions. The audit it reads, and adds to only through
     /// <c>levee_audit_write</c>, at the transaction's time: it can't change, remove or backdate a record.
@@ -149,6 +166,14 @@ public static class LeveeMigrationBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(migrationBuilder);
         migrationBuilder.Sql(LeveeSchema.Isolation(table, column, columnType, schema));
+        return migrationBuilder;
+    }
+
+    /// <summary>In the migration that creates <paramref name="table"/>: see <see cref="LeveeSchema.Shared"/>.</summary>
+    public static MigrationBuilder ShareAcrossScopes(this MigrationBuilder migrationBuilder, string table, string schema = "public")
+    {
+        ArgumentNullException.ThrowIfNull(migrationBuilder);
+        migrationBuilder.Sql(LeveeSchema.Shared(table, schema));
         return migrationBuilder;
     }
 

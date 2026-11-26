@@ -30,3 +30,5 @@ static Levee.EntityFrameworkCore.LeveeSchema.Create(string! schema = "public") -
 static Levee.EntityFrameworkCore.LeveeSchema.Grants(string! role, string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Isolation(string! table, string! column, string! columnType = "text", string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Sql.get -> string!
+static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.ShareAcrossScopes(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
+static Levee.EntityFrameworkCore.LeveeSchema.Shared(string! table, string! schema = "public") -> string!

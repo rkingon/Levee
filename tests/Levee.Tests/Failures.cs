@@ -517,3 +517,108 @@ public sealed class FourthAuditFixTests
         Assert.Equal(true, LeveeJson.Schema(typeof(Card))["properties"]!["token"]!["writeOnly"]?.GetValue<bool>());
     }
 }
+
+[Refuses]
+internal sealed class ThrowingAccess : IAccessPolicy
+{
+    public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) => throw new InvalidOperationException("The policy's own bug.");
+}
+
+internal sealed class Hanging : IOperationOutcome
+{
+    // Ignores its token, as a recorder blocked on a lock would.
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => Task.Delay(Timeout.Infinite, CancellationToken.None);
+}
+
+[Operation("probe.strict", "member", Platform = true)]
+public sealed record Strict(string Text) : IOperation<Unit>
+{
+    public string Text { get; } = string.IsNullOrEmpty(Text) ? throw new ArgumentException("Text is required.", nameof(Text)) : Text;
+}
+
+internal sealed class StrictHandler : IOperationHandler<Strict, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Strict operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+[Operation("probe.computed", "member", Platform = true)]
+public sealed record Computed(string Email) : IOperation<Unit>
+{
+    public string Domain => Email.Split('@')[1];
+}
+
+internal sealed class ComputedHandler : IOperationHandler<Computed, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Computed operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed class FifthAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    private static System.Text.Json.JsonElement Json(string json) => System.Text.Json.JsonDocument.Parse(json).RootElement.Clone();
+
+    [Fact]
+    public async Task A_policy_that_throws_is_a_bug_when_a_subscription_opens_or_is_rechecked()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes(), more: s => s.AddSingleton<IAccessPolicy, ThrowingAccess>()).GetRequiredService<Dispatcher>();
+
+        var opened = await dispatcher.SubscribeFromClientAsync("probe.ticks", Json("""{"count":1}"""), Admin, CancellationToken.None);
+        var rechecked = await dispatcher.AuthorizeFromClientAsync("probe.ticks", Json("""{"count":1}"""), Admin, CancellationToken.None);
+
+        Assert.Equal(ErrorKind.Internal, opened.Error!.Kind);
+        Assert.Equal(ErrorKind.Internal, rechecked?.Kind);
+    }
+
+    [Fact]
+    public async Task Input_its_own_type_refuses_is_invalid_input()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendFromClientAsync("probe.strict", Json("""{"text":""}"""), Admin, CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
+    }
+
+    [Fact]
+    public async Task An_input_that_cant_be_serialized_still_answers_and_is_still_told()
+    {
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new Computed("no-at-sign"), Admin, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains(outcomes.Seen, o => o.Operation.Name == "probe.computed");
+    }
+
+    [Fact]
+    public async Task A_recorder_that_hangs_is_left_behind()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes(), more: s => s
+            .AddSingleton<IOperationOutcome, Hanging>()
+            .AddSingleton(new LeveeOptions { OutcomeTimeout = TimeSpan.FromMilliseconds(100) })).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, store.Commits);
+    }
+}
+
+public class ContactBase
+{
+    public string Email { get; init; } = "";
+}
+
+public sealed class ViaBase : ContactBase, IReachable;
+
+public sealed class MarksTests
+{
+    [Fact]
+    public void A_mark_on_an_interface_holds_for_a_base_class_property_that_implements_it()
+    {
+        Assert.DoesNotContain("example.com", LeveeJson.Redact(new ViaBase { Email = "ada@example.com" }, typeof(ViaBase)), StringComparison.Ordinal);
+    }
+}

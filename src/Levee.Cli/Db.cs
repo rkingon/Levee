@@ -31,17 +31,21 @@ internal static partial class Db
                     Identifier(args.Option("type") ?? "text", "type"),
                     schema));
                 return;
+            case "share":
+                output.WriteLine(LeveeSchema.Shared($"{schema}.{Identifier(args.Positional(1, "the table"), "table")}", schema));
+                return;
             case "grants":
                 var role = Identifier(args.Positional(1, "the app's role"), "role");
                 output.WriteLine(LeveeSchema.Grants(role, schema));
                 if (args.Flag("jobs"))
                 {
                     output.WriteLine(OxbowSchema.GetGrants(role));
-                    output.WriteLine($"revoke insert, update, delete on {schema}.oxbow_migration from {role};");
+                    // Oxbow's tables are in public whatever the app's schema is.
+                    output.WriteLine($"revoke insert, update, delete on public.oxbow_migration from {role};");
                 }
                 return;
             case var other:
-                throw new CliException($"There's no db command {other}: schema, isolate or grants.");
+                throw new CliException($"There's no db command {other}: schema, isolate, share or grants.");
         }
     }
 

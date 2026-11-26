@@ -9,10 +9,12 @@ The owner (the role that owns the schema; never the app's) runs, once:
 ```sh
 dotnet levee db schema [--jobs] [--schema S]   # Levee's functions and audit, and Oxbow's tables with --jobs
 dotnet levee db isolate notes tenant_id --type uuid
+dotnet levee db share plans                    # a table every scope reads, only platform operations write
 dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 ```
 
-or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`.
+or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
+`ShareAcrossScopes("plans")`.
 `LeveeSchema.Create(schema)` and the `schema` arguments put everything in a schema other than `public`; every object is
 qualified by it, so policies and grants hold whatever a role's `search_path` is.
 
@@ -23,7 +25,10 @@ qualified by it, so policies and grants hold whatever a role's `search_path` is.
 The app connects as a role that is not a superuser, owns nothing and doesn't bypass row-level security, granted only
 what `LeveeSchema.Grants(role)` prints:
 
-- every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope;
+- every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
+  Every table the app's context maps must have forced row-level security and a policy (`Isolation` or `Shared`, or one
+  of the app's own): one without is found before the first operation, which fails with the fix. A forgotten policy fails
+  closed rather than opening the table to every tenant. A table the context doesn't map isn't checked;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
@@ -52,9 +57,9 @@ and changes nothing. A Tool's owner work (migrations, the role bootstrap) runs i
 allows only in a Tool (LEVEE018); runs nest.
 
 The guard is on the context `AddLeveePostgres` names, so another context registered beside it (`AddDbContext`,
-`AddDbContextFactory`, or the context itself, configured in `OnConfiguring`) fails the host's start: map its entities in
-the one context. The guard reaches the context through `DbContextOptions<TContext>`, so a context that configures itself
-in `OnConfiguring` instead fails before its first transaction, with the fix.
+`AddDbContextFactory`, or the context itself, by its type or behind an interface) fails the host's start: map its entities
+in the one context. The guard reaches the context through `DbContextOptions<TContext>`, so a context that configures
+itself in `OnConfiguring` instead fails the host's start too (outside a host, its first transaction), with the fix.
 
 A retrying execution strategy (`EnableRetryOnFailure`) can't run a transaction its caller began, so it's refused the same
 way: a transient failure answers `Unavailable`, which a client may repeat and a job retries.

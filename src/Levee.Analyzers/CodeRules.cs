@@ -26,7 +26,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "CreateAsyncScope", "CreateInstance", "GetServiceOrCreateInstance", "CreateFactory");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ServiceLocation, Descriptors.SideConnection, Descriptors.CatalogByHand);
+        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
+            Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -148,7 +149,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, operation.Syntax.GetLocation(), "SQL setting Levee's scope or writing its audit"));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ScopeSetting, operation.Syntax.GetLocation()));
         }
     }
 
@@ -304,7 +305,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         // The run-time guard's one way around, for a Tool's owner work.
         if (role != Role.Tool && method.Name == "Run" && method.ContainingType.ToDisplayString() == "Levee.EntityFrameworkCore.LeveeOwner")
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), "LeveeOwner.Run"));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.OwnerRun, context.Operation.Syntax.GetLocation()));
             return;
         }
         var made = method.TypeArguments.FirstOrDefault() as INamedTypeSymbol;
@@ -312,6 +313,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             || (method.Name == "CreateConnection" && Derives(method.ContainingType, "System.Data.Common.DbProviderFactory"))
             || (method.Name is "Clone" or "CloneWith" && Derives(method.ContainingType, "System.Data.Common.DbConnection"))
             || (method.Name == "GetDbConnection" && method.ContainingType.ToDisplayString() == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions")
+            || (method.Name is "GetService" or "GetInfrastructure" && method.ContainingType.ToDisplayString() == "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions")
             || (method.Name == "CreateInstance" && method.ContainingType.ToDisplayString() == "System.Activator"
                 && (Derives(made, "System.Data.Common.DbConnection") || Derives(made, "Microsoft.EntityFrameworkCore.DbContext")))
             // EF's design-time factory is dotnet ef's to call, by reflection: called from code, it's a context with no guard.

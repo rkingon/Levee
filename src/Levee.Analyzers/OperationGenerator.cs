@@ -476,6 +476,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report("a subscription only reads, and holds nothing to repeat. Fix: leave Effects and Idempotency unset; a write is its own operation");
             return null;
         }
+        if (streams && SecretIn(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } secret)
+        {
+            Report($"its input's {secret} is a [Secret], but a subscription's input travels in its URL, which proxies and access logs keep. Fix: pass a reference to the secret, or open the stream with an operation that takes it in its body");
+            return null;
+        }
         if ((effects & ~1) != 0 && idempotency == 0)
         {
             context?.ReportDiagnostic(Diagnostic.Create(Descriptors.WriteIdempotency, location, name, EffectsText(effects)));
@@ -645,7 +650,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return inBase;
         }
-        // A collection of the app's own carries its items by the interface it implements (IEnumerable<object>).
+        // A collection of the app's own carries its items by the interface it implements (IEnumerable<object>), or none at all.
+        if (named.AllInterfaces.Any(i => i.ToDisplayString() == "System.Collections.IEnumerable")
+            && !named.AllInterfaces.Any(i => i.OriginalDefinition.ToDisplayString() == "System.Collections.Generic.IEnumerable<T>"))
+        {
+            return path.Length == 0 ? type.ToDisplayString() : path;
+        }
         foreach (var contract in named.AllInterfaces.Where(i => i.ContainingNamespace?.ToDisplayString() != "Levee"))
         {
             foreach (var argument in contract.TypeArguments)
@@ -653,6 +663,39 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 if (Untyped(argument, seen, path) is { } inContract)
                 {
                     return inContract;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// <summary>The path to the first [Secret] member of an input, at any depth, or null.</summary>
+    private static string? SecretIn(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    {
+        if (!seen.Add(type) || type is not INamedTypeSymbol named)
+        {
+            return type is IArrayTypeSymbol array ? SecretIn(array.ElementType, seen, path) : null;
+        }
+        foreach (var argument in named.TypeArguments)
+        {
+            if (SecretIn(argument, seen, path) is { } inArgument)
+            {
+                return inArgument;
+            }
+        }
+        // The BCL's own types hold no [Secret]; their type arguments, above, may.
+        for (var t = named; t is not null && t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true; t = t.BaseType)
+        {
+            foreach (var property in t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+            {
+                var at = path.Length == 0 ? property.Name : $"{path}.{property.Name}";
+                if (property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.SecretAttribute"))
+                {
+                    return at;
+                }
+                if (SecretIn(property.Type, seen, at) is { } nested)
+                {
+                    return nested;
                 }
             }
         }

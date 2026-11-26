@@ -14,16 +14,18 @@ public sealed class MessageTests
     // Whose fix depends on what was found, supplied at the call site.
     private static readonly string[] FixFromCallSite = ["LEVEE008", "LEVEE011", "LEVEE104", "LEVEE108"];
 
-    public static TheoryData<string> Ids() => [.. Rules.Select(r => r.Id)];
+    public static TheoryData<string> Ids() => [.. Rules.Select(r => r.Id).Distinct()];
 
     [Theory]
     [MemberData(nameof(Ids))]
     public void Every_rule_names_its_fix_and_its_explanation(string id)
     {
-        var message = Rules.Single(r => r.Id == id).MessageFormat.ToString(CultureInfo.InvariantCulture);
-
-        Assert.EndsWith($"(dotnet levee explain {id})", message, StringComparison.Ordinal);
-        Assert.True(FixFromCallSite.Contains(id) || message.Contains("Fix: ", StringComparison.Ordinal), message);
+        // A rule may say different things for different findings: each message is held to it.
+        foreach (var message in Rules.Where(r => r.Id == id).Select(r => r.MessageFormat.ToString(CultureInfo.InvariantCulture)))
+        {
+            Assert.EndsWith($"(dotnet levee explain {id})", message, StringComparison.Ordinal);
+            Assert.True(FixFromCallSite.Contains(id) || message.Contains("Fix: ", StringComparison.Ordinal), message);
+        }
     }
 
     [Fact]

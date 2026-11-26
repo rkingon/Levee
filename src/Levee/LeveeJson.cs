@@ -37,7 +37,7 @@ public static class LeveeJson
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, node) =>
             {
-                if (Marked(context.PropertyInfo?.AttributeProvider, typeof(SecretAttribute)) && node is JsonObject obj)
+                if (Marked(context.PropertyInfo?.AttributeProvider, context.PropertyInfo?.DeclaringType, typeof(SecretAttribute)) && node is JsonObject obj)
                 {
                     obj["writeOnly"] = true;
                 }
@@ -68,16 +68,17 @@ public static class LeveeJson
         return Find(json.GetTypeInfo(type), json, []);
     }
 
-    private static string? Mark(System.Reflection.ICustomAttributeProvider? property) =>
-        Marked(property, typeof(SecretAttribute)) ? "[secret]"
-        : Marked(property, typeof(PersonalAttribute)) ? "[personal]"
+    private static string? Mark(System.Reflection.ICustomAttributeProvider? property, Type owner) =>
+        Marked(property, owner, typeof(SecretAttribute)) ? "[secret]"
+        : Marked(property, owner, typeof(PersonalAttribute)) ? "[personal]"
         : null;
 
     /// <summary>
-    /// Marked on the member itself, on any member it overrides, or on an interface member it implements: a mark on an
-    /// abstract base's member holds for every override, whatever the override says.
+    /// Marked on the member itself, on any member it overrides, or on an interface member it implements for
+    /// <paramref name="owner"/> (the type the value has, which may take the interface on after a base declared the property):
+    /// a mark on an abstract base's or an interface's member holds for every implementation, whatever it says.
     /// </summary>
-    private static bool Marked(System.Reflection.ICustomAttributeProvider? member, Type mark)
+    private static bool Marked(System.Reflection.ICustomAttributeProvider? member, Type? owner, Type mark)
     {
         if (member is not System.Reflection.PropertyInfo property)
         {
@@ -88,8 +89,24 @@ public static class LeveeJson
         {
             return true;
         }
-        var owner = property.DeclaringType;
-        return owner is not null && owner.GetInterfaces().Any(i => i.GetProperty(property.Name) is { } declared && declared.IsDefined(mark, inherit: false));
+        if (owner is null || owner.IsInterface || property.GetMethod is not { } getter)
+        {
+            return false;
+        }
+        foreach (var contract in owner.GetInterfaces())
+        {
+            var map = owner.GetInterfaceMap(contract);
+            for (var i = 0; i < map.TargetMethods.Length; i++)
+            {
+                if (map.TargetMethods[i].MetadataToken == getter.MetadataToken && map.TargetMethods[i].Module == getter.Module
+                    && contract.GetProperties().FirstOrDefault(p => p.GetMethod == map.InterfaceMethods[i]) is { } declared
+                    && declared.IsDefined(mark, inherit: false))
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /// <summary>Walks the value and its JSON together, so each member is judged by the type it actually has.</summary>
@@ -109,7 +126,7 @@ public static class LeveeJson
                     {
                         continue;
                     }
-                    if (Mark(property.AttributeProvider) is { } mark)
+                    if (Mark(property.AttributeProvider, value.GetType()) is { } mark)
                     {
                         obj[property.Name] = mark;
                     }
@@ -173,7 +190,7 @@ public static class LeveeJson
         }
         foreach (var property in info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : [])
         {
-            if (Marked(property.AttributeProvider, typeof(SecretAttribute)))
+            if (Marked(property.AttributeProvider, info.Type, typeof(SecretAttribute)))
             {
                 return property.Name;
             }

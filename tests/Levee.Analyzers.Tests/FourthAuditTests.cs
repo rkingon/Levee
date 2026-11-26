@@ -25,7 +25,7 @@ public sealed class FourthAuditTests
     [Theory]
     [InlineData("Adapter", "_ = new Design().CreateDbContext([]);", "LEVEE018")]
     [InlineData("Tool", "_ = new Design().CreateDbContext([]);", null)]
-    [InlineData("Adapter", "AppDb db = null!; _ = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<object>(db);", "LEVEE005")]
+    [InlineData("Adapter", "AppDb db = null!; _ = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<object>(db);", "LEVEE018")]
     public async Task A_context_or_its_services_by_another_door(string role, string statement, string? expected)
     {
         var output = await Compile(role, Ef + $"public static class Seed {{ public static void Go() {{ {statement} }} public static void Main() {{ }} }}");
@@ -64,20 +64,72 @@ public sealed class FourthAuditTests
     }
 
     [Theory]
-    [InlineData("public abstract class Desk { public abstract void Next(); }", true)]
-    [InlineData("public abstract class ValueObject { protected abstract System.Collections.Generic.IEnumerable<object> Parts(); }", false)]
-    [InlineData("public abstract record Id(Guid Value);", false)]
-    public async Task A_shared_abstract_base_is_a_way_in(string kernel, bool refused)
+    [InlineData("public abstract class Desk { public abstract void Next(); }", "public override void Next() { }", true)]
+    [InlineData("public abstract class Desk { public void Next() => NextCore(); protected abstract void NextCore(); }", "protected override void NextCore() { }", true)]
+    [InlineData("public class Desk { public virtual void Next() { } }", "public override void Next() { }", true)]
+    [InlineData("public abstract class ValueObject { protected abstract System.Collections.Generic.IEnumerable<object> GetEqualityComponents(); }", "protected override System.Collections.Generic.IEnumerable<object> GetEqualityComponents() => [];", false)]
+    public async Task A_shared_base_with_anything_to_override_is_a_way_in(string kernel, string member, bool refused)
     {
         var shared = await Compile("Kernel", $"namespace App.Kernel;\n{kernel}", "App.Kernel");
-        var derived = kernel.Contains("class Desk", StringComparison.Ordinal) ? "public override void Next() { }"
-            : kernel.Contains("ValueObject", StringComparison.Ordinal) ? "protected override System.Collections.Generic.IEnumerable<object> Parts() => [];" : "";
-        var baseName = kernel.Contains("Desk", StringComparison.Ordinal) ? "App.Kernel.Desk" : kernel.Contains("ValueObject", StringComparison.Ordinal) ? "App.Kernel.ValueObject" : "App.Kernel.Id(Guid.Empty)";
-        var declaration = baseName.EndsWith(')')
-            ? $"public sealed record Thing() : {baseName};"
-            : $"public sealed class Thing : {baseName} {{ {derived} }}";
-        var output = await Compile("Application", $"namespace App;\n{declaration}", "App.Application", shared.Reference());
+        var name = kernel.Contains("ValueObject", StringComparison.Ordinal) ? "ValueObject" : "Desk";
+        var output = await Compile("Application", $"namespace App;\npublic sealed class Thing : App.Kernel.{name} {{ {member} }}", "App.Application", shared.Reference());
 
         Assert.True(refused == output.Ids.Contains("LEVEE016"), string.Join("\n", output.Errors.Select(e => e.GetMessage(System.Globalization.CultureInfo.InvariantCulture))));
+    }
+
+    [Fact]
+    public async Task A_records_own_value_semantics_are_no_way_in()
+    {
+        var shared = await Compile("Kernel", "namespace App.Kernel;\npublic abstract record Id(Guid Value);", "App.Kernel");
+        var output = await Compile("Domain", "namespace App;\npublic sealed record OrderId(Guid Value) : App.Kernel.Id(Value);", "App.Domain", shared.Reference());
+
+        Assert.DoesNotContain("LEVEE016", output.Ids);
+    }
+}
+
+/// <summary>What the fifth independent audit found.</summary>
+public sealed class FifthAuditTests
+{
+    private static Task<Probe.Output> Compile(string role, string source) =>
+        Probe.CompileAsync(new Probe.Settings(role, Exe: role is "Tool" or "Host"), "using System;\nusing Levee;\n" + source, "App", GeneratorTests.Levee);
+
+    [Theory]
+    [InlineData("Host", true)]
+    [InlineData("Composition", true)]
+    [InlineData("Tool", false)]
+    public async Task EFs_accessor_is_a_connection_of_its_own_outside_a_tool(string role, bool refused)
+    {
+        var output = await Compile(role, """
+            namespace Microsoft.EntityFrameworkCore
+            {
+                public class DbContext { }
+                namespace Infrastructure { public static class AccessorExtensions { public static T GetService<T>(this DbContext db) => default!; } }
+            }
+            public static class Seed { public static void Go(Microsoft.EntityFrameworkCore.DbContext db) { _ = Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions.GetService<object>(db); } public static void Main() { } }
+            """);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
+    }
+
+    [Theory]
+    [InlineData("public sealed record Watch(string Topic, [property: Secret] string Key) : ISubscription<int>;", true)]
+    [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\npublic sealed record Auth([property: Secret] string Key);", true)]
+    [InlineData("public sealed record Watch(string Topic) : ISubscription<int>;", false)]
+    public async Task A_subscriptions_input_holds_no_secret(string declaration, bool refused)
+    {
+        var output = await Compile("Contracts", $"[Operation(\"topics.watch\", \"member\", Platform = true)] {declaration}");
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
+    }
+
+    [Fact]
+    public async Task A_collection_of_the_apps_own_with_no_item_type_is_untyped()
+    {
+        var output = await Compile("Contracts", """
+            [Operation("notes.create", "member", Platform = true)] public sealed record Note(Bag Items) : IOperation<int>;
+            public sealed class Bag : System.Collections.IEnumerable { public System.Collections.IEnumerator GetEnumerator() => null!; }
+            """);
+
+        Assert.Contains("LEVEE104", output.Ids);
     }
 }
