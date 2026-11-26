@@ -141,8 +141,10 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         // An operation (or a subscription) is a message: a shared marker on it (a tenant id) is data, not a way in.
         // Shared interfaces (Kernel, Contracts) and a package's (a health check, a hosted callback) both hand the class to code that
         // calls it around the dispatcher; the BCL's own value contracts (IEquatable, IComparable) and Levee's don't.
+        // A shared abstract class (Kernel's, Contracts') is a way in the same: whatever holds the base calls the override.
         if (role is Role.Application or Role.Domain && !type.AllInterfaces.Any(i => i.ToDisplayString() == Known.Operation)
-            && type.AllInterfaces.FirstOrDefault(i => Exposes(i, roleOf)) is { } shared)
+            && (type.AllInterfaces.FirstOrDefault(i => Exposes(i, roleOf))
+                ?? SharedBase(type, roleOf)) is { } shared)
         {
             var whose = roleOf(shared.ContainingAssembly) is var r && r != Role.None ? r.ToString() : shared.ContainingAssembly?.Name ?? "a package";
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.ApplicationExposed, location, type.Name, shared.Name, whose));
@@ -250,6 +252,23 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         var name = assembly.Name;
         var bcl = name is "System" or "mscorlib" or "netstandard" || name.StartsWith("System.", StringComparison.Ordinal);
         return !bcl && name != "Levee" && !name.StartsWith("Levee.", StringComparison.Ordinal);
+    }
+
+    private static INamedTypeSymbol? SharedBase(INamedTypeSymbol type, Func<IAssemblySymbol, Role> roleOf)
+    {
+        for (var t = type.BaseType; t is not null; t = t.BaseType)
+        {
+            if (t.IsAbstract && t.ContainingAssembly is { } a && roleOf(a) is Role.Kernel or Role.Contracts
+                // Callable from outside: a protected hook (a value object's equality components) isn't a way in.
+                // A record's own equality and copy are value semantics, not a way in.
+                && t.GetMembers().Any(m => (m.IsAbstract || m.IsVirtual) && !m.IsOverride && !m.IsImplicitlyDeclared && m.CanBeReferencedByName
+                    && !(t.IsRecord && m.Name is "Equals" or "GetHashCode" or "ToString" or "PrintMembers" or "EqualityContract")
+                    && m.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal or Accessibility.ProtectedOrInternal))
+            {
+                return t;
+            }
+        }
+        return null;
     }
 
     private static Role? Reached(ITypeSymbol type, Func<IAssemblySymbol, Role> roleOf)

@@ -81,7 +81,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ApplicationExposed = Rule(
         "LEVEE016", "Application is reached only through operations",
-        "{0} implements {1} from {2}, so whatever holds a {1} calls the application around the dispatcher. Fix: keep the logic in a handler, and implement {1} in Composition or an Adapter by sending operations through the Dispatcher");
+        "{0} implements or derives from {1} from {2}, so whatever holds a {1} calls the application around the dispatcher. Fix: keep the logic in a handler, and implement {1} in Composition or an Adapter by sending operations through the Dispatcher");
 
     public static readonly DiagnosticDescriptor ToolProcess = Rule(
         "LEVEE017", "A Tool is a process",

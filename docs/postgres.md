@@ -52,8 +52,15 @@ and changes nothing. A Tool's owner work (migrations, the role bootstrap) runs i
 allows only in a Tool (LEVEE018); runs nest.
 
 The guard is on the context `AddLeveePostgres` names, so another context registered beside it (`AddDbContext`,
-`AddDbContextFactory`) fails the host's start: map its entities in the one context. The build refuses the other ways to
-a connection of the app's own: `new NpgsqlConnection`, a data source's connections, a context factory, `new` on a
-context outside a Tool, the context's own connection (`GetDbConnection`; `IAmbientTransaction` has the operation's), SQL
-that sets the scope settings or writes the audit by hand, and transaction control (LEVEE004, LEVEE018).
+`AddDbContextFactory`, or the context itself, configured in `OnConfiguring`) fails the host's start: map its entities in
+the one context. The guard reaches the context through `DbContextOptions<TContext>`, so a context that configures itself
+in `OnConfiguring` instead fails before its first transaction, with the fix.
+
+A retrying execution strategy (`EnableRetryOnFailure`) can't run a transaction its caller began, so it's refused the same
+way: a transient failure answers `Unavailable`, which a client may repeat and a job retries.
+
+The build refuses the other ways to a connection of the app's own outside a Tool: `new NpgsqlConnection`, a data
+source's connections, a context factory or a design-time factory's `CreateDbContext`, `new` on a context, the context's
+own connection (`GetDbConnection`; `IAmbientTransaction` has the operation's) or its internal services (`GetService<T>`),
+SQL that sets the scope settings or writes the audit by hand, and transaction control (LEVEE004, LEVEE005, LEVEE018).
 See the [trust model](decisions.md#trust-model) for where these guarantees stop.

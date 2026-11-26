@@ -645,6 +645,17 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return inBase;
         }
+        // A collection of the app's own carries its items by the interface it implements (IEnumerable<object>).
+        foreach (var contract in named.AllInterfaces.Where(i => i.ContainingNamespace?.ToDisplayString() != "Levee"))
+        {
+            foreach (var argument in contract.TypeArguments)
+            {
+                if (Untyped(argument, seen, path) is { } inContract)
+                {
+                    return inContract;
+                }
+            }
+        }
         return null;
     }
 

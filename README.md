@@ -137,7 +137,7 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   (`levee.platform`) sees every row, so the access policy decides who may run a platform operation
   (`AccessRequest.Operation.Platform`).
 - Every write is audited in the operation's own transaction (`levee_audit`, append-only, `[Secret]` and `[Personal]`
-  inputs redacted: an append-only record can never forget personal data, so it never holds it). Denial logs name the
+  inputs redacted, a mark on an abstract or interface member holding for its implementations: an append-only record can never forget personal data, so it never holds it). Denial logs name the
   operation and the reason, not the caller.
   `[Secret]` is property-only: on a positional record it's `[property: Secret]`, and a bare one doesn't compile.
 - A job is an operation: `jobs.EnqueueAsync(new CreateNote(...))` is authorized as the caller, commits or rolls back
@@ -246,7 +246,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE013 | A Host names or holds nothing of Application's or Domain's (`var` included): it reaches them through the dispatcher. |
 | LEVEE014 | A Composition project's public surface is extension methods that register and map, taking and returning none of Application's, Domain's or an adapter's types. |
 | LEVEE015 | Composition wires the application (constructs, binds, registers) and never calls into it, delegates included: what it maps goes through the dispatcher. |
-| LEVEE016 | An Application or Domain type implements no Kernel, Contracts or package interface (Levee's and its own ports' aside): it's reached only through operations. |
+| LEVEE016 | An Application or Domain type implements no Kernel, Contracts or package interface (Levee's and its own ports' aside), and derives from no shared abstract class: it's reached only through operations. |
 | LEVEE017 | A Tool is an executable nothing references. |
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |

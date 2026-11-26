@@ -465,6 +465,83 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     private sealed class SideDbContext(DbContextOptions<SideDbContext> options) : DbContext(options);
 
     [Fact]
+    public async Task A_second_context_configured_on_its_own_is_refused_at_start()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddScoped<ReportsDb>();
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+
+        Assert.Contains("ReportsDb is a DbContext besides SampleDbContext", refused.Message, StringComparison.Ordinal);
+    }
+
+    private sealed class ReportsDb : DbContext;
+
+    [Fact]
+    public async Task A_context_the_guard_cant_reach_is_refused_before_its_first_transaction()
+    {
+        var connection = postgres.App;
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(new OwnConfiguration(connection));
+        builder.Services.AddDbContext<SelfConfigured>();
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SelfConfigured>();
+        using var host = builder.Build();
+        await using var scope = host.Services.CreateAsyncScope();
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct));
+
+        Assert.Contains("SelfConfigured doesn't carry Levee's guard", refused.Message, StringComparison.Ordinal);
+    }
+
+    private sealed record OwnConfiguration(string Connection);
+
+    private sealed class SelfConfigured(OwnConfiguration own) : DbContext
+    {
+        protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) => optionsBuilder.UseNpgsql(own.Connection);
+    }
+
+    [Fact]
+    public async Task A_retrying_strategy_is_refused_before_its_first_transaction()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddDbContext<SampleDbContext>(o => o.UseNpgsql(postgres.App, n => n.EnableRetryOnFailure()));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+        await using var scope = host.Services.CreateAsyncScope();
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>().BeginAsync(new WorkScope("acme", ReadOnly: true), Ct));
+
+        Assert.Contains("EnableRetryOnFailure", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Owner_work_lasts_until_its_last_run_ends_in_any_order()
+    {
+        using var host = Build();
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
+
+        var outer = LeveeOwner.Run();
+        var inner = LeveeOwner.Run();
+        outer.Dispose();
+        Assert.Equal(0, await db.Database.ExecuteSqlRawAsync("delete from notes where false", Ct));
+        inner.Dispose();
+        inner.Dispose();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes where false", Ct));
+    }
+
+    [Fact]
     public async Task The_audit_is_stamped_by_the_database_not_its_caller()
     {
         await using var connection = new NpgsqlConnection(postgres.App);

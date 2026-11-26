@@ -144,8 +144,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var flat = Flat(text);
         var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
             || flat.Contains("levee." + Hole);
-        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write")
-            || (flat is "levee.scope" or "levee.platform" && (SetAtUse(operation) || LocalSetLater(operation)));
+        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write") || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
+            || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, operation.Syntax.GetLocation(), "SQL setting Levee's scope or writing its audit"));
@@ -181,37 +181,49 @@ public sealed class CodeRules : DiagnosticAnalyzer
         return Flat(clean).Contains("set_config") || SettingStatement.IsMatch(clean.Replace("\"", "").Replace("'", ""));
     }
 
-    /// <summary>A bare setting name held in a local: judged at each of the local's uses, as part of the string or call it reaches.</summary>
-    private static bool LocalSetLater(IOperation name)
+    // pg_settings is the view set_config writes through.
+    private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// A bare setting name is allowed only where it's read: passed with SQL that reads it (<c>current_setting</c>) and sets
+    /// nothing, or held in a <c>const</c> (judged at each use) or a local every use of which reads it.
+    /// </summary>
+    private static bool ReadOnly(IOperation name)
     {
-        if (name.Parent is not IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declarator })
+        if (name.Parent is IFieldInitializerOperation { InitializedFields: var fields } && fields.All(f => f.IsConst))
         {
-            return false;
+            return true;
         }
-        var root = name;
-        while (root.Parent is not null)
+        if (name.Parent is IVariableInitializerOperation { Parent: IVariableDeclaratorOperation declarator })
         {
-            root = root.Parent;
-        }
-        foreach (var use in root.Descendants().OfType<ILocalReferenceOperation>().Where(r => SymbolEqualityComparer.Default.Equals(r.Local, declarator.Symbol)))
-        {
-            IOperation outer = use;
-            while (outer.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } or IInterpolationOperation or IInterpolatedStringOperation or IConversionOperation)
-            {
-                outer = outer.Parent;
-            }
-            if ((outer != use && Flatten(outer) is { } sql && Sets(sql)) || SetAtUse(outer))
+            if (declarator.Symbol.IsConst)
             {
                 return true;
             }
+            var root = name;
+            while (root.Parent is not null)
+            {
+                root = root.Parent;
+            }
+            var uses = root.Descendants().OfType<ILocalReferenceOperation>().Where(r => SymbolEqualityComparer.Default.Equals(r.Local, declarator.Symbol)).ToList();
+            return uses.Count > 0 && uses.All(ReadAtUse);
         }
-        return false;
+        return ReadAtUse(name);
     }
 
-    /// <summary>Whether the call a bare setting name is passed to sets a setting.</summary>
-    private static bool SetAtUse(IOperation name)
+    /// <summary>The name, or the string it's put in, is passed with SQL that reads a setting and sets none.</summary>
+    private static bool ReadAtUse(IOperation name)
     {
-        for (var at = name.Parent; at is not null and not IBlockOperation and not ISymbolInitializerOperation and not IVariableDeclarationGroupOperation; at = at.Parent)
+        IOperation outer = name;
+        while (outer.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add } or IInterpolationOperation or IInterpolatedStringOperation or IConversionOperation)
+        {
+            outer = outer.Parent;
+        }
+        if (outer != name && Flatten(outer) is { } around && Reads(around))
+        {
+            return true;
+        }
+        for (var at = outer.Parent; at is not null and not IBlockOperation and not ISymbolInitializerOperation and not IVariableDeclarationGroupOperation; at = at.Parent)
         {
             var arguments = at switch
             {
@@ -221,11 +233,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
             };
             if (!arguments.IsDefault)
             {
-                return arguments.Any(a => a.Value != name && Flatten(a.Value) is { } sql && Sets(sql));
+                var sql = arguments.Where(a => a.Value != outer).Select(a => Flatten(a.Value)).OfType<string>().ToList();
+                return sql.Any(Reads) && !sql.Any(Sets);
             }
         }
         return false;
     }
+
+    private static bool Reads(string sql) => Flat(sql).Contains("current_setting") && !Sets(sql);
 
     // SET [LOCAL|SESSION] levee.…, or RESET levee.…, once quotes are gone ("levee"."scope").
     private static readonly Regex SettingStatement = new(@"(?:^|;)\s*(?:re)?set\s+(?:local\s+|session\s+)?levee\s*\.", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -299,8 +314,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
             || (method.Name == "GetDbConnection" && method.ContainingType.ToDisplayString() == "Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions")
             || (method.Name == "CreateInstance" && method.ContainingType.ToDisplayString() == "System.Activator"
                 && (Derives(made, "System.Data.Common.DbConnection") || Derives(made, "Microsoft.EntityFrameworkCore.DbContext")))
+            // EF's design-time factory is dotnet ef's to call, by reflection: called from code, it's a context with no guard.
             || (method.Name is "CreateDbContext" or "CreateDbContextAsync"
-                && method.ContainingType.AllInterfaces.Prepend(method.ContainingType).Any(i => i.OriginalDefinition.ToDisplayString() == "Microsoft.EntityFrameworkCore.IDbContextFactory<TContext>"))))
+                && method.ContainingType.AllInterfaces.Prepend(method.ContainingType).Any(i => $"{i.ContainingNamespace}.{i.MetadataName}"
+                    is "Microsoft.EntityFrameworkCore.IDbContextFactory`1" or "Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory`1"))))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
             return;
@@ -367,8 +384,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static bool IsLocator(IMethodSymbol method)
     {
         var owner = method.ContainingType.ToDisplayString();
+        // EF's accessor reaches the context's internal services (its connection among them).
         if (owner is "System.IServiceProvider" or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
-            or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider" or "Microsoft.Extensions.DependencyInjection.ActivatorUtilities")
+            or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider" or "Microsoft.Extensions.DependencyInjection.ActivatorUtilities"
+            or "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions")
         {
             return true;
         }

@@ -17,7 +17,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 - **Ports and adapters.** `[Port]` (one adapter, a `SelectedBy` setting, or a `Many` set), `[Adapter]` with lifetimes,
   `IAdapters<TPort>`, repositories as ports; only the chosen adapter is registered. `IFlush`, `IAmbientTransaction`.
 - **Personal data and secrets.** `[Secret]` (write-only, never stored unsealed) and `[Personal]` (redacted in the audit
-  and outcomes), at any depth of an input: nested records, collections, dictionary values under any key, derived types.
+  and outcomes), at any depth of an input: nested records, collections, dictionary values under any key, derived types,
+  and a mark on an abstract or interface member holding for its implementations.
   Inputs are typed all the way down (LEVEE104 refuses `object`, raw JSON, `dynamic`, non-generic collections), so no
   member hides from either.
 - **The strict wire.** `LeveeJson`: unknown members and missing required members refused; schemas for every contract.
@@ -39,8 +40,9 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   conflicts, constraints, contention, an unreachable store).
 - `LeveeSchema`: the scope functions, the append-only audit added to only through `levee_audit_write` (stamped by the
   database), isolation policies and the runtime role's grants, qualified by schema.
-- The app's context refuses commands outside a transaction its unit of work began (EF's connection probe aside), and a
-  second context fails the host's start; `LeveeOwner.Run()` for a Tool's owner work.
+- The app's context refuses commands outside a transaction its unit of work began (EF's connection probe aside); a second
+  context, a context the guard can't reach and a retrying execution strategy are refused before any operation runs;
+  `LeveeOwner.Run()` for a Tool's owner work.
 
 ### Levee.Oxbow
 - Oxbow (0.2.0-alpha.3) enlisted in the unit of work; operations as jobs, retried when transient (after the failure's own

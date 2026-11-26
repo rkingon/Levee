@@ -377,20 +377,33 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
     }
 
+    /// <summary>
+    /// The operation's own result stands, committed or not: a recorder failing (to be built, to record, in time, to be
+    /// disposed) is its bug, not the caller's.
+    /// </summary>
     private async Task RecordOutcomeAsync(OperationOutcome outcome, CancellationToken ct)
     {
-        await using var services = scopes.CreateAsyncScope();
-        foreach (var recorder in services.ServiceProvider.GetServices<IOperationOutcome>())
+        var recorder = "the recorders' scope";
+        try
         {
-            try
+            await using var services = scopes.CreateAsyncScope();
+            foreach (var each in services.ServiceProvider.GetServices<IOperationOutcome>())
             {
-                await recorder.RecordAsync(outcome, ct);
+                recorder = each.GetType().Name;
+                try
+                {
+                    await each.RecordAsync(outcome, ct);
+                }
+                catch (Exception e)
+                {
+                    LogOutcomeFailed(log, e, outcome.Operation.Name, recorder);
+                }
             }
-            catch (Exception e)
-            {
-                // The operation's own result stands, committed or not: a recorder failing, or timing out, is its bug, not the caller's.
-                LogOutcomeFailed(log, e, outcome.Operation.Name, recorder.GetType().Name);
-            }
+            recorder = "the recorders' scope";
+        }
+        catch (Exception e)
+        {
+            LogOutcomeFailed(log, e, outcome.Operation.Name, recorder);
         }
     }
 

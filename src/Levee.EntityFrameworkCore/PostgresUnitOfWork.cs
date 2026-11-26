@@ -1,5 +1,7 @@
 using System.Data;
+using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -36,21 +38,30 @@ public static class LeveePostgresServiceCollectionExtensions
 /// </summary>
 public static class LeveeOwner
 {
-    private static readonly AsyncLocal<bool> Active = new();
+    // A count, not a flag: runs may nest and end in any order, and owner work lasts until the last has ended.
+    private static readonly AsyncLocal<StrongBox<int>> Depth = new();
 
-    internal static bool IsActive => Active.Value;
+    internal static bool IsActive => Depth.Value is { Value: > 0 };
 
     /// <summary>Lets the context run commands outside an operation until disposed.</summary>
     public static IDisposable Run()
     {
-        var scope = new Scope(Active.Value);
-        Active.Value = true;
-        return scope;
+        var depth = Depth.Value ??= new StrongBox<int>();
+        depth.Value++;
+        return new Scope(depth);
     }
 
-    private sealed class Scope(bool outer) : IDisposable
+    private sealed class Scope(StrongBox<int> depth) : IDisposable
     {
-        public void Dispose() => Active.Value = outer;
+        private int _disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                depth.Value--;
+            }
+        }
     }
 }
 
@@ -60,10 +71,12 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
 {
     public ValidateOptionsResult Validate(string? name, OneContext options)
     {
+        // By its options (AddDbContext, AddDbContextFactory) or as itself (AddScoped<ReportsDb>() configured in OnConfiguring).
         var others = services
             .Select(d => d.ServiceType)
-            .Where(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) && t.GenericTypeArguments[0] != context)
-            .Select(t => t.GenericTypeArguments[0].Name)
+            .Select(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) ? t.GenericTypeArguments[0] : t)
+            .Where(t => typeof(DbContext).IsAssignableFrom(t) && t != context)
+            .Select(t => t.Name)
             .Distinct()
             .ToList();
         return others.Count == 0
@@ -181,6 +194,24 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     // Outside a host nothing validates on start: the first operation does.
     private readonly OneContext _one = one.Value;
 
+    /// <summary>What the context's own configuration could undo, checked before its first transaction.</summary>
+    private void Verify()
+    {
+        var interceptors = db.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()?.Interceptors;
+        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true)
+        {
+            throw new InvalidOperationException(
+                $"{typeof(TContext).Name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
+                + $"DbContextOptions<{typeof(TContext).Name}> in its constructor and configure it in AddDbContext, not OnConfiguring.");
+        }
+        if (db.Database.CreateExecutionStrategy().RetriesOnFailure)
+        {
+            throw new InvalidOperationException(
+                $"{typeof(TContext).Name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: "
+                + "remove it; a transient failure answers Unavailable, which a client may repeat and a job retries.");
+        }
+    }
+
     public Error? Classify(Exception exception)
     {
         for (var e = exception; e is not null; e = e.InnerException)
@@ -212,6 +243,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
 
     public async Task<IUnitOfWork> BeginAsync(WorkScope scope, CancellationToken ct)
     {
+        Verify();
         if (db.Database.CurrentTransaction is not null)
         {
             throw new InvalidOperationException($"{typeof(TContext).Name} already has a transaction: an operation's unit of work opens its own.");

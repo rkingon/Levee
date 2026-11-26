@@ -446,3 +446,74 @@ public sealed class ThirdAuditFixTests
         Assert.DoesNotContain("example.com", LeveeJson.Redact(bag, typeof(System.Dynamic.ExpandoObject)), StringComparison.Ordinal);
     }
 }
+
+internal sealed class BrokenToBuild : IOperationOutcome
+{
+    public BrokenToBuild() => throw new InvalidOperationException("A dependency the recorder needs isn't registered.");
+
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => Task.CompletedTask;
+}
+
+internal sealed class BrokenToDispose : IOperationOutcome, IAsyncDisposable
+{
+    public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => Task.CompletedTask;
+
+    public ValueTask DisposeAsync() => throw new InvalidOperationException("The recorder's flush failed.");
+}
+
+[System.Text.Json.Serialization.JsonDerivedType(typeof(Card), "card")]
+public abstract record PaymentMethod
+{
+    [Secret] public abstract string Token { get; init; }
+}
+
+public sealed record Card(string Token, string Last4) : PaymentMethod;
+
+public interface IReachable
+{
+    [Personal] string Email { get; }
+}
+
+public sealed record Reachable(string Email) : IReachable;
+
+[Operation("probe.pay", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AddPayment(PaymentMethod Method, Reachable Owner) : IOperation<Unit>;
+
+internal sealed class AddPaymentHandler : IOperationHandler<AddPayment, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(AddPayment operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed class FourthAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Theory]
+    [InlineData(typeof(BrokenToBuild))]
+    [InlineData(typeof(BrokenToDispose))]
+    public async Task A_recorder_broken_to_build_or_dispose_leaves_the_result_standing(Type recorder)
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes(), more: s => s.AddScoped(typeof(IOperationOutcome), recorder)).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, store.Commits);
+    }
+
+    [Fact]
+    public async Task A_mark_on_an_abstract_or_interface_member_holds_for_its_implementation()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        await dispatcher.SendAsync(new AddPayment(new Card("tok_live_SECRET", "4242"), new Reachable("ada@example.com")), Admin, CancellationToken.None);
+
+        var audited = Assert.Single(store.Audited).Input;
+        Assert.DoesNotContain("tok_live_SECRET", audited, StringComparison.Ordinal);
+        Assert.DoesNotContain("example.com", audited, StringComparison.Ordinal);
+        Assert.Contains("4242", audited, StringComparison.Ordinal);
+        Assert.Equal(true, LeveeJson.Schema(typeof(Card))["properties"]!["token"]!["writeOnly"]?.GetValue<bool>());
+    }
+}

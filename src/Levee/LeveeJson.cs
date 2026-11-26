@@ -37,7 +37,7 @@ public static class LeveeJson
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, node) =>
             {
-                if (context.PropertyInfo?.AttributeProvider?.IsDefined(typeof(SecretAttribute), inherit: false) == true && node is JsonObject obj)
+                if (Marked(context.PropertyInfo?.AttributeProvider, typeof(SecretAttribute)) && node is JsonObject obj)
                 {
                     obj["writeOnly"] = true;
                 }
@@ -69,9 +69,28 @@ public static class LeveeJson
     }
 
     private static string? Mark(System.Reflection.ICustomAttributeProvider? property) =>
-        property?.IsDefined(typeof(SecretAttribute), inherit: false) == true ? "[secret]"
-        : property?.IsDefined(typeof(PersonalAttribute), inherit: false) == true ? "[personal]"
+        Marked(property, typeof(SecretAttribute)) ? "[secret]"
+        : Marked(property, typeof(PersonalAttribute)) ? "[personal]"
         : null;
+
+    /// <summary>
+    /// Marked on the member itself, on any member it overrides, or on an interface member it implements: a mark on an
+    /// abstract base's member holds for every override, whatever the override says.
+    /// </summary>
+    private static bool Marked(System.Reflection.ICustomAttributeProvider? member, Type mark)
+    {
+        if (member is not System.Reflection.PropertyInfo property)
+        {
+            return member?.IsDefined(mark, inherit: false) == true;
+        }
+        // Attribute.IsDefined walks the overridden properties; PropertyInfo.IsDefined ignores inherit.
+        if (Attribute.IsDefined(property, mark, inherit: true))
+        {
+            return true;
+        }
+        var owner = property.DeclaringType;
+        return owner is not null && owner.GetInterfaces().Any(i => i.GetProperty(property.Name) is { } declared && declared.IsDefined(mark, inherit: false));
+    }
 
     /// <summary>Walks the value and its JSON together, so each member is judged by the type it actually has.</summary>
     private static void Redact(JsonNode? node, object? value, JsonSerializerOptions json)
@@ -154,7 +173,7 @@ public static class LeveeJson
         }
         foreach (var property in info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : [])
         {
-            if (property.AttributeProvider?.IsDefined(typeof(SecretAttribute), inherit: false) == true)
+            if (Marked(property.AttributeProvider, typeof(SecretAttribute)))
             {
                 return property.Name;
             }
