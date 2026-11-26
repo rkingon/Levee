@@ -1,0 +1,30 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.{json,yml,yaml,props,targets,csproj,slnx}]
+indent_size = 2
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_using_directive_placement = outside_namespace
+dotnet_sort_system_directives_first = true
+
+[tests/**.cs]
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1515.severity = none
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA2000.severity = none
+dotnet_diagnostic.CA1849.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA2007.severity = none
+
+[src/**.cs]
+# Levee is C#-only: VB's keywords (Error) don't constrain its names.
+dotnet_diagnostic.CA1716.severity = none

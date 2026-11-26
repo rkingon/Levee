@@ -1,0 +1,11 @@
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+.vs/
+.idea/
+.DS_Store
+
+# The maintainer's own notes, which name the apps Levee is extracted from.
+vibes.md

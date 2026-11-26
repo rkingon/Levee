@@ -1,0 +1,23 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Levee/Levee.csproj" />
+    <Project Path="src/Levee.Analyzers/Levee.Analyzers.csproj" />
+    <Project Path="src/Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
+    <Project Path="src/Levee.Oxbow/Levee.Oxbow.csproj" />
+    <Project Path="src/Levee.AspNetCore/Levee.AspNetCore.csproj" />
+    <Project Path="src/Levee.Mcp/Levee.Mcp.csproj" />
+    <Project Path="src/Levee.Cli/Levee.Cli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Levee.Tests/Levee.Tests.csproj" />
+    <Project Path="tests/Levee.Analyzers.Tests/Levee.Analyzers.Tests.csproj" />
+    <Project Path="tests/Levee.IntegrationTests/Levee.IntegrationTests.csproj" />
+    <Project Path="tests/Levee.Cli.Tests/Levee.Cli.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Sample/">
+    <Project Path="tests/Sample/Sample.Domain/Sample.Domain.csproj" />
+    <Project Path="tests/Sample/Sample.Contracts/Sample.Contracts.csproj" />
+    <Project Path="tests/Sample/Sample.Application/Sample.Application.csproj" />
+    <Project Path="tests/Sample/Sample.Adapters/Sample.Adapters.csproj" />
+  </Folder>
+</Solution>

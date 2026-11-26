@@ -1,0 +1,31 @@
+<Project>
+  <ItemGroup>
+    <!-- Library dependency floors: the lowest versions that work, so consumers float up. -->
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.0" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <PackageVersion Include="Oxbow" Version="0.2.0-alpha.3" />
+    <PackageVersion Include="Oxbow.EntityFrameworkCore" Version="0.2.0-alpha.3" />
+    <PackageVersion Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
+    <PackageVersion Include="ModelContextProtocol" Version="2.4.0" />
+
+    <!-- Roslyn components target the compiler the SDK ships. -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
+    <PackageVersion Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" Version="5.6.0" />
+
+    <!-- Tests -->
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.15" />
+    <PackageVersion Include="Oxbow.DataProtection" Version="0.2.0-alpha.3" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.17.0" />
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,40 @@
+<Project>
+  <!--
+    An .editorconfig value ends at its first ';', so the semicolon list MSBuild users write would keep only its first entry.
+    Rewritten to commas just before the analyzers' config is generated, after the project has set it.
+  -->
+  <Target Name="_LeveeNormalizeAllowedReferences" BeforeTargets="GenerateMSBuildEditorConfigFileShouldRun" Condition="'$(LeveeAllowedReferences)' != ''">
+    <PropertyGroup>
+      <LeveeAllowedReferences>$(LeveeAllowedReferences.Replace(';', ','))</LeveeAllowedReferences>
+    </PropertyGroup>
+  </Target>
+
+  <!-- What a referencing project asks of this one: its role. A project without Levee has no such target. -->
+  <Target Name="LeveeRoleOf" Returns="@(_LeveeRoleOf)">
+    <ItemGroup>
+      <_LeveeRoleOf Include="$(MSBuildProjectFullPath)" Role="$(LeveeRole)" />
+    </ItemGroup>
+  </Target>
+
+  <!--
+    Every project a Levee project references uses Levee too, with a role: one outside it escapes every rule, and becomes a
+    side door (adapters sharing code, a package admitted into Application). A test may reference anything.
+  -->
+  <Target Name="_LeveeEveryProjectHasARole" AfterTargets="ResolveProjectReferences"
+          Condition="'$(LeveeRole)' != '' and '$(LeveeRole)' != 'Test' and '@(_MSBuildProjectReferenceExistent)' != ''">
+    <ItemGroup>
+      <_LeveeReferenced Include="@(_MSBuildProjectReferenceExistent)"
+                        Condition="'%(_MSBuildProjectReferenceExistent.ReferenceOutputAssembly)' != 'false' and '%(_MSBuildProjectReferenceExistent.OutputItemType)' == ''" />
+    </ItemGroup>
+    <MSBuild Projects="@(_LeveeReferenced)" Targets="LeveeRoleOf" SkipNonexistentTargets="true" BuildInParallel="$(BuildInParallel)"
+             Properties="%(_LeveeReferenced.SetConfiguration);%(_LeveeReferenced.SetPlatform);%(_LeveeReferenced.SetTargetFramework)"
+             RemoveProperties="%(_LeveeReferenced.GlobalPropertiesToRemove);%(_LeveeReferenced.UndefineProperties)">
+      <Output TaskParameter="TargetOutputs" ItemName="_LeveeRoled" />
+    </MSBuild>
+    <ItemGroup>
+      <_LeveeUnroled Include="@(_LeveeReferenced->'%(FullPath)')" Exclude="@(_LeveeRoled)" />
+    </ItemGroup>
+    <Error Code="LEVEE001" Condition="'@(_LeveeUnroled)' != ''"
+           Text="This $(LeveeRole) project references @(_LeveeUnroled->'%(Filename)', ', '), which doesn't use Levee, so none of Levee's rules hold there. Fix: reference Levee from it and give it a role: Infrastructure for code adapters share, Kernel for ids and values every layer shares (dotnet levee explain LEVEE001)" />
+  </Target>
+</Project>

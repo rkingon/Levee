@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>Oxbow enlisted in Levee's unit of work: every job inserted in the operation's transaction, and operations themselves as jobs.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Levee/Levee.csproj" />
+    <PackageReference Include="Oxbow" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="PublicAPI.Shipped.txt;PublicAPI.Unshipped.txt" />
+  </ItemGroup>
+</Project>

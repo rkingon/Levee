@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <LeveeRole>Domain</LeveeRole>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Levee/Levee.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/Levee/Levee.csproj" />
+    <ProjectReference Include="../../src/Levee.AspNetCore/Levee.AspNetCore.csproj" />
+    <ProjectReference Include="../../src/Levee.Mcp/Levee.Mcp.csproj" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+  </ItemGroup>
+</Project>

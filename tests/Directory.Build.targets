@@ -1,0 +1,4 @@
+<Project>
+  <!-- What the Levee package's buildTransitive targets give a consumer. -->
+  <Import Project="../src/Levee/build/Levee.targets" />
+</Project>

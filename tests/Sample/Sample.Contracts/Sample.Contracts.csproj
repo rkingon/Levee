@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <LeveeRole>Contracts</LeveeRole>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Levee/Levee.csproj" />
+  </ItemGroup>
+</Project>

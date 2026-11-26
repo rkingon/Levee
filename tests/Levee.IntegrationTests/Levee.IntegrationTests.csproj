@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../Sample/Sample.Adapters/Sample.Adapters.csproj" />
+    <ProjectReference Include="../../src/Levee.Oxbow/Levee.Oxbow.csproj" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Microsoft.AspNetCore.DataProtection" />
+    <PackageReference Include="Oxbow.DataProtection" />
+  </ItemGroup>
+</Project>

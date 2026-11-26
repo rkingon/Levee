@@ -1,0 +1,20 @@
+#nullable enable
+Levee.Mcp.LeveeMcpBuilderExtensions
+Levee.Mcp.LeveeMcpOptions
+Levee.Mcp.LeveeMcpOptions.Bind.get -> System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, Levee.OperationDescriptor!, System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.JsonElement>!>?
+Levee.Mcp.LeveeMcpOptions.Bind.set -> void
+Levee.Mcp.LeveeMcpOptions.BoundInputs.get -> System.Collections.Generic.IReadOnlyCollection<string!>!
+Levee.Mcp.LeveeMcpOptions.BoundInputs.set -> void
+Levee.Mcp.LeveeMcpOptions.Catalog.get -> Levee.OperationCatalog?
+Levee.Mcp.LeveeMcpOptions.Catalog.set -> void
+Levee.Mcp.LeveeMcpOptions.Include.get -> System.Func<Levee.OperationDescriptor!, bool>?
+Levee.Mcp.LeveeMcpOptions.Include.set -> void
+Levee.Mcp.LeveeMcpOptions.LeveeMcpOptions() -> void
+Levee.Mcp.LeveeMcpOptions.Principal.get -> System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, System.Threading.Tasks.ValueTask<Levee.Principal?>>?
+Levee.Mcp.LeveeMcpOptions.Principal.set -> void
+Levee.Mcp.LeveeMcpOptions.Render.get -> System.Func<Levee.OperationDescriptor!, System.Text.Json.JsonElement, System.Collections.Generic.IList<ModelContextProtocol.Protocol.ContentBlock!>?>?
+Levee.Mcp.LeveeMcpOptions.Render.set -> void
+Levee.Mcp.LeveeMcpOptions.Send.get -> System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, string!, System.Text.Json.JsonElement, System.Threading.CancellationToken, System.Threading.Tasks.Task<Levee.Result<System.Text.Json.JsonElement>>!>?
+Levee.Mcp.LeveeMcpOptions.Send.set -> void
+static Levee.Mcp.LeveeMcpBuilderExtensions.WithLeveeOperations(this Microsoft.Extensions.DependencyInjection.IMcpServerBuilder! builder, System.Action<Levee.Mcp.LeveeMcpOptions!>! configure) -> Microsoft.Extensions.DependencyInjection.IMcpServerBuilder!
+static Levee.Mcp.LeveeMcpBuilderExtensions.WithLeveeOperations(this Microsoft.Extensions.DependencyInjection.IMcpServerBuilder! builder, System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, System.Threading.Tasks.ValueTask<Levee.Principal?>>! principal, System.Func<Levee.OperationDescriptor!, bool>? include = null) -> Microsoft.Extensions.DependencyInjection.IMcpServerBuilder!

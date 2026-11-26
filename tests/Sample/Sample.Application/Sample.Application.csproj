@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <LeveeRole>Application</LeveeRole>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Sample.Contracts/Sample.Contracts.csproj" />
+    <ProjectReference Include="../Sample.Domain/Sample.Domain.csproj" />
+  </ItemGroup>
+</Project>

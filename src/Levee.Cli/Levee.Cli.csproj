@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>true</IsPackable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-levee</ToolCommandName>
+    <PackageId>Levee.Cli</PackageId>
+    <Description>dotnet levee: scaffold a Levee app, generate operations, list the catalog, print the database's schema and grants.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
+    <PackageReference Include="Oxbow" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" />
+    <InternalsVisibleTo Include="Levee.Cli.Tests" />
+    <EmbeddedResource Include="../../docs/rules.md" LogicalName="Levee.Cli.rules.md" />
+  </ItemGroup>
+</Project>

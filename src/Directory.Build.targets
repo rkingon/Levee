@@ -1,0 +1,11 @@
+<Project>
+  <!--
+    Levee's own projects answer a test project's role check (Levee.targets) as the framework: in a consumer they're
+    packages, not projects, and never asked.
+  -->
+  <Target Name="LeveeRoleOf" Returns="@(_LeveeRoleOf)">
+    <ItemGroup>
+      <_LeveeRoleOf Include="$(MSBuildProjectFullPath)" Role="Framework" />
+    </ItemGroup>
+  </Target>
+</Project>

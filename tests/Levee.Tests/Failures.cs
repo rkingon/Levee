@@ -1,0 +1,220 @@
+using System.Runtime.CompilerServices;
+using Levee;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Levee.Tests;
+
+[Operation("probe.crash", "member", Platform = true)]
+public sealed record Crash : IOperation<Unit>;
+
+internal sealed class CrashHandler : IOperationHandler<Crash, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Crash operation, OperationContext context, CancellationToken ct) =>
+        throw new InvalidOperationException("the handler's own bug");
+}
+
+[Operation("probe.busy", "member", Platform = true, Errors = ["probe.busy"])]
+public sealed record Busy : IOperation<Unit>;
+
+internal sealed class BusyHandler : IOperationHandler<Busy, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Busy operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<Unit>>(Error.Unavailable("probe.busy", "Busy.", TimeSpan.FromSeconds(30)));
+}
+
+[Operation("probe.crashing_ticks", "member", Platform = true)]
+public sealed record CrashingTicks : ISubscription<Tick>;
+
+internal sealed class CrashingTicksHandler : ISubscriptionHandler<CrashingTicks, Tick>
+{
+    public async IAsyncEnumerable<Tick> SubscribeAsync(CrashingTicks subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Yield();
+        yield return new Tick(1);
+        throw new InvalidOperationException("the stream's own bug");
+    }
+}
+
+public sealed class FailureTests
+{
+    private static readonly Member Ada = new("ada", "acme");
+    private readonly Store _store = new();
+    private readonly Outcomes _outcomes = new();
+
+    private Dispatcher Build() => DispatcherTests.Services(_store, _outcomes).GetRequiredService<Dispatcher>();
+
+    [Fact]
+    public async Task A_handler_that_throws_is_internal_rolled_back_traced_and_told()
+    {
+        var result = await Build().SendAsync(new Crash(), Ada, CancellationToken.None);
+
+        Assert.Equal((ErrorKind.Internal, LeveeErrors.Internal, true), (result.Error!.Kind, result.Error.Code, result.Error.Transient));
+        Assert.Matches("^[0-9a-f]{32}$", result.Error.Trace);
+        Assert.Contains(result.Error.Trace!, result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("bug", result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal((0, 1), (_store.Commits, _store.Disposed));
+        Assert.Equal(result.Error, Assert.Single(_outcomes.Seen).Error);
+    }
+
+    [Fact]
+    public async Task A_cancelled_call_stays_cancelled()
+    {
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Build().SendAsync(new Wait(), Ada, cancelled.Token));
+    }
+
+    [Fact]
+    public async Task A_subscription_that_throws_mid_stream_ends_with_an_internal_error()
+    {
+        var opened = await Build().SubscribeAsync(new CrashingTicks(), Ada, CancellationToken.None);
+        var seen = new List<Tick>();
+
+        var failed = await Assert.ThrowsAsync<OperationFailedException>(async () =>
+        {
+            await foreach (var tick in opened.Value)
+            {
+                seen.Add(tick);
+            }
+        });
+
+        Assert.Equal([new Tick(1)], seen);
+        Assert.Equal(ErrorKind.Internal, failed.Error.Kind);
+        Assert.IsType<InvalidOperationException>(failed.InnerException);
+    }
+
+    [Theory]
+    [InlineData(false, "probe.odd")]
+    [InlineData(true, "internal")]
+    public async Task An_undeclared_code_is_logged_or_in_tests_refused(bool refuse, string code)
+    {
+        var dispatcher = DispatcherTests.Services(_store, _outcomes, more: s => s.AddSingleton(new LeveeOptions { RefuseUndeclaredErrors = refuse }))
+            .GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new Odd(), Ada, CancellationToken.None);
+
+        Assert.Equal(code, result.Error!.Code);
+        Assert.Contains(refuse ? "failed with 'probe.odd', which it doesn't declare" : "Odd.", result.Error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Operations_declare_what_they_fail_with_and_Levees_own_come_on_top()
+    {
+        var busy = Levee.Generated.LeveeComposition.Catalog.Find("probe.busy")!;
+
+        Assert.Equal(["probe.busy"], busy.Errors);
+        Assert.True(busy.Declares("probe.busy") && busy.Declares(LeveeErrors.Conflict));
+        Assert.False(busy.Declares("probe.refused"));
+    }
+}
+
+[Operation("probe.odd", "member", Platform = true)]
+public sealed record Odd : IOperation<Unit>;
+
+internal sealed class OddHandler : IOperationHandler<Odd, Unit>
+{
+    // Built at run time, as a code from a domain method or a port is: the build can't see it.
+    public Task<Result<Unit>> HandleAsync(Odd operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<Unit>>(Error.Conflict(string.Join('.', "probe", "odd"), "Odd."));
+}
+
+[Operation("probe.wait", "member", Platform = true)]
+public sealed record Wait : IOperation<Unit>;
+
+internal sealed class WaitHandler : IOperationHandler<Wait, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(Wait operation, OperationContext context, CancellationToken ct)
+    {
+        await Task.Delay(Timeout.Infinite, ct);
+        return Unit.Value;
+    }
+}
+
+[Operation("probe.forever", "member", Platform = true)]
+public sealed record Forever : ISubscription<Tick>;
+
+internal sealed class ForeverHandler : ISubscriptionHandler<Forever, Tick>
+{
+    public async IAsyncEnumerable<Tick> SubscribeAsync(Forever subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new Tick(1);
+        await Task.Delay(Timeout.Infinite, ct);
+    }
+}
+
+[Operation("probe.mine", "member", CallerScoped = true)]
+public sealed record Mine : IOperation<string>;
+
+internal sealed class MineHandler : IOperationHandler<Mine, string>
+{
+    public Task<Result<string>> HandleAsync(Mine operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<string>>(context.Scope.Key ?? "");
+}
+
+public sealed class CallerScopeTests
+{
+    private readonly Store _store = new();
+
+    [Fact]
+    public async Task A_caller_scoped_operation_runs_in_its_callers_scope()
+    {
+        var dispatcher = DispatcherTests.Services(_store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var mine = await dispatcher.SendAsync(new Mine(), new Key("key_1", "acme"), CancellationToken.None);
+        var unscoped = await dispatcher.SendAsync(new Mine(), new SystemPrincipal("cron"), CancellationToken.None);
+
+        Assert.Equal("acme", mine.Value);
+        Assert.Equal(new WorkScope("acme", ReadOnly: true), Assert.Single(_store.Begun));
+        Assert.Equal((ErrorKind.Forbidden, LeveeErrors.CallerUnscoped), (unscoped.Error!.Kind, unscoped.Error.Code));
+    }
+
+    [Fact]
+    public void A_job_runs_in_the_scope_its_caller_carried() =>
+        Assert.Equal("acme", ((IScopedPrincipal)new JobPrincipal("key_1", System: false, Scope: "acme")).ScopeKey);
+}
+
+public sealed class RefusalTests
+{
+    [Fact]
+    public void The_catalog_lists_what_the_policy_and_admissions_refuse_with_once() =>
+        Assert.Equal(["access.platform", "access.tenant", "access.unknown", "admission.closed"], Levee.Generated.LeveeComposition.Catalog.Refusals);
+}
+
+[Operation("probe.register", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record Register(string Handle, [property: Personal] string Email) : IOperation<string>;
+
+internal sealed class RegisterHandler : IOperationHandler<Register, string>
+{
+    public Task<Result<string>> HandleAsync(Register operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<string>>(operation.Email);
+}
+
+public sealed class PersonalTests
+{
+    [Fact]
+    public async Task Personal_data_reaches_the_handler_but_not_the_audit_or_the_outcome()
+    {
+        var store = new Store();
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(store, outcomes).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new Register("ada", "ada@example.com"), new Member("ada", null, Admin: true), CancellationToken.None);
+
+        Assert.Equal("ada@example.com", result.Value);
+        Assert.Equal("""{"handle":"ada","email":"[personal]"}""", Assert.Single(store.Audited).Input);
+        Assert.DoesNotContain("ada@example.com", Assert.Single(outcomes.Seen).Input, StringComparison.Ordinal);
+    }
+}
+
+[Operation("probe.quiet", "member", Platform = true)]
+public sealed record Quiet : ISubscription<Tick>;
+
+internal sealed class QuietHandler : ISubscriptionHandler<Quiet, Tick>
+{
+    public async IAsyncEnumerable<Tick> SubscribeAsync(Quiet subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.Infinite, ct);
+        yield break;
+    }
+}

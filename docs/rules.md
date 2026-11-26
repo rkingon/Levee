@@ -1,0 +1,432 @@
+# Levee's rules
+
+Every rule is an error. Each section is what `dotnet levee explain <id>` prints: why the rule exists, the shape it
+refuses, and the conventional shape to write instead.
+
+## LEVEE001: Every Levee project declares its role
+
+The role decides what a project may reference and which rules apply to its code. Without one, none of them can.
+
+```xml
+<!-- Right: the layer the project is -->
+<PropertyGroup>
+  <LeveeRole>Application</LeveeRole>
+</PropertyGroup>
+```
+
+Kernel holds ids and values every layer shares; Contracts, the operations and views clients see; Domain, aggregates;
+Application, handlers and ports; Adapter, ports' implementations; Infrastructure, plumbing adapters share; Composition, the wiring hosts share; Host, a process;
+Client, a consumer over the wire; Tool, a process run as the database's owner (migrations, role bootstrap); Projection, the app's own public API (typed routes, a webhook), which maps HTTP onto
+operations and sends them through the `Dispatcher`; Test, tests.
+
+## LEVEE002: A role references only what it may
+
+Dependencies point inward: Domain knows nothing of Application, Application nothing of its adapters, a Host nothing it
+doesn't compose. A reference outward lets the core depend on a detail.
+
+| Role | May reference |
+|---|---|
+| Kernel | Kernel |
+| Contracts | Kernel, Contracts |
+| Domain | Kernel, Domain |
+| Application | Kernel, Contracts, Domain, Application |
+| Adapter | Kernel, Contracts, Domain, Application, Infrastructure (never another Adapter) |
+| Infrastructure | Kernel, Infrastructure |
+| Composition | all but Host, Tool and Test |
+| Host | all but Host, Tool and Test |
+| Client | Kernel, Contracts, Client |
+| Projection | Kernel, Contracts, Projection |
+| Tool | what a Host sees, but Client and Projection; nothing references a Tool |
+| Test | all |
+
+Every project an app builds declares a role, so none sits outside these rules: a project without Levee that another
+references fails the build. Code several adapters share (a vendor transport, `DelegatingHandler`s) is Infrastructure.
+
+Wrong: Application references the Postgres adapter to use its `DbContext`. Right: Application declares a port
+(`INotes`), the adapter implements it, and composition binds it. Wrong: two adapters share code by referencing each other.
+Right: what they share is Kernel (values) or a port both serve.
+
+## LEVEE003: Time comes from TimeProvider
+
+Reading the wall clock makes code untestable and gives one operation several "nows".
+
+```csharp
+// Wrong
+var due = DateTimeOffset.UtcNow.AddDays(30);
+
+// Right, in a handler: the operation's one time, at Postgres's precision
+var due = context.Now.AddDays(30);
+
+// Right, elsewhere
+internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetUtcNow(); }
+```
+
+Only Composition or a Host registers `TimeProvider.System`; tests register a `FakeTimeProvider`.
+
+## LEVEE004: Only the dispatcher saves and commits
+
+One operation is one transaction, committed once, after the handler and the audit. A `SaveChanges` or a transaction
+of your own commits half an operation, or commits what the audit never saw.
+
+```csharp
+// Wrong
+db.Notes.Add(note);
+await db.SaveChangesAsync(ct);
+
+// Right: change state; the dispatcher commits, or rolls back on an error
+db.Notes.Add(note);
+return view;
+
+// Right: a later query in the same operation must see the insert
+internal sealed class EfNotes(AppDbContext db, IFlush flush) : INotes
+{
+    public async Task AddAsync(Note note, CancellationToken ct)
+    {
+        db.Notes.Add(note);
+        await flush.FlushAsync(ct); // sent inside the open transaction, not committed
+    }
+}
+```
+
+Raw SQL is held to the same rule: a constant or interpolated statement that begins, commits, rolls back or shapes a
+transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused.
+
+To undo, return an error: the dispatcher rolls back. A refusal that must be recorded is a domain outcome in the
+result, not an error.
+
+## LEVEE005: No service location outside hosts
+
+`GetService` hides a dependency from the constructor, from tests and from the generated composition's check that
+every port is bound.
+
+```csharp
+// Wrong
+var gateway = provider.GetRequiredService<IPayments>();
+
+// Right
+internal sealed class PayHandler(IPayments payments) : IOperationHandler<Pay, Receipt> { ... }
+```
+
+To choose an adapter by configuration, declare `[Port(SelectedBy = "Providers:Payments")]`. To choose one at run
+time by name (per tenant, per request), declare `[Port(Many = true)]`, name the adapters, and take `IAdapters<TPort>`.
+
+## LEVEE006: Levee rules are suppressed only with a reason
+
+A rule weakened for a whole project is a rule nobody knows is off. The fix is almost always the code. Where it truly
+can't follow the rule, suppress at that line, with the reason beside it:
+
+```csharp
+#pragma warning disable LEVEE012 // the generated client's only I/O is this stream, owned by the SDK
+```
+
+`NoWarn`, rulesets, `.editorconfig` or global config severities, assembly-wide `[SuppressMessage]` and a bare
+`#pragma warning disable` are refused. LEVEE006 itself is never suppressed.
+
+## LEVEE007: Aggregates change only through their own methods
+
+An aggregate root guards its invariants. A public setter or a mutable collection lets anyone skip them.
+
+```csharp
+// Wrong
+public sealed class Order : IAggregateRoot
+{
+    public OrderStatus Status { get; set; }
+    public List<Line> Lines { get; } = [];
+}
+
+// Right
+public sealed class Order : IAggregateRoot
+{
+    private readonly List<Line> _lines = [];
+    public OrderStatus Status { get; private set; }
+    public IReadOnlyList<Line> Lines => _lines;
+
+    public Result<Order> Add(Line line)
+    {
+        if (Status != OrderStatus.Open) return Error.Conflict("order.closed", "A closed order takes no lines.");
+        _lines.Add(line);
+        return this;
+    }
+}
+```
+
+## LEVEE008: Inner roles reference only the BCL and abstractions
+
+Kernel, Contracts, Domain and Application are the core: what the app is, not how it runs. A package there drags I/O,
+a vendor or a framework into it.
+
+Wrong: Application references `Microsoft.Extensions.Caching.Memory`, an HTTP client SDK, or `Microsoft.Extensions.Hosting`.
+Right: Application declares a port for what it needs (`IPlanCache`, `IPayments`), an Adapter implements it with the
+package, and a hosted service or loop lives in Composition or an Adapter, sending operations through the `Dispatcher`.
+
+Configuration isn't the core's either: Composition binds settings into a plain record, and Application takes the record.
+
+Only a pure library of values and functions (no I/O, caching, clients or framework) is allowed by name. Frameworks
+can't be: an entry naming `Microsoft.Extensions.*` (the abstractions are already allowed), ASP.NET Core, EF Core,
+`Microsoft.Data.*`, Npgsql or Levee's own packages, or a wildcard wide enough to cover one, fails the build.
+
+```xml
+<LeveeAllowedReferences>NodaTime;Vogen*</LeveeAllowedReferences>
+```
+
+## LEVEE009: Everything that uses Levee is built with its analyzers
+
+A project built with `ExcludeAssets="analyzers"` on Levee compiles with none of these rules and none of the generated
+registration. Reference Levee plainly.
+
+## LEVEE010: Ports are declared in Application
+
+A port is what the application needs from outside, so it lives with the application: named for the need
+(`IHomePrices`), not for the vendor or the transport (`IZillowClient`, `IS3Reader`).
+
+```csharp
+// Application
+[Port(SelectedBy = "Providers:HomePrices")]
+public interface IHomePrices { Task<Result<HomePrice>> FindAsync(Zip3 area, CancellationToken ct); }
+```
+
+A repository is a port too: `IRepository<T>` for an aggregate root, declared in Application.
+
+## LEVEE011: Adapters implement ports, in Adapter projects
+
+An adapter is the only place a port meets the outside, and the only thing an Adapter project offers the application.
+
+```csharp
+// Adapters
+[Adapter("s3")]
+internal sealed class S3HomePrices(IAmazonS3 s3) : IHomePrices { ... }
+```
+
+Wrong: Application implements its own port (that's not a port; drop `[Port]`). Wrong: an adapter implements an
+interface of Application's, Domain's, Kernel's or Contracts' that isn't a port: whoever holds that interface drives the
+adapter around the dispatcher. Mark it `[Port]` in Application if the application needs it; work run as the database's
+owner (a migrator, a role bootstrap) is a Tool's, which references the adapter directly.
+
+## LEVEE012: The core does I/O only through ports
+
+Kernel, Contracts, Domain and Application do no I/O: no HTTP, sockets, files, databases, processes, console or
+environment. I/O there can't be swapped, simulated or tested without the world.
+
+```csharp
+// Wrong, in a handler
+var json = await File.ReadAllTextAsync("rates.json", ct);
+
+// Right: Application declares IRates; an Adapter reads the file (or S3, or a vendor), chosen by setting
+internal sealed class QuoteHandler(IRates rates) : IOperationHandler<Quote, QuoteView> { ... }
+```
+
+Naming an exception or an enum from an I/O namespace isn't I/O, nor is a doc comment's `cref`.
+
+## LEVEE013: The Host reaches the application only through the dispatcher
+
+A Host is a process: it composes and drives. Calling a handler or a domain type directly skips authorization, scope,
+the unit of work and the audit.
+
+```csharp
+// Wrong
+var notes = app.Services.GetRequiredService<INotes>();
+
+// Right
+var result = await dispatcher.SendAsync(new CreateNote(id, tenant, text), principal, ct);
+```
+
+Wiring that needs Application's types moves into Composition. A delegate to an Application method
+(`Func<int> f = Rules.Decide`) is a call all the same.
+
+## LEVEE014: Composition exposes only registration
+
+Composition's public surface is what hosts call to wire the app: extension methods on `IServiceCollection` or an
+endpoint builder. Anything else public would let a Host reach the application around the dispatcher.
+
+```csharp
+// Right
+public static class AppComposition
+{
+    public static IServiceCollection AddApp(this IServiceCollection services, IConfiguration configuration) { ... }
+}
+```
+
+Their signatures take and return only framework, Kernel and Contracts types. Everything else is internal.
+
+## LEVEE015: Composition wires the application, never drives it
+
+Composition constructs, binds and registers. Calling into the application from there (seeding, warming, a startup
+task) skips the pipeline: send an operation through the `Dispatcher` instead, as the app's own principal. A delegate to
+an Application method (a method group handed to a registration, a loop or a timer) is a call all the same.
+
+## LEVEE016: Application is reached only through operations
+
+An Application class that implements a Kernel or Contracts interface is handed to whatever holds that interface: a
+gateway, a Host, Composition. They call it directly, and the dispatcher never sees the call: no authorization, scope,
+unit of work or audit.
+
+```csharp
+// Wrong: Application
+internal sealed class JobBroker : IWorkDesk { public Task<Job?> NextAsync(...) { ... } }
+
+// Right: the logic is a handler; Composition implements the shared interface by dispatching
+[Operation("work.next", "runtime", Internal = true, Platform = true, ...)]
+public sealed record NextJob(...) : IOperation<Job?>;
+
+internal sealed class DispatchedDesk(Dispatcher dispatcher) : IWorkDesk
+{
+    public async Task<Job?> NextAsync(...) => (await dispatcher.SendAsync(new NextJob(...), principal, ct)).Value;
+}
+```
+
+Application implements Levee's interfaces (handlers), its own ports' contracts and Domain's, never the shared ones.
+
+## LEVEE017: A Tool is a process
+
+A Tool runs as the database's owner before the app exists: migrations, the role bootstrap. It may own its transaction
+(LEVEE004 doesn't hold it) because nothing else runs it: nothing references a Tool, and it's built as an executable.
+
+```xml
+<PropertyGroup>
+  <LeveeRole>Tool</LeveeRole>
+  <OutputType>Exe</OutputType>
+</PropertyGroup>
+```
+
+Every other rule holds: it drives the application only through the dispatcher, like a Host.
+
+## LEVEE101: Every operation has a handler
+
+```csharp
+// Application
+internal sealed class CreateNoteHandler(INotes notes) : IOperationHandler<CreateNote, NoteView>
+{
+    public async Task<Result<NoteView>> HandleAsync(CreateNote op, OperationContext context, CancellationToken ct) { ... }
+}
+```
+
+A subscription's handler is an `ISubscriptionHandler<TSub, TItem>`. `dotnet levee generate operation` writes the
+contract and its handler together.
+
+## LEVEE102: Every operation has one handler
+
+Two handlers for one operation means the pipeline can't know which runs. If they do different things, they are
+different operations.
+
+## LEVEE103: Operation names are unique
+
+The name is the wire contract: the route, the MCP tool, the CLI verb, the audit's record. Rename the newer one.
+
+## LEVEE104: Operations are declared whole
+
+An operation is declared in Contracts (in Application if it's the platform's own, `Internal = true`; a test may declare
+its own), as a public, top-level, non-generic sealed record with `[Operation(name, access)]` and `IOperation<TResult>`
+(or `ISubscription<TItem>`).
+
+- **Name**: lowercase snake_case segments joined by dots, area first: `notes.create`, `billing.invoice_lines.list`.
+- **Access**: the app's own vocabulary (`member`, `admin`, `platform-admin`); its `IAccessPolicy` decides it.
+- **Errors**: the codes its handler fails with, named like operations: `notes.too_long`.
+- **Subscriptions** only read: no `Effects`, no `Idempotency`, no `Errors`.
+
+## LEVEE105: Operations with effects declare their idempotency
+
+Requests are retried and jobs run at least once, so a write says what a repeat does:
+
+- `Idempotent`: a repeat changes nothing (set a status, upsert by key).
+- `Conflicts`: a repeat is refused. The conventional create: the client supplies the id, and a second insert is
+  `conflict`.
+- `None`: a repeat duplicates. Rarely right, and it can't be enqueued as a job.
+
+```csharp
+[Operation("tenants.create", "platform-admin", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
+public sealed record CreateTenant(Guid Id, string Name) : IOperation<TenantView>;
+```
+
+## LEVEE106: Every operation declares its scope
+
+Scope is whose rows an operation may see; Postgres holds it with row-level security. Forgetting it can't silently
+widen access, so each operation declares exactly one of three.
+
+```csharp
+// Scoped: the tenant (household, account) whose rows it touches
+public sealed record CreateNote(Guid Id, string Tenant, string Text) : IOperation<NoteView>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+// The caller's: its credentials carry the tenant (an API key issued to one), so the input can't name another
+[Operation("notes.mine", "key", CallerScoped = true)]
+public sealed record MyNotes : IOperation<IReadOnlyList<NoteView>>;
+// ...where the principal says it: public sealed record ApiKey(string Subject, string Tenant) : Principal(Subject), IScopedPrincipal
+
+// Platform: an operator's operation across every scope; the access policy decides who may
+[Operation("tenants.list", "platform-admin", Platform = true)]
+public sealed record ListTenants : IOperation<IReadOnlyList<TenantView>>;
+```
+
+## LEVEE107: Every port is bound
+
+A composition root that can't bind a port fails at the first request that needs it. Reference the Adapter project
+that implements it, or write the adapter. A port that's off in some deployments gets a null-object adapter, named
+and chosen by setting:
+
+```csharp
+[Port(SelectedBy = "Providers:Analytics")] public interface IAnalytics { ... }
+[Adapter("posthog")] internal sealed class PostHogAnalytics(...) : IAnalytics { ... }
+[Adapter("none")] internal sealed class NoAnalytics : IAnalytics { ... }
+```
+
+## LEVEE108: Every port is bound one way
+
+- One adapter: unnamed, no `SelectedBy`.
+- Several, one at a time: `[Port(SelectedBy = "Section:Key")]`, every adapter named, the setting naming one. Always
+  set, never inferred.
+- Several, all at once: `[Port(Many = true)]`, taken as `IEnumerable<TPort>`; name every adapter (or none) to route
+  by name with `IAdapters<TPort>`.
+
+## LEVEE109: Named adapters adapt a port
+
+`[Adapter]` marks an implementation of a `[Port]` (or `IRepository<T>`). On anything else it registers nothing: implement
+the port it was meant to serve, or remove the attribute.
+
+## LEVEE110: Handlers fail only with the errors their operation declares
+
+An operation's error codes are its contract: what a client branches on, listed in the catalog beside its input and
+result. A code its handler returns but doesn't declare is one no client knows to expect.
+
+```csharp
+// Contracts
+[Operation("notes.create", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts,
+    Errors = [NoteErrors.TooLong, NoteErrors.Banned])]
+public sealed record CreateNote(Guid Id, string Tenant, string Text) : IOperation<NoteView>, IScopedOperation { ... }
+
+public static class NoteErrors
+{
+    public const string TooLong = "notes.too_long";
+    public const string Banned = "notes.banned";
+}
+
+// Application
+return Error.Validation(NoteErrors.TooLong, "A note holds 500 characters at most.");
+```
+
+Levee's own codes (`LeveeErrors`: `conflict`, `input.invalid`, `internal`, `store.contention` and the rest) need no
+declaring. The build sees literal and constant codes in the handler; a code from elsewhere (a domain method, a port) that
+the operation doesn't declare is logged as an error when it's returned.
+
+In tests, `AddLeveeOperations(configuration, o => o.RefuseUndeclaredErrors = true)` turns that log into a failure: the
+call answers `internal`, so the test asserting its code fails and the log says which code to declare.
+
+Don't throw for a failure the caller should see: return it. A thrown exception is a bug: the dispatcher rolls back,
+logs it once with its trace, and answers `internal` with nothing but the trace.
+
+## LEVEE111: Access policies and admissions refuse only with the codes they declare
+
+The access policy and admissions run before any operation, so what they refuse with can come back from every
+operation. They declare it once, and the catalog lists it once (`OperationCatalog.Refusals`, `refusals` in `GET /ops`).
+
+```csharp
+[Refuses("access.tenant", "access.platform")]
+internal sealed class AccessPolicy : IAccessPolicy
+{
+    public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) => ...
+        Error.Forbidden("access.tenant", "Not your tenant.") ...
+}
+```
+
+A client that sees only Contracts (`LeveeCatalog`) doesn't see these: the policy lives where the app composes.

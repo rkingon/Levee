@@ -1,0 +1,25 @@
+<Project>
+  <Import Project="../Directory.Build.props" />
+  <!-- What the Levee package's buildTransitive props give a consumer. -->
+  <Import Project="../src/Levee/build/Levee.props" />
+
+  <PropertyGroup>
+    <IsTestProject Condition="$(MSBuildProjectName.EndsWith('Tests'))">true</IsTestProject>
+  </PropertyGroup>
+
+  <!-- What the Levee package's analyzers folder gives a consumer. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' != 'Levee.Analyzers.Tests'">
+    <ProjectReference Include="$(MSBuildThisFileDirectory)../src/Levee.Analyzers/Levee.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <OutputType>Exe</OutputType>
+    <LeveeRole>Test</LeveeRole>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(IsTestProject)' == 'true'">
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <Using Include="Xunit" />
+  </ItemGroup>
+</Project>

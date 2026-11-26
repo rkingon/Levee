@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <LeveeRole>Adapter</LeveeRole>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Sample.Application/Sample.Application.csproj" />
+    <ProjectReference Include="../../../src/Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
+  </ItemGroup>
+</Project>

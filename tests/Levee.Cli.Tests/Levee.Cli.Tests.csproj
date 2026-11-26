@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../../src/Levee.Cli/Levee.Cli.csproj" />
+    <!-- Built beside the tests, so the catalog has an app to read. -->
+    <ProjectReference Include="../Sample/Sample.Application/Sample.Application.csproj" />
+  </ItemGroup>
+</Project>
