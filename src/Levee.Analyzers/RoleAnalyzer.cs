@@ -6,8 +6,9 @@ namespace Levee.Analyzers;
 
 /// <summary>
 /// LEVEE001: a project that uses Levee declares its role. LEVEE002: it references only the roles its own may. LEVEE008: a
-/// Contracts, Domain or Application project references nothing beyond the BCL, Microsoft.Extensions abstractions, Levee
-/// and what <c>LeveeAllowedReferences</c> names. LEVEE009: nothing it references uses Levee without Levee's rules.
+/// Kernel, Contracts, Domain or Application project references nothing beyond the BCL, Microsoft.Extensions abstractions,
+/// Levee and the pure libraries <c>LeveeAllowedReferences</c> names. LEVEE009: nothing it references uses Levee without
+/// Levee's rules. LEVEE017: a Tool is a process.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class RoleAnalyzer : DiagnosticAnalyzer

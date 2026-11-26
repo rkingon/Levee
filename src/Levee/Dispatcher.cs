@@ -197,8 +197,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             // Rolled back already: the unit of work was disposed on the way out.
             result = Unexpected(e, descriptor);
         }
+        // After the commit, the caller's cancel can't undo the operation, so it doesn't stop it being told either.
         await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
-            result.IsSuccess ? null : result.Error), ct);
+            result.IsSuccess ? null : result.Error), CancellationToken.None);
         activity?.SetTag("levee.outcome", result.IsSuccess ? "ok" : result.Error.Code);
         if (!result.IsSuccess)
         {
@@ -338,6 +339,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 }
             }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
+            if (!result.IsSuccess && ReferenceEquals(result.Error, Error.Uninitialized))
+            {
+                throw new InvalidOperationException($"{descriptor.Name}'s handler returned default(Result<T>): neither a value nor an error.");
+            }
             if (!result.IsSuccess)
             {
                 if (!descriptor.Declares(result.Error.Code))

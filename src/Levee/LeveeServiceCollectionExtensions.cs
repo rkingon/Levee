@@ -16,7 +16,9 @@ public static class LeveeServiceCollectionExtensions
         var options = new LeveeOptions();
         configure?.Invoke(options);
         services.AddSingleton(new OperationCatalogPart(catalog.All, catalog.Refusals));
-        services.TryAddSingleton(provider =>
+        // The generated catalog, whatever was registered before: a catalog built by hand claims flags no rule checked.
+        services.RemoveAll<OperationCatalog>();
+        services.AddSingleton(provider =>
         {
             var parts = provider.GetServices<OperationCatalogPart>().ToList();
             return new OperationCatalog(parts.SelectMany(p => p.Operations), parts.SelectMany(p => p.Refusals));

@@ -143,13 +143,15 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 - A job is an operation: `jobs.EnqueueAsync(new CreateNote(...))` is authorized as the caller, commits or rolls back
   with the caller's transaction, and runs through the dispatcher as a `JobPrincipal` for the caller (the audit names
   them; the access policy decides again). Jobs run at least once, so an operation declaring `Idempotency.None` can't be
-  enqueued, nor one with a `[Secret]` input (job inputs are stored): pass a reference instead.
+  enqueued, nor one with a `[Secret]` anywhere in its input (job inputs are stored) unless jobs seal them
+  ([docs/jobs.md](docs/jobs.md)).
 - Oxbow is enlisted in the unit of work (`AddLeveeOxbow()`): the app's own job kinds, through the scoped `IOxbowClient`,
   commit or roll back with the operation too. `.AddLeveeJobs()` adds operations as jobs on top.
 - `Internal = true`: the platform's own operations (sign-in, bootstrap), through the same pipeline, never projected. The
   dispatcher's `FromClient` methods, which every projection uses, refuse them; in-process calls and jobs reach them.
-- A subscription (`ISubscription<TItem>`, `ISubscriptionHandler`) is declared like an operation, authorized and scoped once
-  as it opens, holds no transaction, and is projected as server-sent events (`GET /ops/{name}/events?input={json}`).
+- A subscription (`ISubscription<TItem>`, `ISubscriptionHandler`) is declared like an operation, scoped, authorized and
+  admitted as it opens and rechecked while it streams, holds no transaction, and is projected as server-sent events
+  ([docs/subscriptions.md](docs/subscriptions.md)).
 - Jobs with `[Secret]` inputs are sealed at rest with Oxbow's args encryption: `AddLeveeJobs(sealSecrets: true)` and
   `AddArgsEncryption()`. Without it they're refused.
 - `OperationContext.Now` is the operation's one time, at Postgres's microseconds.
@@ -158,7 +160,7 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 - Jobs run for whoever enqueued them: register an `IJobPrincipals` to turn that subject back into the app's own principal.
   A process that works no queue only enqueues, and may enqueue kinds other processes work.
 - A test over an app with a Composition project adds its own operations on top: `AddLeveeOperations(...)` then the
-  generated `AddLeveeTestOperations()`. The catalog is the sum of its parts (`AddLeveePart`).
+  generated `AddLeveeTestOperations()`. Only generated code builds the catalog (LEVEE020).
 - An app's own attributes marked `[OperationMetadata]` are captured into the catalog (`descriptor.Get<T>()`) and shown by
   `GET /ops` beside each operation's input and result schemas.
 - A Contracts project carries its own catalog for clients: `<AssemblyName>.LeveeCatalog.Catalog`, every operation it
@@ -192,6 +194,8 @@ must be recorded, a declined application) is part of the result type.
 
 ## MCP
 
+[docs/mcp.md](docs/mcp.md) has the options.
+
 ```csharp
 services.AddMcpServer()
     .WithHttpTransport()                                  // or stdio, in-process for an agent's turn
@@ -213,13 +217,11 @@ Projections an app writes itself (typed REST routes, a webhook) answer failures 
 
 ## Postgres
 
-The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation`, or
-`LeveeSchema.Create(schema)` and the `schema` arguments for an app whose tables aren't in `public`; the app connects
-as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` (`dotnet levee db
-grants`) gives it: every table's rows, and the audit only through `levee_audit_write`, a function the owner's rights run, so no
-code of the app's can insert, change or remove an audit record. See [docs/decisions.md](docs/decisions.md#trust-model) for
-what the database holds and what the build does.
-`tests/Levee.IntegrationTests/PostgresFixture.cs` is the whole setup.
+The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation`; the app connects
+as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` gives it. That
+role adds to the audit only through `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a
+record. The app's context refuses any command outside an operation. [docs/postgres.md](docs/postgres.md) has the setup,
+and [the trust model](docs/decisions.md#trust-model) where the guarantees stop.
 
 ## Rules
 
@@ -247,6 +249,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE017 | A Tool is an executable nothing references. |
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |
+| LEVEE020 | Only generated code builds the catalog: no descriptor, catalog or catalog part by hand outside tests. |
 | LEVEE101–103 | Every operation has exactly one handler, and names are unique (checked where the catalog is built). |
 | LEVEE104 | An operation is a public top-level class with `[Operation(name, access)]` and `IOperation<T>`; names are lowercase and dotted. |
 | LEVEE105 | An operation with effects declares its idempotency. |

@@ -37,6 +37,7 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 | `LeveeProblems` public | B | An app's own HTTP routes answer failures exactly as `MapLeveeOperations` does. |
 | A job honours its failure's `RetryAfter` | the maintainer, with the failure contract | A vendor's rate limit says when to come back; Oxbow's backoff would guess. Built in Oxbow first (`JobRetryException`, 0.2.0-alpha.3), since a worker choosing its delay is Oxbow's to offer. |
 | MCP: inputs the server binds, rendered results, a server with no dispatcher | A | `LeveeMcpOptions` | What kept A's own MCP server: a turn's id filled by the server, a page shown as an image, and a stdio server beside the client. Without them, the rule "no hand-written projections" couldn't hold. |
+| A run-time guard against commands outside an operation; the audit stamped by the database; the analyzers-off check keyed on what can't be set from a project file; untyped input members refused; the catalog the generator's alone (LEVEE020) | a second independent audit | Each claim a probe could still falsify is either held at run time now, or restated as exactly as strong as the code. |
 | `ProblemView` in `Levee` | A | A client (an SDK) reads failures with Levee's own type, not a copy that drifts. |
 | SSE keep-alive and recheck | A | A stream outlives the authorization it opened with: a revoked key or a lost membership (admissions run at open and at each recheck) ends it, and idle proxies don't. |
 | The audit written only through `levee_audit_write`; side connections, scope settings and analyzers-off refused; recursive redaction | an independent audit | Each let code of the app's step around a guarantee the README claimed: forge the audit, leave the transaction, change its scope, or turn the rules off. |
@@ -51,12 +52,15 @@ Levee's guarantees are against mistakes: code that compiles in the wrong shape, 
 - **The build** refuses every way it knows for code of the app's to step around the pipeline: committing, opening a
   connection of its own, naming the scope settings, service location, I/O in the core, calling the application from a Host.
   Each is a rule with a test that proves it fires, and turning the rules off is itself refused (LEVEE006, LEVEE009).
-- **The database** holds what the build can't see at run time: an undeclared write fails in a read-only transaction, a write
-  outside the operation's scope fails row-level security, and the runtime role reaches the audit only through
-  `levee_audit_write`, so it can't insert, change or remove a record of its own.
-- **Not covered:** hostile code running as the app's role. The scope is a transaction setting the unit of work sets; code on
-  the same connection that sets it anyway (by reflection, or SQL the build can't see) moves into another tenant's rows. A
-  dependency the app trusts is trusted. Separating that is the database's roles, per tenant or per service, not Levee's.
+- **At run time,** what the build can't see is held anyway: the app's context refuses any command outside an operation's
+  transaction (a seeder, a resolved context, a hosted loop); an undeclared write fails in a read-only transaction; a write
+  outside the operation's scope fails row-level security; and the runtime role adds to the audit only through
+  `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a record.
+- **Not covered:** hostile code running as the app's role. The scope is a transaction setting the unit of work sets, and
+  `levee_audit_write` is callable by that role: code that sets the one or calls the other anyway (by reflection, a raw
+  connection, or SQL the build can't see) moves into another tenant's rows or adds a misleading record. The build refuses
+  every such spelling it knows, but no analyzer of a general-purpose language sees them all. A dependency the app trusts is
+  trusted. Separating that is the database's roles, per tenant or per service, not Levee's.
 
 ## Forks
 
@@ -90,6 +94,6 @@ Where the apps disagreed before Levee, and what it chose.
 | Question | From | Where it stands |
 |---|---|---|
 | A process that works no queue still checks Oxbow's schema at startup, so it can't start with the database down | B | Oxbow's to offer (a client-only mode); until then, readiness waits on the database. |
-| A transaction opened lazily, for operations that never touch the database | B | Deferred: real work, and it matters under load. |
+| A transaction opened lazily, for operations that never touch the database | B | Deferred: [benchmarks.md](benchmarks.md) measures what an operation costs today. |
 | The current operation inside `HttpClient` handlers | B | Deferred: B's admission-based workaround holds. |
 | An operation's result in `IOperationOutcome` | B | Deferred: results can carry secrets, so it needs a redaction story first. |

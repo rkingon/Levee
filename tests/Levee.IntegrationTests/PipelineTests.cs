@@ -390,4 +390,34 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, refused.SqlState);
     }
+
+    [Fact]
+    public async Task The_apps_context_runs_nothing_outside_an_operation()
+    {
+        using var host = Build();
+        await using var scope = host.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<SampleDbContext>();
+
+        var refused = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
+
+        Assert.Contains("outside an operation's unit of work", refused.Message, StringComparison.Ordinal);
+        using (LeveeOwner.Run())
+        {
+            // The guard steps aside for owner work; the role and row-level security still hold it.
+            Assert.Equal(0, await db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
+        }
+    }
+
+    [Fact]
+    public async Task The_audit_is_stamped_by_the_database_not_its_caller()
+    {
+        await using var connection = new NpgsqlConnection(postgres.App);
+        await connection.OpenAsync(Ct);
+        await using var backdate = new NpgsqlCommand(
+            "select levee_audit_write(gen_random_uuid(), '2001-01-01'::timestamptz, null, 'someone', 'x', '{}')", connection);
+
+        var refused = await Assert.ThrowsAsync<PostgresException>(() => backdate.ExecuteNonQueryAsync(Ct));
+
+        Assert.Equal(PostgresErrorCodes.UndefinedFunction, refused.SqlState);
+    }
 }

@@ -34,7 +34,7 @@ public sealed class DispatcherTests
     {
         var remember = LeveeComposition.Catalog.Find("probe.remember")!;
 
-        Assert.Equal(["auth.sign_in", "platform.reset", "probe.busy", "probe.crash", "probe.crashing_ticks", "probe.echo", "probe.forever", "probe.maybe", "probe.mine", "probe.now", "probe.odd", "probe.quiet", "probe.refuse", "probe.register", "probe.remember", "probe.sign_up", "probe.sneak", "probe.speak", "probe.ticks", "probe.wait", "probe.watched"],
+        Assert.Equal(["auth.sign_in", "platform.reset", "probe.busy", "probe.cancel_self", "probe.crash", "probe.crashing_ticks", "probe.echo", "probe.forever", "probe.maybe", "probe.mine", "probe.now", "probe.odd", "probe.quiet", "probe.reach", "probe.refuse", "probe.register", "probe.remember", "probe.sign_up", "probe.sneak", "probe.speak", "probe.ticks", "probe.wait", "probe.watched"],
             LeveeComposition.Catalog.All.Select(o => o.Name));
         Assert.Equal((Effects.Write, Idempotency.None, "member", false, false), (remember.Effects, remember.Idempotency, remember.Access, remember.ReadOnly, remember.Platform));
         Assert.True(LeveeComposition.Catalog.Find("platform.reset")!.Platform);

@@ -27,15 +27,17 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   Test; every project a Levee project references declares one.
 - The catalog, handler and adapter registration, and port binding, generated across the app's assemblies; a Contracts
   project's own `LeveeCatalog` for clients.
-- LEVEE001–019 and LEVEE101–111, each with `Fix:` in its message and a long form in `dotnet levee explain`. Turning them
-  off, by property, config severity or a generated-file header, is itself refused.
+- LEVEE001–020 and LEVEE101–111, each with `Fix:` in its message and a long form in `dotnet levee explain`. Turning them
+  off, by property, config severity, a generated-file header or a Test role on a project that isn't a test, is itself
+  refused (an IDE's design-time pass excepted).
 
 ### Levee.EntityFrameworkCore
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level
   security, COMMIT never cancelled by the caller, store failures classified (undeclared writes, scope violations,
   conflicts, constraints, contention, an unreachable store).
-- `LeveeSchema`: the scope functions, the append-only audit written only through `levee_audit_write`, isolation policies
-  and the runtime role's grants, qualified by schema.
+- `LeveeSchema`: the scope functions, the append-only audit added to only through `levee_audit_write` (stamped by the
+  database), isolation policies and the runtime role's grants, qualified by schema.
+- The app's context refuses commands outside an operation; `LeveeOwner.Run()` for a Tool's owner work.
 
 ### Levee.Oxbow
 - Oxbow (0.2.0-alpha.3) enlisted in the unit of work; operations as jobs, retried when transient (after the failure's own

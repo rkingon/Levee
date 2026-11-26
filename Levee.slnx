@@ -8,6 +8,9 @@
     <Project Path="src/Levee.Mcp/Levee.Mcp.csproj" />
     <Project Path="src/Levee.Cli/Levee.Cli.csproj" />
   </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/Levee.Benchmarks/Levee.Benchmarks.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Levee.Tests/Levee.Tests.csproj" />
     <Project Path="tests/Levee.Analyzers.Tests/Levee.Analyzers.Tests.csproj" />

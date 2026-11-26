@@ -1,0 +1,8 @@
+<Project>
+  <Import Project="../Directory.Build.props" />
+  <!-- As a consumer gets them from the Levee package: its props, analyzers and targets. -->
+  <Import Project="../src/Levee/build/Levee.props" />
+  <ItemGroup>
+    <ProjectReference Include="$(MSBuildThisFileDirectory)../src/Levee.Analyzers/Levee.Analyzers.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+</Project>

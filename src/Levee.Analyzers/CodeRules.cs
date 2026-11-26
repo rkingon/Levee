@@ -7,8 +7,9 @@ using Microsoft.CodeAnalysis.Operations;
 namespace Levee.Analyzers;
 
 /// <summary>
-/// The role-aware code rules. LEVEE003: no wall clock outside tests (TimeProvider.System only in a Host). LEVEE004: nothing
-/// saves or controls a transaction outside tests: the dispatcher commits. LEVEE005: services are located only in a Host or a test.
+/// The role-aware code rules. LEVEE003: no wall clock outside tests (TimeProvider.System only where the app composes). LEVEE004:
+/// nothing saves, controls a transaction, or sets the scope outside tests and Tools: the dispatcher commits. LEVEE005: services
+/// are located only where the app composes. LEVEE018: no connection of its own. LEVEE020: the catalog is the generator's.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class CodeRules : DiagnosticAnalyzer
@@ -25,7 +26,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "CreateAsyncScope", "CreateInstance", "GetServiceOrCreateInstance", "CreateFactory");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ServiceLocation, Descriptors.SideConnection);
+        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ServiceLocation, Descriptors.SideConnection, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -41,13 +42,16 @@ public sealed class CodeRules : DiagnosticAnalyzer
             }
             start.RegisterOperationAction(c => Known.Unless(c, () => OnProperty(c, role)), OperationKind.PropertyReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnInvocation(c, role)), OperationKind.Invocation);
+            // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
             // A Tool runs as the owner before the app exists: its transaction and its connections are its own.
             if (role != Role.Tool)
             {
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlCall(c)), OperationKind.Invocation, OperationKind.ObjectCreation);
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlText(c)), OperationKind.SimpleAssignment);
-                start.RegisterOperationAction(c => Known.Unless(c, () => OnScopeSetting(c)), OperationKind.Literal, OperationKind.InterpolatedStringText);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnScopeSetting(c)), OperationKind.Literal, OperationKind.Binary,
+                    OperationKind.InterpolatedString);
             }
         });
     }
@@ -72,7 +76,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
     // Statements that open, end or shape a transaction, at a statement's start once literals, comments and
     // dollar-quoted bodies are gone (a DO block's END, a CASE's END aren't).
     private static readonly Regex TransactionSql = new(
-        @"(?:^|;)\s*(begin|commit|rollback|end|abort|start\s+transaction|savepoint|release|prepare\s+transaction|set\s+transaction|set\s+session\s+characteristics)\b",
+        @"(?:^|;)\s*(begin|commit|rollback|end|abort|start\s+transaction|savepoint|release|prepare\s+transaction|set\s+transaction|set\s+session\s+characteristics|set\s+(?:local\s+|session\s+)?role|reset\s+role|set\s+session\s+authorization)\b",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex SqlNoise = new(@"\$[A-Za-z_]*\$.*?\$[A-Za-z_]*\$|'(?:[^']|'')*'|--[^\n]*|/\*.*?\*/",
@@ -121,23 +125,29 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// The settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>) named anywhere in a string: set
-    /// in SQL, built up in a variable, they'd move the operation into another tenant's rows. Only the unit of work sets them.
+    /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit
+    /// by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own concatenation),
+    /// it would move the operation into another tenant's rows, or forge its record. Reading them is fine.
     /// </summary>
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
-        var text = context.Operation switch
+        var operation = context.Operation;
+        // The whole constant once, not each piece of it.
+        if (operation.ConstantValue is not { HasValue: true, Value: string text } || operation.Parent?.ConstantValue is { HasValue: true, Value: string })
         {
-            ILiteralOperation { ConstantValue: { HasValue: true, Value: string literal } } => literal,
-            IInterpolatedStringTextOperation part => part.Text.ConstantValue.Value as string,
-            _ => null,
-        };
-        if (text is not null && (text.IndexOf("levee.scope", StringComparison.OrdinalIgnoreCase) >= 0
-            || text.IndexOf("levee.platform", StringComparison.OrdinalIgnoreCase) >= 0))
+            return;
+        }
+        var flat = new string(text.ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or ',' or '|' or '(' or ')' or '+')).ToArray());
+        var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform");
+        var sets = flat.Contains("set_config") || SettingStatement.IsMatch(text.Replace("\"", "").Replace("'", "")) || flat is "levee.scope" or "levee.platform";
+        if (names && sets || flat.Contains("levee_audit_write"))
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, context.Operation.Syntax.GetLocation(), "SQL naming Levee's scope setting"));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, operation.Syntax.GetLocation(), "SQL setting Levee's scope or writing its audit"));
         }
     }
+
+    // SET [LOCAL|SESSION] levee.…, or RESET levee.…, once quotes are gone ("levee"."scope").
+    private static readonly Regex SettingStatement = new(@"(?:^|;)\s*(?:re)?set\s+(?:local\s+|session\s+)?levee\s*\.", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     /// <summary>A connection of its own (outside the operation's transaction), or an ambient one (<c>TransactionScope</c>).</summary>
     private static void OnCreation(OperationAnalysisContext context, Role role)
@@ -151,7 +161,29 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
+        // A context of its own is a connection of its own; EF's design-time factory (dotnet ef) is the one exception.
+        else if (!Roles.Composes(role) && Derives(type, "Microsoft.EntityFrameworkCore.DbContext")
+            && context.ContainingSymbol.ContainingType?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") != true)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
+        }
+        else if (type is not null && type.ContainingNamespace?.ToDisplayString() == "Levee" && type.Name is "OperationCatalog" or "OperationCatalogPart")
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.CatalogByHand, context.Operation.Syntax.GetLocation(), $"new {type.Name}"));
+        }
     }
+
+    private static void OnMethodGroup(OperationAnalysisContext context, Role role)
+    {
+        var method = ((IMethodReferenceOperation)context.Operation).Method;
+        if (!Roles.Composes(role) && LocatorMembers.Contains(method.Name) && IsLocator(method))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ServiceLocation, context.Operation.Syntax.GetLocation(), method.Name));
+        }
+    }
+
+    private static bool IsLevee(INamedTypeSymbol? type, string name) =>
+        type is not null && type.Name == name && type.ContainingNamespace?.ToDisplayString() == "Levee";
 
     private static bool Derives(INamedTypeSymbol? type, string name)
     {
@@ -171,7 +203,24 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var method = ((IInvocationOperation)context.Operation).TargetMethod;
+        if ((IsLevee(method.ContainingType, "OperationDescriptor") && method.Name is "Create" or "CreateSubscription")
+            || (IsLevee(method.ContainingType, "LeveeServiceCollectionExtensions") && method.Name == "AddLeveePart"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.CatalogByHand, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
+            return;
+        }
+        // The run-time guard's one way around, for a Tool's owner work.
+        if (role != Role.Tool && method.Name == "Run" && method.ContainingType.ToDisplayString() == "Levee.EntityFrameworkCore.LeveeOwner")
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), "LeveeOwner.Run"));
+            return;
+        }
+        var made = method.TypeArguments.FirstOrDefault() as INamedTypeSymbol;
         if (role != Role.Tool && ((DataSourceMembers.Contains(method.Name) && Derives(method.ContainingType, "System.Data.Common.DbDataSource"))
+            || (method.Name == "CreateConnection" && Derives(method.ContainingType, "System.Data.Common.DbProviderFactory"))
+            || (method.Name is "Clone" or "CloneWith" && Derives(method.ContainingType, "System.Data.Common.DbConnection"))
+            || (method.Name == "CreateInstance" && method.ContainingType.ToDisplayString() == "System.Activator"
+                && (Derives(made, "System.Data.Common.DbConnection") || Derives(made, "Microsoft.EntityFrameworkCore.DbContext")))
             || (method.Name is "CreateDbContext" or "CreateDbContextAsync"
                 && method.ContainingType.AllInterfaces.Prepend(method.ContainingType).Any(i => i.OriginalDefinition.ToDisplayString() == "Microsoft.EntityFrameworkCore.IDbContextFactory<TContext>"))))
         {

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- A process that owns its transactions (the direct baselines) and drives the app through the dispatcher. -->
+    <LeveeRole>Tool</LeveeRole>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../tests/Sample/Sample.Contracts/Sample.Contracts.csproj" />
+    <ProjectReference Include="../../tests/Sample/Sample.Application/Sample.Application.csproj" />
+    <ProjectReference Include="../../tests/Sample/Sample.Adapters/Sample.Adapters.csproj" />
+    <ProjectReference Include="../../src/Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
+    <PackageReference Include="BenchmarkDotNet" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+</Project>

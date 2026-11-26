@@ -39,8 +39,10 @@ internal sealed class Outcomes : IOperationOutcome
 {
     public List<OperationOutcome> Seen { get; } = [];
 
+    // Honours its token, as a real recorder writing somewhere would: a cancel reaching it would escape to the caller.
     public Task RecordAsync(OperationOutcome outcome, CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         Seen.Add(outcome);
         return Task.CompletedTask;
     }

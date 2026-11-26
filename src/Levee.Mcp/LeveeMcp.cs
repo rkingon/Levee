@@ -165,9 +165,21 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
     internal async Task<CallToolResult> CallAsync(Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send,
         IDictionary<string, JsonElement>? arguments, IReadOnlyDictionary<string, JsonElement>? bound, CancellationToken ct)
     {
-        var merged = new Dictionary<string, JsonElement>(arguments ?? new Dictionary<string, JsonElement>(), StringComparer.Ordinal);
-        foreach (var (name, value) in bound ?? new Dictionary<string, JsonElement>())
+        // A bound input is the server's alone: whatever the model sent for it is dropped, and the server must supply it.
+        var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        foreach (var (name, value) in arguments ?? new Dictionary<string, JsonElement>())
         {
+            if (!mcp.BoundInputs.Contains(name))
+            {
+                merged[name] = value;
+            }
+        }
+        foreach (var name in mcp.BoundInputs)
+        {
+            if (bound is null || !bound.TryGetValue(name, out var value))
+            {
+                throw new InvalidOperationException($"Bind supplied no {name} for {descriptor.Name}: every bound input is the server's to fill.");
+            }
             merged[name] = value;
         }
         var result = await send(descriptor.Name, JsonSerializer.SerializeToElement(merged, levee.Json), ct);

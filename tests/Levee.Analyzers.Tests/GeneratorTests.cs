@@ -187,7 +187,7 @@ public sealed class GeneratorTests
             namespace App.Cli;
             public static class Calls
             {
-                public static global::Levee.OperationCatalog All => new(System.Linq.Enumerable.Concat(App.Notes.Contracts.LeveeCatalog.Catalog.All, App.Billing.Contracts.LeveeCatalog.Catalog.All));
+                public static int Count => App.Notes.Contracts.LeveeCatalog.Catalog.All.Count + App.Billing.Contracts.LeveeCatalog.Catalog.All.Count;
             }
             """, "App.Cli", Levee, notes.Reference(), billing.Reference());
 

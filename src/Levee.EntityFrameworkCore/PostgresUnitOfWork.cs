@@ -21,7 +21,98 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<IFlush, EfFlush<TContext>>();
         services.AddScoped<AmbientTransaction>();
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
+        services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
         return services;
+    }
+}
+
+/// <summary>
+/// Work as the database's owner, outside any operation: a Tool's migrations and role bootstrap. Everything else reaches the
+/// database only inside an operation's unit of work (LEVEE018 holds this to Tools and tests).
+/// </summary>
+public static class LeveeOwner
+{
+    private static readonly AsyncLocal<bool> Active = new();
+
+    internal static bool IsActive => Active.Value;
+
+    /// <summary>Lets the context run commands outside an operation until disposed.</summary>
+    public static IDisposable Run()
+    {
+        Active.Value = true;
+        return new Scope();
+    }
+
+    private sealed class Scope : IDisposable
+    {
+        public void Dispose() => Active.Value = false;
+    }
+}
+
+/// <summary>
+/// Refuses a command run outside a transaction: on the app's context, that's outside every operation (a seeder, a context
+/// a Host resolved), so not authorized, not scoped, not read-only when it should be, not audited, and committed on its own.
+/// </summary>
+internal sealed class OutsideOperationGuard : Microsoft.EntityFrameworkCore.Diagnostics.DbCommandInterceptor
+{
+    public static readonly OutsideOperationGuard Instance = new();
+
+    private static void Check(System.Data.Common.DbCommand command)
+    {
+        if (command.Transaction is null && !LeveeOwner.IsActive)
+        {
+            throw new InvalidOperationException(
+                "The app's DbContext ran a command outside an operation's unit of work. Send an operation through the Dispatcher; "
+                + "a Tool's owner work runs inside LeveeOwner.Run().");
+        }
+    }
+
+    public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> ReaderExecuting(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result)
+    {
+        Check(command);
+        return result;
+    }
+
+    public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader>> ReaderExecutingAsync(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<System.Data.Common.DbDataReader> result, CancellationToken cancellationToken = default)
+    {
+        Check(command);
+        return ValueTask.FromResult(result);
+    }
+
+    public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> NonQueryExecuting(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result)
+    {
+        Check(command);
+        return result;
+    }
+
+    public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> NonQueryExecutingAsync(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+    {
+        Check(command);
+        return ValueTask.FromResult(result);
+    }
+
+    public override Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object> ScalarExecuting(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object> result)
+    {
+        Check(command);
+        return result;
+    }
+
+    public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object>> ScalarExecutingAsync(
+        System.Data.Common.DbCommand command, Microsoft.EntityFrameworkCore.Diagnostics.CommandEventData eventData,
+        Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<object> result, CancellationToken cancellationToken = default)
+    {
+        Check(command);
+        return ValueTask.FromResult(result);
     }
 }
 
@@ -104,14 +195,14 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public WorkScope Scope => scope;
 
-    /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction.</summary>
+    /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>
     public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(entry);
         var schema = db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
         await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-            $"select {schema}.levee_audit_write({{0}}, {{1}}, {{2}}, {{3}}, {{4}}, {{5}}::jsonb)",
-            Guid.CreateVersion7(entry.At), entry.At, entry.Scope, entry.Subject, entry.Operation, entry.Input), ct);
+            $"select {schema}.levee_audit_write({{0}}, {{1}}, {{2}}, {{3}}, {{4}}::jsonb)",
+            Guid.CreateVersion7(entry.At), entry.Scope, entry.Subject, entry.Operation, entry.Input), ct);
     }
 
     public async Task CommitAsync(CancellationToken ct)

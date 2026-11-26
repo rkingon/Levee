@@ -131,4 +131,14 @@ public sealed class McpTests
         Assert.Contains(provider.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection!, t => t.ProtocolTool.Name == "probe_echo");
         Assert.Throws<InvalidOperationException>(() => new ServiceCollection().AddMcpServer().WithLeveeOperations(_ => { }));
     }
+
+    [Fact]
+    public async Task A_bound_input_the_model_sends_is_dropped_and_one_Bind_omits_is_refused()
+    {
+        var (send, tools) = Build(new LeveeMcpOptions { BoundInputs = ["text"], Bind = (_, _) => default });
+        var echo = tools.Single(t => t.ProtocolTool.Name == "probe_echo");
+        var fromModel = new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("from the model") };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => echo.CallAsync(send, fromModel, new Dictionary<string, JsonElement>(), CancellationToken.None));
+    }
 }

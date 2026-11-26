@@ -75,6 +75,9 @@ public sealed record Error
     internal static Error Internal(string trace) =>
         new(ErrorKind.Internal, LeveeErrors.Internal, $"Something went wrong on our side. Quote {trace} to find it.") { Trace = trace };
 
+    internal static Error Uninitialized { get; } =
+        new(ErrorKind.Internal, LeveeErrors.Internal, "A Result was used without being given a value or an error.");
+
     /// <summary>Input that isn't the operation's wire shape, with the field it broke on.</summary>
     public static Error InvalidInput(System.Text.Json.JsonException exception, string? operation = null)
     {
@@ -140,8 +143,6 @@ public readonly record struct Unit
 [SuppressMessage("Design", "CA1000", Justification = "Factory members on the generic result are its construction API.")]
 public readonly struct Result<T>
 {
-    // default(Result<T>) is neither a value nor a failure anyone returned: it reads as a failure, never as a success.
-    private static readonly Error Uninitialized = Error.Of(ErrorKind.Validation, "result.uninitialized", "A Result was used without being given a value or an error.");
 
     private readonly T? _value;
     private readonly Error? _error;
@@ -161,7 +162,9 @@ public readonly struct Result<T>
         _ok = false;
     }
 
-    public Error? Error => _ok ? null : _error ?? Uninitialized;
+    // default(Result<T>) is neither a value nor a failure anyone returned: it reads as a failure, never as a success, and the
+    // dispatcher answers it as the bug it is.
+    public Error? Error => _ok ? null : _error ?? Error.Uninitialized;
 
     [MemberNotNullWhen(false, nameof(Error))]
     public bool IsSuccess => _ok;

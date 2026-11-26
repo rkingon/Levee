@@ -29,7 +29,7 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
     private static void Analyze(SymbolAnalysisContext context, INamedTypeSymbol root, Role role)
     {
         var type = (INamedTypeSymbol)context.Symbol;
-        if (type.TypeKind != TypeKind.Class || !type.AllInterfaces.Contains(root, SymbolEqualityComparer.Default)
+        if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct) || !type.AllInterfaces.Contains(root, SymbolEqualityComparer.Default)
             || type.Locations.All(l => Known.IsLeveeGenerated(l.SourceTree)))
         {
             return;
@@ -41,10 +41,13 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         }
         for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            foreach (var member in t.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol && !m.IsImplicitlyDeclared && !m.IsStatic))
+            foreach (var member in t.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary }
+                && !m.IsImplicitlyDeclared && !m.IsStatic))
             {
                 var open = member switch
                 {
+                    // A method that hands out a mutable collection hands out the state inside it.
+                    IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
                     IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
                         or Accessibility.ProtectedAndInternal) => true,
                     IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),

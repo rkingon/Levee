@@ -1,5 +1,4 @@
 #nullable enable
-const Levee.EntityFrameworkCore.LeveeSchema.AuditTable = "levee_audit" -> string!
 Levee.EntityFrameworkCore.LeveeAuditRecord
 Levee.EntityFrameworkCore.LeveeAuditRecord.At.get -> System.DateTimeOffset
 Levee.EntityFrameworkCore.LeveeAuditRecord.At.init -> void
@@ -16,12 +15,15 @@ Levee.EntityFrameworkCore.LeveeAuditRecord.Subject.get -> string!
 Levee.EntityFrameworkCore.LeveeAuditRecord.Subject.init -> void
 Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions
 Levee.EntityFrameworkCore.LeveeModelBuilderExtensions
+Levee.EntityFrameworkCore.LeveeOwner
 Levee.EntityFrameworkCore.LeveePostgresServiceCollectionExtensions
 Levee.EntityFrameworkCore.LeveeSchema
+const Levee.EntityFrameworkCore.LeveeSchema.AuditTable = "levee_audit" -> string!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.AddLeveeSchema(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.EnableScopeIsolation(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! column, string! columnType = "text", string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.MakeAppendOnly(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeModelBuilderExtensions.AddLeveeAudit(this Microsoft.EntityFrameworkCore.ModelBuilder! modelBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.ModelBuilder!
+static Levee.EntityFrameworkCore.LeveeOwner.Run() -> System.IDisposable!
 static Levee.EntityFrameworkCore.LeveePostgresServiceCollectionExtensions.AddLeveePostgres<TContext>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Levee.EntityFrameworkCore.LeveeSchema.AppendOnly(string! table, string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Create(string! schema = "public") -> string!

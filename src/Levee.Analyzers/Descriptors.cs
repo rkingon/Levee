@@ -96,6 +96,10 @@ internal static class Descriptors
         "LEVEE019", "Aggregate roots live in Domain",
         "{0} is an aggregate root in a {1} project, where nothing guards its state. Fix: move it to a Domain project, where LEVEE007 holds it to changing only through its own methods");
 
+    public static readonly DiagnosticDescriptor CatalogByHand = Rule(
+        "LEVEE020", "The catalog is the generator's",
+        "{0} builds part of the catalog by hand, where no rule checks the flags it claims (Platform, Internal, Effects) and the dispatcher trusts them. Fix: declare the operation with [Operation(...)] and let the generated AddLeveeOperations (or AddLeveeTestOperations) register it");
+
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",
         "Operation {0} ({1}) has no handler. Fix: add an internal sealed IOperationHandler<{1}, TResult> (ISubscriptionHandler for a subscription) in Application; dotnet levee generate operation scaffolds one");
@@ -142,7 +146,7 @@ internal static class Descriptors
     public static readonly string[] Ids =
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
-        "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019",
+        "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
     ];
 }

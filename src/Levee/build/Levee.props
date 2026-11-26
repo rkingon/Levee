@@ -1,5 +1,5 @@
 <Project>
-  <!-- A project's role (Contracts, Domain, Application, Adapter, Host, Client, Test), read by Levee's generator and analyzers. -->
+  <!-- A project's role (Kernel, Contracts, Domain, Application, Adapter, Infrastructure, Composition, Host, Client, Projection, Tool, Test), read by Levee's generator and analyzers. -->
   <ItemGroup>
     <CompilerVisibleProperty Include="LeveeRole" />
     <!-- Packages a Contracts, Domain or Application project may reference beyond the BCL: exact names, or a prefix ending in *. -->

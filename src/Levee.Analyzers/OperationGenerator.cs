@@ -423,6 +423,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report("an operation is sealed, so no subclass carries more than its contract. Fix: declare it a public sealed record");
             return null;
         }
+        if (Untyped(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } untyped)
+        {
+            Report($"its input's {untyped} is untyped, so its schema, redaction and the strict wire can't see what it holds. Fix: give it a type of its own");
+            return null;
+        }
         if (type.DeclaredAccessibility != Accessibility.Public || type.ContainingType is not null)
         {
             Report("an operation is a public top-level type, so every host can catalog it. Fix: make it public and move it out of its containing type");
@@ -567,6 +572,54 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         return bindings;
+    }
+
+    private static readonly HashSet<string> UntypedNames =
+    [
+        "System.Text.Json.JsonElement", "System.Text.Json.JsonDocument", "System.Text.Json.Nodes.JsonNode", "System.Text.Json.Nodes.JsonObject",
+        "System.Text.Json.Nodes.JsonArray", "System.Text.Json.Nodes.JsonValue",
+    ];
+
+    /// <summary>The path to the first member of an input, at any depth, typed as anything at all (object, raw JSON, dynamic), or null.</summary>
+    private static string? Untyped(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    {
+        if (type.SpecialType == SpecialType.System_Object || type.TypeKind == TypeKind.Dynamic || UntypedNames.Contains(type.OriginalDefinition.ToDisplayString()))
+        {
+            return path.Length == 0 ? type.ToDisplayString() : path;
+        }
+        if (!seen.Add(type))
+        {
+            return null;
+        }
+        if (type is IArrayTypeSymbol array)
+        {
+            return Untyped(array.ElementType, seen, path);
+        }
+        if (type is not INamedTypeSymbol named)
+        {
+            return null;
+        }
+        foreach (var argument in named.TypeArguments)
+        {
+            if (Untyped(argument, seen, path) is { } inArgument)
+            {
+                return inArgument;
+            }
+        }
+        // The BCL's own types (string, DateTimeOffset, collections) are typed; the app's are walked.
+        if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)))
+        {
+            return null;
+        }
+        foreach (var property in named.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && p.DeclaredAccessibility == Accessibility.Public && !p.IsIndexer))
+        {
+            var at = path.Length == 0 ? property.Name : $"{path}.{property.Name}";
+            if (Untyped(property.Type, seen, at) is { } found)
+            {
+                return found;
+            }
+        }
+        return null;
     }
 
     /// <summary>The ports <paramref name="type"/> adapts. With a context, reports a named adapter that adapts none.</summary>

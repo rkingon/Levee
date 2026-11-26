@@ -327,6 +327,14 @@ system. Work as the database's owner is a Tool's.
 
 LEVEE007 guards an aggregate's state only in Domain; an aggregate declared anywhere else has no guard. Move it.
 
+## LEVEE020: The catalog is the generator's
+
+The dispatcher trusts what a descriptor says: whether the operation is platform-wide, internal, read-only. The generator
+writes descriptors only from `[Operation(...)]`, after LEVEE104–106 have checked it. A descriptor, catalog or catalog part
+built by hand (`OperationDescriptor.Create`, `new OperationCatalog`, `AddLeveePart`) skips every one of those checks, so
+outside tests it fails the build. Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
+it.
+
 ## LEVEE101: Every operation has a handler
 
 ```csharp

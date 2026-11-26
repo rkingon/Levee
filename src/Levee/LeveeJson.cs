@@ -49,14 +49,15 @@ public static class LeveeJson
 
     /// <summary>
     /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>
-    /// value replaced, at any depth (in nested records and collections), under the name the wire gives it.
+    /// value replaced, at any depth (in nested records and collections, by each value's own type, so a derived type's
+    /// members are seen too), under the name the wire gives it.
     /// </summary>
     public static string Redact(object value, Type type, JsonSerializerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(value);
         var json = options ?? Options;
         var node = JsonSerializer.SerializeToNode(value, type, json);
-        Redact(node, json.GetTypeInfo(type), json);
+        Redact(node, value, json);
         return node?.ToJsonString(json) ?? "null";
     }
 
@@ -72,8 +73,14 @@ public static class LeveeJson
         : property?.IsDefined(typeof(PersonalAttribute), inherit: false) == true ? "[personal]"
         : null;
 
-    private static void Redact(JsonNode? node, System.Text.Json.Serialization.Metadata.JsonTypeInfo info, JsonSerializerOptions json)
+    /// <summary>Walks the value and its JSON together, so each member is judged by the type it actually has.</summary>
+    private static void Redact(JsonNode? node, object? value, JsonSerializerOptions json)
     {
+        if (node is null || value is null)
+        {
+            return;
+        }
+        var info = json.GetTypeInfo(value.GetType());
         switch (node)
         {
             case JsonObject obj when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
@@ -87,22 +94,31 @@ public static class LeveeJson
                     {
                         obj[property.Name] = mark;
                     }
-                    else if (child is not null)
+                    else if (child is not null && property.Get is { } get)
                     {
-                        Redact(child, json.GetTypeInfo(property.PropertyType), json);
+                        Redact(child, get(value), json);
                     }
                 }
                 break;
-            case JsonArray items when info.ElementType is { } element:
-                foreach (var item in items)
+            case JsonArray items when value is System.Collections.IEnumerable values && value is not string:
+                var index = 0;
+                foreach (var item in values)
                 {
-                    Redact(item, json.GetTypeInfo(element), json);
+                    if (index < items.Count)
+                    {
+                        Redact(items[index], item, json);
+                    }
+                    index++;
                 }
                 break;
-            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && info.ElementType is { } value:
-                foreach (var (_, item) in map)
+            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && value is System.Collections.IDictionary entries:
+                foreach (System.Collections.DictionaryEntry entry in entries)
                 {
-                    Redact(item, json.GetTypeInfo(value), json);
+                    var key = json.DictionaryKeyPolicy?.ConvertName(entry.Key.ToString() ?? "") ?? entry.Key.ToString() ?? "";
+                    if (map.TryGetPropertyValue(key, out var item))
+                    {
+                        Redact(item, entry.Value, json);
+                    }
                 }
                 break;
         }
@@ -117,6 +133,14 @@ public static class LeveeJson
         if (info.ElementType is { } element)
         {
             return Find(json.GetTypeInfo(element), json, seen);
+        }
+        // A declared polymorphic base may arrive as any of its derived types: each is searched as well.
+        foreach (var derived in info.PolymorphismOptions?.DerivedTypes ?? [])
+        {
+            if (Find(json.GetTypeInfo(derived.DerivedType), json, seen) is { } inDerived)
+            {
+                return inDerived;
+            }
         }
         foreach (var property in info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : [])
         {

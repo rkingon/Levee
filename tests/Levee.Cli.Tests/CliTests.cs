@@ -41,8 +41,11 @@ public sealed class CliTests : IDisposable
             build = build.Parent;
         }
         var levee = Path.Combine(build.FullName, "src", "Levee", "build");
-        // Only the role check is under test here: these stand-ins have no Levee analyzers to run, so they build as check does.
-        void Project(string name, string? role, params string[] references) => Write(name, role, "<LeveeCheck>true</LeveeCheck>", references);
+        // Only the role check is under test here: these stand-ins have no Levee analyzers to run, so they build as check's own pass
+        // does, with its token in the property and the environment.
+        const string Token = "levee-cli-test";
+        void Project(string name, string? role, params string[] references) =>
+            Write(name, role, $"<LeveeCheck>{Token}</LeveeCheck>{(role == "Test" ? "<IsTestProject>true</IsTestProject>" : "")}", references);
         void Write(string name, string? role, string properties, params string[] references)
         {
             Directory.CreateDirectory(Path.Combine(_dir, name));
@@ -64,14 +67,18 @@ public sealed class CliTests : IDisposable
         Project("Tests", "Test", "Plain");
         Write("Unanalyzed", "Adapter", "<RunAnalyzers>false</RunAnalyzers>");
         Write("Bare", "Adapter", "");
+        Write("Forged", "Adapter", "<LeveeCheck>not-the-token</LeveeCheck><RunAnalyzers>false</RunAnalyzers>");
+        Write("Pretend", "Test", "");
 
         static async Task<(int Code, string Output)> Build(string project)
         {
-            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("dotnet", ["build", project, "-nologo", "-v:q"])
+            var start = new System.Diagnostics.ProcessStartInfo("dotnet", ["build", project, "-nologo", "-v:q", "-nodeReuse:false"])
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
-            })!;
+            };
+            start.Environment["LEVEE_CHECK_TOKEN"] = Token;
+            using var process = System.Diagnostics.Process.Start(start)!;
             var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
             await process.WaitForExitAsync(TestContext.Current.CancellationToken);
             return (process.ExitCode, output);
@@ -87,6 +94,8 @@ public sealed class CliTests : IDisposable
         Assert.Equal(0, tests.Code);
         Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "Unanalyzed", "Unanalyzed.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE009: This project uses Levee without its analyzers", (await Build(Path.Combine(_dir, "Bare", "Bare.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "Forged", "Forged.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project's role is Test", (await Build(Path.Combine(_dir, "Pretend", "Pretend.csproj"))).Output, StringComparison.Ordinal);
     }
 
     [Fact]

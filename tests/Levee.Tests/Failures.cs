@@ -325,8 +325,65 @@ public sealed class AuditFixTests
         Result<int> unset = default;
 
         Assert.False(unset.IsSuccess);
-        Assert.Equal("result.uninitialized", unset.Error.Code);
+        Assert.Equal((ErrorKind.Internal, LeveeErrors.Internal), (unset.Error.Kind, unset.Error.Code));
         Assert.Throws<ArgumentException>(() => Error.Of(ErrorKind.Internal, "internal", "Forged."));
         Assert.Equal(ErrorKind.Conflict, Error.Of(ErrorKind.Conflict, "notes.taken", "Taken.").Kind);
+    }
+}
+
+[Operation("probe.cancel_self", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record CancelSelf : IOperation<Unit>;
+
+internal sealed class CancelSelfHandler : IOperationHandler<CancelSelf, Unit>
+{
+    public static CancellationTokenSource Caller { get; set; } = new();
+
+    public async Task<Result<Unit>> HandleAsync(CancelSelf operation, OperationContext context, CancellationToken ct)
+    {
+        // The caller gives up as the work finishes: what's done is done.
+        await Caller.CancelAsync();
+        return Unit.Value;
+    }
+}
+
+[System.Text.Json.Serialization.JsonDerivedType(typeof(EmailContact), "email")]
+public abstract record ContactMethod;
+
+public sealed record EmailContact([property: Personal] string Address) : ContactMethod;
+
+[Operation("probe.reach", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record ReachOut(ContactMethod Contact) : IOperation<Unit>;
+
+internal sealed class ReachOutHandler : IOperationHandler<ReachOut, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(ReachOut operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed class SecondAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Fact]
+    public async Task An_operation_cancelled_after_it_commits_answers_its_result()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+        CancelSelfHandler.Caller = new CancellationTokenSource();
+
+        var result = await dispatcher.SendAsync(new CancelSelf(), Admin, CancelSelfHandler.Caller.Token);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, store.Commits);
+    }
+
+    [Fact]
+    public async Task A_derived_type_is_redacted_as_itself()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        await dispatcher.SendAsync(new ReachOut(new EmailContact("ada@example.com")), Admin, CancellationToken.None);
+
+        Assert.DoesNotContain("example.com", Assert.Single(store.Audited).Input, StringComparison.Ordinal);
     }
 }

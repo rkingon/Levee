@@ -36,7 +36,10 @@ internal static partial class Check
         var solution = Directory.EnumerateFiles(root, "*.slnx").Concat(Directory.EnumerateFiles(root, "*.sln")).FirstOrDefault()
             ?? throw new CliException($"No solution in {root}.");
 
-        var (compiled, log) = await DotnetAsync("build", solution, "-p:RunAnalyzers=false", "-p:LeveeCheck=true", "-nologo", "-v:q");
+        // This pass alone builds without the rules; the token, in the property and the environment both, says it's check's.
+        var token = Guid.NewGuid().ToString("N");
+        var (compiled, log) = await DotnetAsync(new Dictionary<string, string> { ["LEVEE_CHECK_TOKEN"] = token },
+            "build", solution, "-p:RunAnalyzers=false", $"-p:LeveeCheck={token}", "-nodeReuse:false", "-nologo", "-v:q");
         if (!compiled)
         {
             throw new CliException($"The app doesn't compile, analyzers aside; fix that first:{Environment.NewLine}{log}");
@@ -97,9 +100,16 @@ internal static partial class Check
     [GeneratedRegex(@"^(?:(?<file>[^:(]+(?::[^:(]+)?)(?:\((?<line>\d+),\d+\))?\s*:\s*)?error (?<rule>LEVEE\d+): (?<message>.*?)\s*\[(?<project>[^\]]+\.csproj)\]$")]
     private static partial Regex Diagnostic();
 
-    private static async Task<(bool Ok, string Output)> DotnetAsync(params string[] arguments)
+    private static Task<(bool Ok, string Output)> DotnetAsync(params string[] arguments) =>
+        DotnetAsync(new Dictionary<string, string>(), arguments);
+
+    private static async Task<(bool Ok, string Output)> DotnetAsync(IReadOnlyDictionary<string, string> environment, params string[] arguments)
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var (name, value) in environment)
+        {
+            start.Environment[name] = value;
+        }
         foreach (var argument in arguments)
         {
             start.ArgumentList.Add(argument);
