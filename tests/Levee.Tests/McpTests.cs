@@ -92,7 +92,7 @@ public sealed class McpTests
     [Fact]
     public async Task A_bound_input_is_the_servers_not_the_models()
     {
-        var (send, tools) = Build(new LeveeMcpOptions { BoundInputs = ["text"], Bind = (_, _) => new Dictionary<string, JsonElement>() });
+        var (send, tools) = Build(new LeveeMcpOptions { BoundInputs = ["text"], Bind = (_, _) => ValueTask.FromResult<IReadOnlyDictionary<string, JsonElement>>(new Dictionary<string, JsonElement>()) });
         var echo = tools.Single(t => t.ProtocolTool.Name == "probe_echo");
 
         var said = await echo.CallAsync(send, new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("from the model") },

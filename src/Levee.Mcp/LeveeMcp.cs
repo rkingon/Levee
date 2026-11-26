@@ -22,8 +22,8 @@ public sealed class LeveeMcpOptions
     /// </summary>
     public IReadOnlyCollection<string> BoundInputs { get; set; } = [];
 
-    /// <summary>The values of <see cref="BoundInputs"/> for a call.</summary>
-    public Func<RequestContext<CallToolRequestParams>, OperationDescriptor, IReadOnlyDictionary<string, JsonElement>>? Bind { get; set; }
+    /// <summary>The values of <see cref="BoundInputs"/> for a call: asynchronous, so it can look them up itself rather than rely on <see cref="Principal"/> having run first.</summary>
+    public Func<RequestContext<CallToolRequestParams>, OperationDescriptor, ValueTask<IReadOnlyDictionary<string, JsonElement>>>? Bind { get; set; }
 
     /// <summary>A result as content other than its JSON (an image the model should see), or null for the JSON.</summary>
     public Func<OperationDescriptor, JsonElement, IList<ContentBlock>?>? Render { get; set; }
@@ -146,7 +146,7 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send = mcp.Send is { } remote
             ? (name, input, ct) => remote(request, name, input, ct)
             : await InProcessAsync(request);
-        var bound = mcp.Bind?.Invoke(request, descriptor);
+        var bound = mcp.Bind is { } bind ? await bind(request, descriptor) : null;
         return await CallAsync(send, request.Params?.Arguments, bound, cancellationToken);
     }
 

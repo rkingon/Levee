@@ -1,7 +1,7 @@
 #nullable enable
 Levee.Mcp.LeveeMcpBuilderExtensions
 Levee.Mcp.LeveeMcpOptions
-Levee.Mcp.LeveeMcpOptions.Bind.get -> System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, Levee.OperationDescriptor!, System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.JsonElement>!>?
+Levee.Mcp.LeveeMcpOptions.Bind.get -> System.Func<ModelContextProtocol.Server.RequestContext<ModelContextProtocol.Protocol.CallToolRequestParams!>!, Levee.OperationDescriptor!, System.Threading.Tasks.ValueTask<System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.JsonElement>!>>?
 Levee.Mcp.LeveeMcpOptions.Bind.set -> void
 Levee.Mcp.LeveeMcpOptions.BoundInputs.get -> System.Collections.Generic.IReadOnlyCollection<string!>!
 Levee.Mcp.LeveeMcpOptions.BoundInputs.set -> void

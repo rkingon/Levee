@@ -66,7 +66,8 @@ The keystone, for feedback from the apps migrating onto it.
   `[personal]`. Denial logs no longer name the subject.
 - Oxbow 0.2.0-alpha.3: a job whose operation fails `Unavailable` with a `RetryAfter` retries after exactly that wait
   (`JobRetryException`), not Oxbow's backoff.
-- `Levee.Mcp` options: bound inputs, rendered results, and a remote mode (`Send`, `Catalog`) for a server beside the client.
+- `Levee.Mcp` options: bound inputs (bound asynchronously), rendered results, and a remote mode (`Send`, `Catalog`) for a
+  server beside the client.
   Fixed: an SSE stream sends its status as it opens, not with its first item.
 - `Levee.Mcp`: `WithLeveeOperations` projects the catalog as MCP tools, named by a fixed rule, with schemas and hints from
   the contract, calling through the dispatcher's client path. `ProblemView.From` and `StatusOf` are core, shared by
