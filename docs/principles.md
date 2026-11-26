@@ -13,9 +13,9 @@ Levee doesn't hold every pattern. It holds enough that the correct patterns foll
 
 - **Include** a pattern if leaving it out lets wrong code compile.
 - **Leave out** anything that's a legitimate per-app choice, behind a hook.
-- **Extract, don't invent.** Each piece comes from code that already runs in an app, chosen as the best of them.
-- **Pulled by app needs.** Nothing gets built ahead of an app that needs it, or Levee turns into a framework for its own
-  sake.
+- **Hold the shape every app converges on.** What every product ends up writing (a client for its operations, retries
+  that don't repeat a write, stale-edit conflicts, contract changes that strand clients) gets one conventional shape, so
+  an agent in any repo writes it the same way.
 
 [decisions.md](decisions.md) records each request against these: built, held, or open, with why.
 
@@ -56,5 +56,5 @@ codebase writes it right from the build output alone. `dotnet levee explain` has
 - Breaking changes fanning out across every app that uses it.
 - The framework becoming the project instead of the apps.
 
-The mitigation is small releases pulled by real walls, each recorded in [decisions.md](decisions.md), and public API
+The mitigation is small releases, each recorded in [decisions.md](decisions.md), and public API
 tracked so every change to it is a deliberate diff.

@@ -98,6 +98,16 @@ Where the apps disagreed before Levee, and what it chose.
 | An MCP projection | `Levee.Mcp`, on the official MCP SDK | A and B both wrote one. It's internal, like `/ops`, so generated: names by a fixed rule (dots to underscores, clashes fail at startup), a filter for which operations an agent sees, the principal from the request. |
 | A hand-built wire for the app's own clients (A's own envelope) | `MapLeveeOperations` | Only the app's own SDK called it: that's what `/ops` is for. |
 
+## Planned: 0.0.1-alpha.2
+
+| Feature | Shape |
+|---|---|
+| A typed client for `/ops` | Send an operation, get `Result<TResult>` over HTTP: one serialization, `ProblemView` parsing, cancellation and SSE, typed by a Contracts project's `LeveeCatalog`; the app supplies authentication. |
+| Idempotency keys for retryable writes | A retry after a lost response gets the first result; concurrent equal requests make one write; a key reused with other input is a conflict. |
+| A conventional stale-write conflict | An expected-version input over EF's concurrency tokens, one error code across every projection; the operation chooses whether it needs one. |
+| A contract diff | `dotnet levee` compares a published catalog with a candidate: new required inputs, removed error codes, renames that strand clients or queued jobs. |
+| Port and adapter scaffolding | `dotnet levee generate port`: the Application port, the Adapter implementing it and its selection, for the vendor's behaviour to be filled in. |
+
 ## Open
 
 | Question | From | Where it stands |

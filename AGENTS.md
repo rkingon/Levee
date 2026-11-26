@@ -2,8 +2,8 @@
 
 Read [docs/principles.md](docs/principles.md) first: what belongs here and what doesn't. [README.md](README.md) has the packages, roles and rules.
 
-- Extract, don't invent. A piece comes from code already running in an app that uses Levee, or in Oxbow, and only once an
-  app needs it.
+- Hold the shape every app converges on: what every product ends up writing gets one conventional shape here, so agents
+  in every repo write it the same way.
 - A rule belongs here only if leaving it out lets wrong code compile. A legitimate per-app choice goes behind a hook
   (`IAccessPolicy`, `IAdmission`, `IUnitOfWorkFactory`).
 - A rule's message is the instructions: what's wrong, then `Fix:` and the conventional shape. Its section in
