@@ -21,10 +21,10 @@ jobs:
         with:
           global-json-file: global.json
       - run: dotnet build Levee.slnx -c Release
-      - run: dotnet test --project tests/Levee.Tests -c Release --no-build
-      - run: dotnet test --project tests/Levee.Analyzers.Tests -c Release --no-build
-      - run: dotnet test --project tests/Levee.Cli.Tests -c Release --no-build
-      - run: dotnet test --project tests/Levee.IntegrationTests -c Release --no-build
+      - run: dotnet test tests/Levee.Tests -c Release --no-build
+      - run: dotnet test tests/Levee.Analyzers.Tests -c Release --no-build
+      - run: dotnet test tests/Levee.Cli.Tests -c Release --no-build
+      - run: dotnet test tests/Levee.IntegrationTests -c Release --no-build
         env:
           LEVEE_POSTGRES_IMAGE: ${{ matrix.postgres }}
       - run: dotnet pack Levee.slnx -c Release --no-build -o artifacts
