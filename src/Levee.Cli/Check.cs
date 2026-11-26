@@ -36,7 +36,7 @@ internal static partial class Check
         var solution = Directory.EnumerateFiles(root, "*.slnx").Concat(Directory.EnumerateFiles(root, "*.sln")).FirstOrDefault()
             ?? throw new CliException($"No solution in {root}.");
 
-        var (compiled, log) = await DotnetAsync("build", solution, "-p:RunAnalyzers=false", "-nologo", "-v:q");
+        var (compiled, log) = await DotnetAsync("build", solution, "-p:RunAnalyzers=false", "-p:LeveeCheck=true", "-nologo", "-v:q");
         if (!compiled)
         {
             throw new CliException($"The app doesn't compile, analyzers aside; fix that first:{Environment.NewLine}{log}");

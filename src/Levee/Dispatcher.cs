@@ -48,7 +48,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{subscription.GetType().Name} isn't in the catalog.");
         }
         var opened = await OpenAsync(descriptor, subscription, principal, ct);
-        return opened.IsSuccess ? Result<IAsyncEnumerable<TItem>>.Success(Items<TItem>(opened.Value)) : opened.Error;
+        return opened.IsSuccess ? Result<IAsyncEnumerable<TItem>>.Success(Items<TItem>(opened.Value, CancellationToken.None)) : opened.Error;
     }
 
     /// <summary>A subscription by name, its input and items as JSON, in-process.</summary>
@@ -83,20 +83,23 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             return subscription.Error;
         }
         var opened = await OpenAsync(descriptor, subscription.Value, principal, ct);
-        return opened.IsSuccess ? Result<IAsyncEnumerable<JsonElement>>.Success(Json(opened.Value, descriptor.ResultType)) : opened.Error;
+        return opened.IsSuccess ? Result<IAsyncEnumerable<JsonElement>>.Success(Json(opened.Value, descriptor.ResultType, CancellationToken.None)) : opened.Error;
     }
 
-    private async IAsyncEnumerable<JsonElement> Json(IAsyncEnumerable<object?> items, Type type)
+    // Each wrapper passes its reader's cancellation through, or a stream stopped by its reader would leave its handler running.
+    private async IAsyncEnumerable<JsonElement> Json(IAsyncEnumerable<object?> items, Type type,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        await foreach (var item in items)
+        await foreach (var item in items.WithCancellation(ct))
         {
             yield return JsonSerializer.SerializeToElement(item, type, options.Json);
         }
     }
 
-    private static async IAsyncEnumerable<TItem> Items<TItem>(IAsyncEnumerable<object?> items)
+    private static async IAsyncEnumerable<TItem> Items<TItem>(IAsyncEnumerable<object?> items,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        await foreach (var item in items)
+        await foreach (var item in items.WithCancellation(ct))
         {
             yield return (TItem)item!;
         }
@@ -108,6 +111,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     {
         var scoped = ScopeOf(descriptor, subscription, principal);
         var denied = scoped.IsSuccess ? await AuthorizeAsync(descriptor, subscription, principal, scoped.Value, ct) : scoped.Error;
+        if (denied is null && scoped.IsSuccess)
+        {
+            denied = await AdmitAsync(descriptor, subscription, principal, scoped.Value, ct);
+        }
         await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(subscription), scoped.IsSuccess ? scoped.Value : null, principal, denied), ct);
         return denied is null
             ? Result<IAsyncEnumerable<object?>>.Success(Stream(descriptor, subscription, new SubscriptionContext(principal, descriptor, scoped.Value), CancellationToken.None))
@@ -178,7 +185,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             result = scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, principal, scoped.Value, ct) : scoped.Error;
         }
-        catch (Exception e) when (!(e is OperationCanceledException && ct.IsCancellationRequested))
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller stopped waiting: it still ended, rolled back, and the outcome is told so before the cancel goes on.
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, Redact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+                Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was cancelled by its caller.")), CancellationToken.None);
+            throw;
+        }
+        catch (Exception e)
         {
             // Rolled back already: the unit of work was disposed on the way out.
             result = Unexpected(e, descriptor);
@@ -225,7 +239,53 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             return operation.Error;
         }
         var scope = ScopeOf(found.Value, operation.Value, principal);
-        return scope.IsSuccess ? await AuthorizeAsync(found.Value, operation.Value, principal, scope.Value, ct) : scope.Error;
+        if (!scope.IsSuccess)
+        {
+            return scope.Error;
+        }
+        return await AuthorizeAsync(found.Value, operation.Value, principal, scope.Value, ct)
+            ?? await AdmitAsync(found.Value, operation.Value, principal, scope.Value, ct);
+    }
+
+    /// <summary>
+    /// The admissions alone, in a read-only unit of work of their own: what a subscription, which holds no transaction while it
+    /// streams, is admitted by as it opens and each time a projection checks it again.
+    /// </summary>
+    private async Task<Error?> AdmitAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, WorkScope scope, CancellationToken ct)
+    {
+        await using var services = scopes.CreateAsyncScope();
+        var admissions = services.ServiceProvider.GetServices<IAdmission>().ToList();
+        if (admissions.Count == 0)
+        {
+            return null;
+        }
+        var factory = services.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>();
+        try
+        {
+            var reading = scope with { ReadOnly = true };
+            await using var unit = await factory.BeginAsync(reading, ct);
+            var context = new OperationContext(principal, descriptor, reading, Now());
+            services.ServiceProvider.GetRequiredService<CurrentOperation>().Context = context;
+            foreach (var admission in admissions)
+            {
+                if (await admission.AdmitAsync(operation, context, ct) is { } refused)
+                {
+                    return refused;
+                }
+            }
+            return null;
+        }
+        catch (Exception e) when (factory.Classify(e) is { } error)
+        {
+            return error;
+        }
+    }
+
+    /// <summary>The operation's one time. Postgres keeps microseconds; Linux's clock ticks in 100ns, so an unrounded time wouldn't read back equal.</summary>
+    private DateTimeOffset Now()
+    {
+        var now = time.GetUtcNow();
+        return now.AddTicks(-(now.Ticks % TimeSpan.TicksPerMicrosecond));
     }
 
     private async Task<Error?> AuthorizeAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, WorkScope scope,
@@ -268,9 +328,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         try
         {
             await using var unit = await factory.BeginAsync(scope, ct);
-            var now = time.GetUtcNow();
-            // Postgres keeps microseconds; Linux's clock ticks in 100ns, so an unrounded time wouldn't read back equal.
-            var context = new OperationContext(principal, descriptor, scope, now.AddTicks(-(now.Ticks % TimeSpan.TicksPerMicrosecond)));
+            var context = new OperationContext(principal, descriptor, scope, Now());
             services.ServiceProvider.GetRequiredService<CurrentOperation>().Context = context;
             foreach (var admission in services.ServiceProvider.GetServices<IAdmission>())
             {
@@ -331,25 +389,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
     }
 
-    /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced.</summary>
-    private string Redact(IOperation operation)
-    {
-        var node = JsonSerializer.SerializeToNode(operation, operation.GetType(), options.Json) as JsonObject ?? [];
-        foreach (var p in operation.GetType().GetProperties())
-        {
-            var mark = p.IsDefined(typeof(SecretAttribute), inherit: false) ? "[secret]"
-                : p.IsDefined(typeof(PersonalAttribute), inherit: false) ? "[personal]"
-                : null;
-            var key = options.Json.PropertyNamingPolicy?.ConvertName(p.Name) ?? p.Name;
-            if (mark is not null && node.ContainsKey(key))
-            {
-                node[key] = mark;
-            }
-        }
-        return node.ToJsonString(options.Json);
-    }
+    /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
+    private string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), options.Json);
 
-    // Not the subject: it may be a person's email, and logs are kept and shipped where the audit isn't.
     [LoggerMessage(Level = LogLevel.Warning, Message = "Denied {Operation}: {Reason}")]
     private static partial void LogDenied(ILogger logger, string operation, string reason);
 

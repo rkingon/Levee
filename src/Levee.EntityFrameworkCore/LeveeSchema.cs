@@ -47,6 +47,11 @@ public static class LeveeSchema
               input jsonb not null
             );
             create index {AuditTable}_scope_at on {schema}.{AuditTable} (scope, at);
+            -- The runtime role writes the audit only through this, as the owner: it holds no insert of its own.
+            create function {schema}.levee_audit_write(p_id uuid, p_at timestamptz, p_scope text, p_subject text, p_operation text, p_input jsonb)
+              returns void language sql security definer set search_path = {schema}, pg_temp
+              as $$ insert into {schema}.{AuditTable} (id, at, scope, subject, operation, input)
+                    values (p_id, p_at, p_scope, p_subject, p_operation, p_input) $$;
             {AppendOnly($"{schema}.{AuditTable}", schema)}
             {Isolation($"{schema}.{AuditTable}", "scope", schema: schema)}
             """;
@@ -71,7 +76,8 @@ public static class LeveeSchema
 
     /// <summary>
     /// What the app's runtime role needs in <paramref name="schema"/>, run by the owner: every table's rows (RLS still holds it
-    /// to its scope), now and as migrations add tables, and Levee's functions; never changing the audit.
+    /// to its scope), now and as migrations add tables, and Levee's functions. The audit it reads and writes only through
+    /// <c>levee_audit_write</c>, so no code of the app's can insert, change or remove a record of its own.
     /// </summary>
     public static string Grants(string role, string schema = "public")
     {
@@ -82,9 +88,10 @@ public static class LeveeSchema
             grant select, insert, update, delete on all tables in schema {schema} to {role};
             grant usage, select on all sequences in schema {schema} to {role};
             grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role};
+            grant execute on function {schema}.levee_audit_write(uuid, timestamptz, text, text, text, jsonb) to {role};
             alter default privileges in schema {schema} grant select, insert, update, delete on tables to {role};
             alter default privileges in schema {schema} grant usage, select on sequences to {role};
-            revoke update, delete on {schema}.{AuditTable} from {role};
+            revoke insert, update, delete on {schema}.{AuditTable} from {role};
             """;
     }
 

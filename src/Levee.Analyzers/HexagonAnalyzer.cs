@@ -20,7 +20,7 @@ namespace Levee.Analyzers;
 public sealed class HexagonAnalyzer : DiagnosticAnalyzer
 {
     private static readonly ImmutableHashSet<string> IoNamespaces = ImmutableHashSet.Create(
-        "System.Net.Http", "System.Net.Http.Json", "System.Net.Http.Headers", "System.Net.Sockets", "System.Net.WebSockets",
+        "System.Net.Http", "System.Net.Http.Json", "System.Net.Sockets", "System.Net.WebSockets",
         "System.Net.NetworkInformation", "System.Net.Security", "System.Net.Quic", "System.Data.Common", "System.Data.Odbc",
         "System.Data.OleDb", "System.Data.SqlClient", "System.IO.Pipes", "System.IO.Ports", "System.IO.MemoryMappedFiles",
         "System.IO.IsolatedStorage", "Microsoft.Win32");
@@ -33,7 +33,16 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         "System.Diagnostics.Process", "System.Diagnostics.ProcessStartInfo");
 
     private static readonly ImmutableHashSet<string> EnvironmentIo = ImmutableHashSet.Create(
-        "GetEnvironmentVariable", "GetEnvironmentVariables", "SetEnvironmentVariable", "Exit", "FailFast", "CurrentDirectory", "GetCommandLineArgs");
+        "GetEnvironmentVariable", "GetEnvironmentVariables", "SetEnvironmentVariable", "Exit", "FailFast", "CurrentDirectory", "GetCommandLineArgs",
+        "ExpandEnvironmentVariables", "GetFolderPath", "MachineName", "UserName", "UserDomainName");
+
+    // Values a contract may carry, though their namespace is the network's.
+    private static readonly ImmutableHashSet<string> IoValues = ImmutableHashSet.Create("System.Net.Http.HttpMethod", "System.Net.Http.HttpVersionPolicy");
+
+    /// <summary>Members that touch the file system when given a path, on types that are pure otherwise.</summary>
+    private static readonly ImmutableHashSet<string> PathIo = ImmutableHashSet.Create(
+        "System.IO.StreamReader", "System.IO.StreamWriter", "System.Xml.Linq.XDocument", "System.Xml.Linq.XElement", "System.Xml.XmlReader",
+        "System.Xml.XmlWriter", "System.Xml.XmlDocument");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.PortPlacement, Descriptors.AdapterPlacement, Descriptors.CoreIo, Descriptors.HostReach, Descriptors.CompositionSurface,
@@ -41,7 +50,7 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
@@ -54,21 +63,37 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
             Role RoleOf(IAssemblySymbol assembly) =>
                 SymbolEqualityComparer.Default.Equals(assembly, start.Compilation.Assembly) ? role : roles.GetOrAdd(assembly, Roles.Of);
 
-            start.RegisterSymbolAction(c => OnType(c, role, RoleOf), SymbolKind.NamedType);
+            start.RegisterSymbolAction(c =>
+            {
+                if (!c.Symbol.Locations.All(l => Known.IsLeveeGenerated(l.SourceTree)))
+                {
+                    OnType(c, role, RoleOf);
+                }
+            }, SymbolKind.NamedType);
             if (Roles.IsInner(role) || Roles.Drives(role))
             {
-                start.RegisterSyntaxNodeAction(c => OnName(c, role, RoleOf), SyntaxKind.IdentifierName, SyntaxKind.GenericName);
+                start.RegisterSyntaxNodeAction(c =>
+                {
+                    if (!Known.IsLeveeGenerated(c.Node.SyntaxTree))
+                    {
+                        OnName(c, role, RoleOf);
+                    }
+                }, SyntaxKind.IdentifierName, SyntaxKind.GenericName);
+            }
+            if (Roles.IsInner(role))
+            {
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnPathIo(c, role)), OperationKind.Invocation, OperationKind.ObjectCreation);
             }
             if (Roles.Drives(role))
             {
                 // What a Host holds, however it got it (var, a method's result): not only what it names.
-                start.RegisterOperationAction(c => OnHostValue(c, RoleOf), OperationKind.Invocation, OperationKind.PropertyReference, OperationKind.FieldReference,
-                    OperationKind.MethodReference);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnHostValue(c, RoleOf)), OperationKind.Invocation, OperationKind.PropertyReference,
+                    OperationKind.FieldReference, OperationKind.MethodReference);
             }
             if (role == Role.Composition)
             {
                 // A method group is a call deferred: f = handler.RunAsync; f() reaches the application all the same.
-                start.RegisterOperationAction(c => OnCompositionCall(c, RoleOf), OperationKind.Invocation, OperationKind.MethodReference);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnCompositionCall(c, RoleOf)), OperationKind.Invocation, OperationKind.MethodReference);
             }
         });
     }
@@ -97,24 +122,26 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.CompositionSurface, location, exposed));
             }
         }
-        if (type.TypeKind != TypeKind.Class)
+        if (type.TypeKind is not (TypeKind.Class or TypeKind.Struct))
         {
             return;
         }
         // An operation (or a subscription) is a message: a shared marker on it (a tenant id) is data, not a way in.
-        if (role == Role.Application && !type.AllInterfaces.Any(i => i.ToDisplayString() == Known.Operation)
+        if (role is Role.Application or Role.Domain && !type.AllInterfaces.Any(i => i.ToDisplayString() == Known.Operation)
             && type.AllInterfaces.FirstOrDefault(i => roleOf(i.ContainingAssembly) is Role.Kernel or Role.Contracts) is { } shared)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.ApplicationExposed, location, type.Name, shared.Name, roleOf(shared.ContainingAssembly)));
         }
+        // A port reached through an interface of the app's own that extends it is a port all the same.
+        static bool PortLike(INamedTypeSymbol i) => Known.IsPort(i) || i.AllInterfaces.Any(Known.IsPort);
         foreach (var contract in type.Interfaces)
         {
-            if (Known.IsPort(contract) && role != Role.Adapter)
+            if (PortLike(contract) && role != Role.Adapter)
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AdapterPlacement, location, type.Name,
                     $"implements port {contract.Name} in a {role} project. Fix: move it to an Adapter project and mark it [Adapter]"));
             }
-            else if (role == Role.Adapter && !Known.IsPort(contract)
+            else if (role == Role.Adapter && !PortLike(contract)
                 && roleOf(contract.ContainingAssembly) is Role.Application or Role.Domain or Role.Kernel or Role.Contracts)
             {
                 // A shared interface an adapter implements is a way to drive it (a migrator, a store) around the dispatcher.
@@ -138,6 +165,7 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         }
         if (Roles.Drives(role))
         {
+            // Naming an adapter is how a Host without a Composition project registers it; calling it is what's refused.
             if (symbol is INamedTypeSymbol type && roleOf(type.ContainingAssembly) is Role.Application or Role.Domain)
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.HostReach, context.Node.GetLocation(), type.Name, roleOf(type.ContainingAssembly)));
@@ -179,7 +207,7 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         {
             return;
         }
-        if (method.MethodKind == MethodKind.Ordinary && roleOf(method.ContainingType.ContainingAssembly) is Role.Application or Role.Domain)
+        if (method.MethodKind == MethodKind.Ordinary && roleOf(method.ContainingType.ContainingAssembly) is Role.Application or Role.Domain or Role.Adapter)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.CompositionDrives, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
         }
@@ -188,7 +216,7 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
     private static Role? Reached(ITypeSymbol type, Func<IAssemblySymbol, Role> roleOf)
     {
         var role = type.ContainingAssembly is { } assembly ? roleOf(assembly) : Role.None;
-        return role is Role.Application or Role.Domain ? role : null;
+        return role is Role.Application or Role.Domain or Role.Adapter ? role : null;
     }
 
     private static bool Inner(ITypeSymbol type, Func<IAssemblySymbol, Role> roleOf) =>
@@ -238,10 +266,43 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
             {
                 return null;
             }
-            var definition = type.OriginalDefinition;
-            var ns = definition.ContainingNamespace?.ToDisplayString() ?? "";
-            return IoNamespaces.Contains(ns) || IoTypes.Contains(definition.ToDisplayString()) ? type.Name : null;
+            return IsIoType(type) ? type.Name : null;
         }
-        return symbol.ContainingType?.ToDisplayString() == "System.Environment" && EnvironmentIo.Contains(symbol.Name) ? $"Environment.{symbol.Name}" : null;
+        if (symbol.ContainingType?.ToDisplayString() == "System.Environment")
+        {
+            return EnvironmentIo.Contains(symbol.Name) ? $"Environment.{symbol.Name}" : null;
+        }
+        // A member named without its type (using static System.IO.File; ReadAllText(...)) is its type's I/O.
+        return symbol is IMethodSymbol or IPropertySymbol or IFieldSymbol && symbol.ContainingType is { } owner
+            && owner.TypeKind != TypeKind.Enum && !IsException(owner) && IsIoType(owner)
+            ? $"{owner.Name}.{symbol.Name}"
+            : null;
+    }
+
+    private static bool IsIoType(INamedTypeSymbol type)
+    {
+        var definition = type.OriginalDefinition;
+        var name = definition.ToDisplayString();
+        var ns = definition.ContainingNamespace?.ToDisplayString() ?? "";
+        return !IoValues.Contains(name) && (IoNamespaces.Contains(ns) || IoTypes.Contains(name));
+    }
+
+    /// <summary>A path handed to a reader, writer or document, or a temporary file asked for: the file system, by another door.</summary>
+    private static void OnPathIo(OperationAnalysisContext context, Role role)
+    {
+        var (owner, member, arguments) = context.Operation switch
+        {
+            IInvocationOperation i => (i.TargetMethod.ContainingType, i.TargetMethod.Name, i.Arguments),
+            IObjectCreationOperation o => (o.Type as INamedTypeSymbol, "new", o.Arguments),
+            _ => (null, "", ImmutableArray<IArgumentOperation>.Empty),
+        };
+        var name = owner?.OriginalDefinition.ToDisplayString();
+        var io = name == "System.IO.Path" && member is "GetTempFileName" or "GetTempPath"
+            || (name is not null && PathIo.Contains(name) && member is "new" or "Load" or "Save" or "Create"
+                && arguments.FirstOrDefault()?.Parameter?.Type.SpecialType == SpecialType.System_String);
+        if (io)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.CoreIo, context.Operation.Syntax.GetLocation(), $"{owner!.Name}.{member}", role));
+        }
     }
 }

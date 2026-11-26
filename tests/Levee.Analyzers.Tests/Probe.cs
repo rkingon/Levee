@@ -50,12 +50,15 @@ internal static class Probe
     /// <param name="Properties">MSBuild properties the analyzers see, beyond the role.</param>
     /// <param name="NoWarn">What the project's NoWarn suppresses.</param>
     /// <param name="Documented">GenerateDocumentationFile: doc comments are checked, and a public member without one is CS1591.</param>
+    /// <param name="Config">Analyzer config keys, as an .editorconfig or .globalconfig sets them.</param>
+    /// <param name="Exe">An executable, not a library.</param>
     public sealed record Settings(string Role, IReadOnlyDictionary<string, string>? Properties = null, IReadOnlyList<string>? NoWarn = null,
-        bool Documented = false);
+        bool Documented = false, IReadOnlyDictionary<string, string>? Config = null, bool Exe = false);
 
     public static async Task<Output> CompileAsync(Settings settings, string source, string assembly = "Probe", params MetadataReference[] references)
     {
-        var compilationOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable)
+        var compilationOptions = new CSharpCompilationOptions(settings.Exe ? OutputKind.ConsoleApplication : OutputKind.DynamicallyLinkedLibrary,
+                nullableContextOptions: NullableContextOptions.Enable)
             .WithSpecificDiagnosticOptions((settings.NoWarn ?? []).Select(id => KeyValuePair.Create(id, ReportDiagnostic.Suppress)));
         var parse = CSharpParseOptions.Default.WithDocumentationMode(settings.Documented ? DocumentationMode.Diagnose : DocumentationMode.Parse);
         var compilation = CSharpCompilation.Create(assembly, [CSharpSyntaxTree.ParseText(source, parse, path: $"{assembly}.cs")],
@@ -66,7 +69,7 @@ internal static class Probe
         {
             properties["LeveeRole"] = settings.Role;
         }
-        var options = new BuildOptions(properties);
+        var options = new BuildOptions(properties, settings.Config ?? new Dictionary<string, string>());
         CSharpGeneratorDriver.Create([new OperationGenerator().AsSourceGenerator()], optionsProvider: options, parseOptions: parse)
             .RunGeneratorsAndUpdateCompilation(compilation, out var generated, out var generatorErrors);
         var analyzers = Analyzers;
@@ -74,22 +77,23 @@ internal static class Probe
         return new Output(generated, [.. generatorErrors.Concat(analyzed).Where(d => d.Severity == DiagnosticSeverity.Error)]);
     }
 
-    private sealed class BuildOptions(IReadOnlyDictionary<string, string> properties) : AnalyzerConfigOptionsProvider
+    private sealed class BuildOptions(IReadOnlyDictionary<string, string> properties, IReadOnlyDictionary<string, string> config) : AnalyzerConfigOptionsProvider
     {
-        public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(properties);
+        public override AnalyzerConfigOptions GlobalOptions { get; } = new Options(properties, config);
 
         public override AnalyzerConfigOptions GetOptions(SyntaxTree tree) => GlobalOptions;
 
         public override AnalyzerConfigOptions GetOptions(AdditionalText textFile) => GlobalOptions;
     }
 
-    private sealed class Options(IReadOnlyDictionary<string, string> properties) : AnalyzerConfigOptions
+    private sealed class Options(IReadOnlyDictionary<string, string> properties, IReadOnlyDictionary<string, string> config) : AnalyzerConfigOptions
     {
         public override bool TryGetValue(string key, out string value)
         {
             value = "";
             return key.StartsWith("build_property.", StringComparison.Ordinal)
-                && properties.TryGetValue(key["build_property.".Length..], out value!);
+                ? properties.TryGetValue(key["build_property.".Length..], out value!)
+                : config.TryGetValue(key, out value!);
         }
     }
 }

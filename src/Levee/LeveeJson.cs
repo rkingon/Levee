@@ -46,4 +46,89 @@ public static class LeveeJson
         };
         return (options ?? Options).GetJsonSchemaAsNode(type, exporter);
     }
+
+    /// <summary>
+    /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>
+    /// value replaced, at any depth (in nested records and collections), under the name the wire gives it.
+    /// </summary>
+    public static string Redact(object value, Type type, JsonSerializerOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var json = options ?? Options;
+        var node = JsonSerializer.SerializeToNode(value, type, json);
+        Redact(node, json.GetTypeInfo(type), json);
+        return node?.ToJsonString(json) ?? "null";
+    }
+
+    /// <summary>The first <see cref="SecretAttribute"/> property anywhere in <paramref name="type"/>'s wire shape, or null.</summary>
+    public static string? FindSecret(Type type, JsonSerializerOptions? options = null)
+    {
+        var json = options ?? Options;
+        return Find(json.GetTypeInfo(type), json, []);
+    }
+
+    private static string? Mark(System.Reflection.ICustomAttributeProvider? property) =>
+        property?.IsDefined(typeof(SecretAttribute), inherit: false) == true ? "[secret]"
+        : property?.IsDefined(typeof(PersonalAttribute), inherit: false) == true ? "[personal]"
+        : null;
+
+    private static void Redact(JsonNode? node, System.Text.Json.Serialization.Metadata.JsonTypeInfo info, JsonSerializerOptions json)
+    {
+        switch (node)
+        {
+            case JsonObject obj when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
+                foreach (var property in info.Properties)
+                {
+                    if (!obj.TryGetPropertyValue(property.Name, out var child))
+                    {
+                        continue;
+                    }
+                    if (Mark(property.AttributeProvider) is { } mark)
+                    {
+                        obj[property.Name] = mark;
+                    }
+                    else if (child is not null)
+                    {
+                        Redact(child, json.GetTypeInfo(property.PropertyType), json);
+                    }
+                }
+                break;
+            case JsonArray items when info.ElementType is { } element:
+                foreach (var item in items)
+                {
+                    Redact(item, json.GetTypeInfo(element), json);
+                }
+                break;
+            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && info.ElementType is { } value:
+                foreach (var (_, item) in map)
+                {
+                    Redact(item, json.GetTypeInfo(value), json);
+                }
+                break;
+        }
+    }
+
+    private static string? Find(System.Text.Json.Serialization.Metadata.JsonTypeInfo info, JsonSerializerOptions json, HashSet<Type> seen)
+    {
+        if (!seen.Add(info.Type))
+        {
+            return null;
+        }
+        if (info.ElementType is { } element)
+        {
+            return Find(json.GetTypeInfo(element), json, seen);
+        }
+        foreach (var property in info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : [])
+        {
+            if (property.AttributeProvider?.IsDefined(typeof(SecretAttribute), inherit: false) == true)
+            {
+                return property.Name;
+            }
+            if (Find(json.GetTypeInfo(property.PropertyType), json, seen) is { } nested)
+            {
+                return $"{property.Name}.{nested}";
+            }
+        }
+        return null;
+    }
 }

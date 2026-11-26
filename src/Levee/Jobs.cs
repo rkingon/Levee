@@ -4,7 +4,8 @@ namespace Levee;
 /// Runs an operation later, as a job. Only from inside an operation: the enqueue is authorized as the current caller, the
 /// job is inserted in the current transaction (it commits or rolls back with it), and it runs through the pipeline as a
 /// <see cref="JobPrincipal"/> for that caller. Jobs run at least once, so an operation whose repeat isn't safe
-/// (<see cref="Idempotency.None"/>), or that carries a <see cref="SecretAttribute"/> input, is refused.
+/// (<see cref="Idempotency.None"/>) is refused, and so is one carrying a <see cref="SecretAttribute"/> input, at any depth,
+/// unless jobs seal their inputs (<c>AddLeveeJobs(sealSecrets: true)</c>).
 /// </summary>
 public interface IJobs
 {

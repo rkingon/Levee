@@ -33,7 +33,7 @@ public sealed class CliTests : IDisposable
     }
 
     [Fact]
-    public async Task A_project_a_Levee_project_references_has_a_role_too()
+    public async Task A_project_a_Levee_project_references_has_a_role_and_runs_the_rules()
     {
         var build = new DirectoryInfo(AppContext.BaseDirectory);
         while (!File.Exists(Path.Combine(build!.FullName, "Levee.slnx")))
@@ -41,10 +41,12 @@ public sealed class CliTests : IDisposable
             build = build.Parent;
         }
         var levee = Path.Combine(build.FullName, "src", "Levee", "build");
-        void Project(string name, string? role, params string[] references)
+        // Only the role check is under test here: these stand-ins have no Levee analyzers to run, so they build as check does.
+        void Project(string name, string? role, params string[] references) => Write(name, role, "<LeveeCheck>true</LeveeCheck>", references);
+        void Write(string name, string? role, string properties, params string[] references)
         {
             Directory.CreateDirectory(Path.Combine(_dir, name));
-            var imports = role is null ? "" : $"""<Import Project="{levee}/Levee.props" /><PropertyGroup><LeveeRole>{role}</LeveeRole></PropertyGroup>""";
+            var imports = role is null ? "" : $"""<Import Project="{levee}/Levee.props" /><PropertyGroup><LeveeRole>{role}</LeveeRole>{properties}</PropertyGroup>""";
             var items = string.Concat(references.Select(r => $"""<ProjectReference Include="../{r}/{r}.csproj" />"""));
             File.WriteAllText(Path.Combine(_dir, name, $"{name}.csproj"), $"""
                 <Project Sdk="Microsoft.NET.Sdk">
@@ -60,6 +62,8 @@ public sealed class CliTests : IDisposable
         Project("Vendors", "Adapter", "Plain");
         Project("Payments", "Adapter", "Transport");
         Project("Tests", "Test", "Plain");
+        Write("Unanalyzed", "Adapter", "<RunAnalyzers>false</RunAnalyzers>");
+        Write("Bare", "Adapter", "");
 
         static async Task<(int Code, string Output)> Build(string project)
         {
@@ -81,6 +85,8 @@ public sealed class CliTests : IDisposable
         Assert.Contains("error LEVEE001: This Adapter project references Plain, which doesn't use Levee", vendors.Output, StringComparison.Ordinal);
         Assert.Equal(0, payments.Code);
         Assert.Equal(0, tests.Code);
+        Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "Unanalyzed", "Unanalyzed.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE009: This project uses Levee without its analyzers", (await Build(Path.Combine(_dir, "Bare", "Bare.csproj"))).Output, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -240,7 +246,8 @@ public sealed class CliTests : IDisposable
         Assert.Contains("tenant_id = nullif(public.levee_scope(), '')::uuid", isolate, StringComparison.Ordinal);
         Assert.Contains("create table elsewhere.levee_audit", (await Run(_dir, "db", "schema", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
         Assert.Contains("grant usage on schema elsewhere to app;", (await Run(_dir, "db", "grants", "app", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
-        Assert.Contains("revoke update, delete on public.levee_audit from app;", grants, StringComparison.Ordinal);
+        Assert.Contains("revoke insert, update, delete on public.levee_audit from app;", grants, StringComparison.Ordinal);
+        Assert.Contains("grant execute on function public.levee_audit_write", grants, StringComparison.Ordinal);
         Assert.Contains("revoke insert, update, delete on oxbow_migration from app;", grants, StringComparison.Ordinal);
     }
 

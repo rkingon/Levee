@@ -13,13 +13,13 @@ namespace Levee.Analyzers;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class ErrorAnalyzer : DiagnosticAnalyzer
 {
-    private static readonly ImmutableHashSet<string> Factories = ImmutableHashSet.Create("Validation", "NotFound", "Conflict", "Forbidden", "Unavailable");
+    private static readonly ImmutableHashSet<string> Factories = ImmutableHashSet.Create("Validation", "NotFound", "Conflict", "Forbidden", "Unavailable", "Of");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics => ImmutableArray.Create(Descriptors.UndeclaredError, Descriptors.UndeclaredRefusal);
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
@@ -32,8 +32,8 @@ public sealed class ErrorAnalyzer : DiagnosticAnalyzer
             }
             var own = levee.GetMembers().OfType<IFieldSymbol>().Where(f => f.IsConst).Select(f => f.ConstantValue as string)
                 .Where(c => c is not null).ToImmutableHashSet(StringComparer.Ordinal);
-            start.RegisterOperationAction(c => OnInvocation(c, error, handler, own), OperationKind.Invocation);
-            start.RegisterOperationAction(c => OnCreation(c, error, handler, own), OperationKind.ObjectCreation);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnInvocation(c, error, handler, own)), OperationKind.Invocation);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, error, handler, own)), OperationKind.ObjectCreation);
         });
     }
 
@@ -56,13 +56,46 @@ public sealed class ErrorAnalyzer : DiagnosticAnalyzer
         }
     }
 
-    private static void Check(OperationAnalysisContext context, IOperation code, INamedTypeSymbol handler, ImmutableHashSet<string?> own)
+    /// <summary>Every code an expression can be: a constant, either side of a conditional, a switch's arms.</summary>
+    private static IEnumerable<(string Code, IOperation At)> Codes(IOperation operation) => operation switch
     {
-        if (code.ConstantValue is not { HasValue: true, Value: string value } || own.Contains(value))
+        { ConstantValue: { HasValue: true, Value: string value } } => [(value, operation)],
+        IConditionalOperation conditional => Codes(conditional.WhenTrue).Concat(conditional.WhenFalse is { } no ? Codes(no) : []),
+        ICoalesceOperation coalesce => Codes(coalesce.Value).Concat(Codes(coalesce.WhenNull)),
+        ISwitchExpressionOperation choice => choice.Arms.SelectMany(a => Codes(a.Value)),
+        IConversionOperation conversion => Codes(conversion.Operand),
+        _ => [],
+    };
+
+    private static void Check(OperationAnalysisContext context, IOperation expression, INamedTypeSymbol handler, ImmutableHashSet<string?> own)
+    {
+        foreach (var (code, at) in Codes(expression))
+        {
+            CheckOne(context, code, at, handler, own);
+        }
+    }
+
+    /// <summary>The type whose contract a code belongs to: the handler or policy it's written in, or the one a nested helper sits in.</summary>
+    private static INamedTypeSymbol? OwnerOf(ISymbol symbol)
+    {
+        for (var t = symbol.ContainingType; t is not null; t = t.ContainingType)
+        {
+            if (t.AllInterfaces.Any(i => i.ToDisplayString() is "Levee.IAccessPolicy" or "Levee.IAdmission"
+                || i.OriginalDefinition.ToDisplayString() == "Levee.IOperationHandler<TOperation, TResult>"))
+            {
+                return t;
+            }
+        }
+        return symbol.ContainingType;
+    }
+
+    private static void CheckOne(OperationAnalysisContext context, string value, IOperation code, INamedTypeSymbol handler, ImmutableHashSet<string?> own)
+    {
+        if (own.Contains(value))
         {
             return;
         }
-        var owner = context.ContainingSymbol.ContainingType;
+        var owner = OwnerOf(context.ContainingSymbol);
         if (owner is not null && owner.AllInterfaces.Any(i => i.ToDisplayString() is "Levee.IAccessPolicy" or "Levee.IAdmission"))
         {
             var refuses = owner.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.RefusesAttribute")?
@@ -73,7 +106,7 @@ public sealed class ErrorAnalyzer : DiagnosticAnalyzer
             }
             return;
         }
-        var operations = context.ContainingSymbol.ContainingType?.AllInterfaces
+        var operations = owner?.AllInterfaces
             .Where(i => SymbolEqualityComparer.Default.Equals(i.OriginalDefinition, handler))
             .Select(i => i.TypeArguments[0])
             .ToList() ?? [];

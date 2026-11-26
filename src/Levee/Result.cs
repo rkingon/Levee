@@ -16,11 +16,31 @@ public enum ErrorKind
     Internal,
 }
 
-/// <param name="Kind">How every projection maps it: a status, whether to retry.</param>
-/// <param name="Code">Lowercase and dotted, like an operation's name: what a client branches on. An operation declares the codes it fails with (<see cref="OperationAttribute.Errors"/>); Levee's own are <see cref="LeveeErrors"/>.</param>
-/// <param name="Message">For a person, never parsed.</param>
-public sealed record Error(ErrorKind Kind, string Code, string Message)
+/// <summary>
+/// A failure, made only by its factories: <see cref="ErrorKind.Internal"/> is the dispatcher's alone, for a bug, so no code
+/// of an app's can answer one.
+/// </summary>
+public sealed record Error
 {
+    private Error(ErrorKind kind, string code, string message)
+    {
+        Kind = kind;
+        Code = code;
+        Message = message;
+    }
+
+    /// <summary>How every projection maps it: a status, whether to retry.</summary>
+    public ErrorKind Kind { get; }
+
+    /// <summary>
+    /// Lowercase and dotted, like an operation's name: what a client branches on. An operation declares the codes it fails
+    /// with (<see cref="OperationAttribute.Errors"/>); Levee's own are <see cref="LeveeErrors"/>.
+    /// </summary>
+    public string Code { get; }
+
+    /// <summary>For a person, never parsed.</summary>
+    public string Message { get; init; }
+
     /// <summary>A validation error's detail: what's wrong with each field, by its path in the input (<c>$.lines[2].amount</c>).</summary>
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? Fields { get; init; }
 
@@ -32,6 +52,11 @@ public sealed record Error(ErrorKind Kind, string Code, string Message)
 
     /// <summary>The same call, unchanged, may succeed later: a client may retry it, and a job is retried.</summary>
     public bool Transient => Kind is ErrorKind.Unavailable or ErrorKind.Internal;
+
+    /// <summary>A failure of <paramref name="kind"/>, chosen at run time (mapping a vendor's status, say). Never <see cref="ErrorKind.Internal"/>.</summary>
+    public static Error Of(ErrorKind kind, string code, string message) => kind == ErrorKind.Internal
+        ? throw new ArgumentException("Internal is the dispatcher's, for a bug: return the failure the caller should see.", nameof(kind))
+        : new(kind, code, message);
 
     public static Error Validation(string code, string message) => new(ErrorKind.Validation, code, message);
 
@@ -73,6 +98,9 @@ public static class LeveeErrors
     public const string ScopeMissing = "scope.missing";
     public const string ScopeUndeclared = "scope.undeclared";
 
+    /// <summary>The caller cancelled before the operation ended: it was rolled back. What <see cref="IOperationOutcome"/> is told.</summary>
+    public const string Cancelled = "operation.cancelled";
+
     /// <summary>A caller-scoped operation's caller carries no scope.</summary>
     public const string CallerUnscoped = "scope.caller";
 
@@ -99,7 +127,7 @@ public static class LeveeErrors
 
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
-        Internal, Unauthenticated, UnknownOperation, InvalidInput, Streams, AnswersOnce, ScopeMissing, ScopeUndeclared, CallerUnscoped, NotImplemented,
+        Internal, Unauthenticated, UnknownOperation, InvalidInput, Streams, AnswersOnce, ScopeMissing, ScopeUndeclared, CallerUnscoped, Cancelled, NotImplemented,
         UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable,
     };
 }
@@ -112,24 +140,31 @@ public readonly record struct Unit
 [SuppressMessage("Design", "CA1000", Justification = "Factory members on the generic result are its construction API.")]
 public readonly struct Result<T>
 {
+    // default(Result<T>) is neither a value nor a failure anyone returned: it reads as a failure, never as a success.
+    private static readonly Error Uninitialized = Error.Of(ErrorKind.Validation, "result.uninitialized", "A Result was used without being given a value or an error.");
+
     private readonly T? _value;
+    private readonly Error? _error;
+    private readonly bool _ok;
 
     private Result(T value)
     {
         _value = value;
-        Error = null;
+        _error = null;
+        _ok = true;
     }
 
     private Result(Error error)
     {
         _value = default;
-        Error = error;
+        _error = error;
+        _ok = false;
     }
 
-    public Error? Error { get; }
+    public Error? Error => _ok ? null : _error ?? Uninitialized;
 
     [MemberNotNullWhen(false, nameof(Error))]
-    public bool IsSuccess => Error is null;
+    public bool IsSuccess => _ok;
 
     public T Value => IsSuccess ? _value! : throw new InvalidOperationException($"Result failed: {Error.Code}: {Error.Message}");
 

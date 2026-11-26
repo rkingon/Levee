@@ -55,13 +55,13 @@ Every project that references Levee declares one, or the build fails (LEVEE001):
 | `Contracts` | Kernel, Contracts | Operations and their views. What clients see. |
 | `Domain` | Kernel, Domain | Aggregates and invariants. |
 | `Application` | Kernel, Contracts, Domain, Application | Handlers and the ports they need. |
-| `Adapter` | Kernel, Contracts, Domain, Application | Ports' implementations: the DbContext, repositories, vendors, static data. Never each other. |
+| `Adapter` | Kernel, Contracts, Domain, Application, Infrastructure | Ports' implementations: the DbContext, repositories, vendors, static data. Never each other. |
 | `Infrastructure` | Kernel, Infrastructure | Plumbing several adapters share: a vendor transport, `DelegatingHandler`s. May do I/O; sees nothing of the application's; declares no ports or operations. |
 | `Composition` | everything but Host, Tool and Test | The composition root hosts share: settings bound into records, hosted services, the generated catalog. Optional: without one, the Host is the root. |
 | `Host` | everything but Host, Tool and Test | A process: it composes (or takes the Composition project's) and drives. It names nothing of Application's or Domain's. A Host that sees no Application (it calls one through an SDK) composes nothing. |
 | `Client` | Kernel, Contracts, Client | Thin consumers over the wire. |
 | `Projection` | Kernel, Contracts, Projection | The app's own public API: routes it designs (resources, versions), mapped onto operations and sent through the `Dispatcher`, failing through `LeveeProblems`. It can't see Application, Domain or adapters, so it holds no logic of theirs. A Host or Composition maps it. |
-| `Tool` | what a Host sees | A process run as the database's owner: migrations, the role bootstrap. Owns its transaction (LEVEE004 doesn't apply); otherwise held like a Host. Nothing references it (LEVEE017). |
+| `Tool` | what a Host sees but Client and Projection | A process run as the database's owner: migrations, the role bootstrap. Owns its transaction (LEVEE004 doesn't apply); otherwise held like a Host. Nothing references it (LEVEE017). |
 | `Test` | everything | Also a composition root. |
 
 Every project in the app declares a role: one without Levee that a Levee project references fails the build.
@@ -215,7 +215,10 @@ Projections an app writes itself (typed REST routes, a webhook) answer failures 
 
 The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation`, or
 `LeveeSchema.Create(schema)` and the `schema` arguments for an app whose tables aren't in `public`; the app connects
-as a role that is not a superuser, owns nothing and doesn't bypass RLS. Grant it `select, insert` on `levee_audit`.
+as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` (`dotnet levee db
+grants`) gives it: every table's rows, and the audit only through `levee_audit_write`, a function the owner's rights run, so no
+code of the app's can insert, change or remove an audit record. See [docs/decisions.md](docs/decisions.md#trust-model) for
+what the database holds and what the build does.
 `tests/Levee.IntegrationTests/PostgresFixture.cs` is the whole setup.
 
 ## Rules
@@ -227,9 +230,9 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 |---|---|
 | LEVEE001 | A project that references Levee declares its `LeveeRole`. |
 | LEVEE002 | A role references only the roles it may (table above). |
-| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `TimeProvider.System` only where the app composes (Composition, Host). |
+| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `Guid.CreateVersion7()` with no time; `TimeProvider.System` only where the app composes (Composition, Host, Tool). |
 | LEVEE004 | No `SaveChanges`, transaction control, `Commit`/`Rollback`, or opening or committing Levee's unit of work outside tests: the dispatcher commits. |
-| LEVEE005 | No service location outside where the app composes (Composition, Host) or tests. |
+| LEVEE005 | No service location (`GetService`, keyed services, `ActivatorUtilities`) outside where the app composes (Composition, Host, Tool) or tests. |
 | LEVEE006 | A Levee rule is suppressed only beside the code with a reason: `Justification`, or a `// reason` on the pragma. Never project-wide: an assembly attribute, `NoWarn`, a ruleset, or an `.editorconfig` or global config severity fails the build. Not configurable itself. |
 | LEVEE007 | In a Domain project, an aggregate root's state, collections included, is changeable only from inside it. |
 | LEVEE008 | Kernel, Contracts, Domain and Application reference only the BCL, abstractions, Levee and `LeveeAllowedReferences`; never hosting. |
@@ -242,6 +245,8 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE015 | Composition wires the application (constructs, binds, registers) and never calls into it, delegates included: what it maps goes through the dispatcher. |
 | LEVEE016 | An Application class implements no Kernel or Contracts interface: it's reached only through operations. |
 | LEVEE017 | A Tool is an executable nothing references. |
+| LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
+| LEVEE019 | Aggregate roots live in Domain. |
 | LEVEE101–103 | Every operation has exactly one handler, and names are unique (checked where the catalog is built). |
 | LEVEE104 | An operation is a public top-level class with `[Operation(name, access)]` and `IOperation<T>`; names are lowercase and dotted. |
 | LEVEE105 | An operation with effects declares its idempotency. |

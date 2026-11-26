@@ -9,6 +9,17 @@
     </PropertyGroup>
   </Target>
 
+  <!--
+    The rules are the build's: a project that turns its analyzers off, or leaves Levee's out, has none of them, with no reason
+    beside the code. dotnet levee check compiles once without them on purpose (LeveeCheck), then analyzes every project.
+  -->
+  <Target Name="_LeveeRulesRun" BeforeTargets="CoreCompile" Condition="'$(LeveeRole)' != '' and '$(LeveeCheck)' != 'true' and '$(DesignTimeBuild)' != 'true'">
+    <Error Code="LEVEE006" Condition="'$(RunAnalyzers)' == 'false' or ('$(RunAnalyzersDuringBuild)' == 'false' and '$(BuildingInsideVisualStudio)' != 'true')"
+           Text="This project turns its analyzers off (RunAnalyzers or RunAnalyzersDuringBuild), and every Levee rule with them. Fix: remove the property; suppress one rule beside the code, with a reason (dotnet levee explain LEVEE006)" />
+    <Error Code="LEVEE009" Condition="'@(Analyzer->AnyHaveMetadataValue(`Filename`, `Levee.Analyzers`))' != 'true'"
+           Text="This project uses Levee without its analyzers, so none of its rules run here. Fix: reference Levee without ExcludeAssets or PrivateAssets naming analyzers (dotnet levee explain LEVEE009)" />
+  </Target>
+
   <!-- What a referencing project asks of this one: its role. A project without Levee has no such target. -->
   <Target Name="LeveeRoleOf" Returns="@(_LeveeRoleOf)">
     <ItemGroup>

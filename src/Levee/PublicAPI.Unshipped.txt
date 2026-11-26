@@ -71,14 +71,10 @@ Levee.Enqueued.JobId.init -> void
 Levee.Error
 Levee.Error.<Clone>$() -> Levee.Error!
 Levee.Error.Code.get -> string!
-Levee.Error.Code.init -> void
-Levee.Error.Deconstruct(out Levee.ErrorKind Kind, out string! Code, out string! Message) -> void
 Levee.Error.Equals(Levee.Error? other) -> bool
-Levee.Error.Error(Levee.ErrorKind Kind, string! Code, string! Message) -> void
 Levee.Error.Fields.get -> System.Collections.Generic.IReadOnlyDictionary<string!, System.Collections.Generic.IReadOnlyList<string!>!>?
 Levee.Error.Fields.init -> void
 Levee.Error.Kind.get -> Levee.ErrorKind
-Levee.Error.Kind.init -> void
 Levee.Error.Message.get -> string!
 Levee.Error.Message.init -> void
 Levee.Error.RetryAfter.get -> System.TimeSpan?
@@ -333,6 +329,7 @@ Levee.WorkScope.WorkScope(string? Key, bool ReadOnly) -> void
 abstract Levee.Principal.<Clone>$() -> Levee.Principal!
 const Levee.LeveeErrors.AnswersOnce = "operation.answers_once" -> string!
 const Levee.LeveeErrors.CallerUnscoped = "scope.caller" -> string!
+const Levee.LeveeErrors.Cancelled = "operation.cancelled" -> string!
 const Levee.LeveeErrors.Conflict = "conflict" -> string!
 const Levee.LeveeErrors.ConstraintViolation = "store.constraint" -> string!
 const Levee.LeveeErrors.Contention = "store.contention" -> string!
@@ -393,6 +390,7 @@ static Levee.Error.Conflict(string! code, string! message) -> Levee.Error!
 static Levee.Error.Forbidden(string! code, string! message) -> Levee.Error!
 static Levee.Error.InvalidInput(System.Text.Json.JsonException! exception, string? operation = null) -> Levee.Error!
 static Levee.Error.NotFound(string! code, string! message) -> Levee.Error!
+static Levee.Error.Of(Levee.ErrorKind kind, string! code, string! message) -> Levee.Error!
 static Levee.Error.Unauthenticated(string! message) -> Levee.Error!
 static Levee.Error.Unavailable(string! code, string! message) -> Levee.Error!
 static Levee.Error.Unavailable(string! code, string! message, System.TimeSpan retryAfter) -> Levee.Error!
@@ -406,7 +404,9 @@ static Levee.JobPrincipal.operator !=(Levee.JobPrincipal? left, Levee.JobPrincip
 static Levee.JobPrincipal.operator ==(Levee.JobPrincipal? left, Levee.JobPrincipal? right) -> bool
 static Levee.LeveeErrors.All.get -> System.Collections.Generic.IReadOnlySet<string!>!
 static Levee.LeveeJson.Create(System.Action<System.Text.Json.JsonSerializerOptions!>? configure = null) -> System.Text.Json.JsonSerializerOptions!
+static Levee.LeveeJson.FindSecret(System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string?
 static Levee.LeveeJson.Options.get -> System.Text.Json.JsonSerializerOptions!
+static Levee.LeveeJson.Redact(object! value, System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string!
 static Levee.LeveeJson.Schema(System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> System.Text.Json.Nodes.JsonNode!
 static Levee.LeveeServiceCollectionExtensions.AddLevee(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Levee.OperationCatalog! catalog, System.Action<Levee.LeveeOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Levee.LeveeServiceCollectionExtensions.AddLeveePart(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Collections.Generic.IEnumerable<Levee.OperationDescriptor!>! operations) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!

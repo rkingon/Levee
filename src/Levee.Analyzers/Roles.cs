@@ -87,6 +87,19 @@ internal static class Roles
 
 internal static class Known
 {
+    /// <summary>Levee's own generated output, by where the generator puts it: everything else generated is held to the rules.</summary>
+    public static bool IsLeveeGenerated(SyntaxTree? tree) =>
+        tree?.FilePath.Replace('\\', '/').Contains("Levee.Analyzers.OperationGenerator/") == true;
+
+    /// <summary>Runs <paramref name="check"/> unless the operation is in Levee's own generated code.</summary>
+    public static void Unless(Microsoft.CodeAnalysis.Diagnostics.OperationAnalysisContext context, Action check)
+    {
+        if (!IsLeveeGenerated(context.Operation.Syntax.SyntaxTree))
+        {
+            check();
+        }
+    }
+
     public const string Operation = "Levee.IOperation";
     public const string OperationAttribute = "Levee.OperationAttribute";
     public const string RoleAttribute = "Levee.LeveeRoleAttribute";

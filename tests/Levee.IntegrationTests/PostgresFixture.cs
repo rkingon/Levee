@@ -32,10 +32,10 @@ public sealed class PostgresFixture : IAsyncLifetime
         {
             sql.AppendLine(migration.Sql);
         }
-        sql.AppendLine("grant usage on schema public to app;")
-            .AppendLine($"grant select, insert on {LeveeSchema.AuditTable} to app;")
-            .AppendLine($"grant select, insert, update, delete on {SampleDbContext.NotesTable} to app;")
-            .AppendLine(OxbowSchema.GetGrants("app"));
+        // What `dotnet levee db grants app --jobs` prints: the shipped grants, held as the real role.
+        sql.AppendLine(LeveeSchema.Grants("app"))
+            .AppendLine(OxbowSchema.GetGrants("app"))
+            .AppendLine("revoke insert, update, delete on oxbow_migration from app;");
         await ExecuteAsync(sql.ToString());
         App = new NpgsqlConnectionStringBuilder(Owner) { Username = "app", Password = "app" }.ConnectionString;
     }

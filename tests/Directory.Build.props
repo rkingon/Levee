@@ -14,7 +14,8 @@
 
   <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
     <OutputType>Exe</OutputType>
-    <LeveeRole>Test</LeveeRole>
+    <!-- The analyzers' own tests load them as a library: they're Levee's tests, not an app built with it. -->
+    <LeveeRole Condition="'$(MSBuildProjectName)' != 'Levee.Analyzers.Tests'">Test</LeveeRole>
   </PropertyGroup>
   <ItemGroup Condition="'$(IsTestProject)' == 'true'">
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

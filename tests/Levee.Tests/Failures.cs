@@ -218,3 +218,115 @@ internal sealed class QuietHandler : ISubscriptionHandler<Quiet, Tick>
         yield break;
     }
 }
+
+public sealed record Contact([property: Personal] string Email, string Kind);
+
+[Operation("probe.sign_up", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record SignUp(string Handle, Contact Contact, IReadOnlyList<Contact> Others,
+    [property: Secret, System.Text.Json.Serialization.JsonPropertyName("pw")] string Password) : IOperation<Unit>;
+
+internal sealed class SignUpHandler : IOperationHandler<SignUp, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(SignUp operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+/// <summary>Streams until its reader stops, and says when it did.</summary>
+[Operation("probe.watched", "member", Platform = true)]
+public sealed record Watched : ISubscription<Tick>;
+
+internal sealed class WatchedHandler : ISubscriptionHandler<Watched, Tick>
+{
+    public static readonly TaskCompletionSource Stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async IAsyncEnumerable<Tick> SubscribeAsync(Watched subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        try
+        {
+            for (var i = 1; ; i++)
+            {
+                yield return new Tick(i);
+                await Task.Delay(10, ct);
+            }
+        }
+        finally
+        {
+            Stopped.TrySetResult();
+        }
+    }
+}
+
+public sealed class AuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Fact]
+    public async Task Redaction_reaches_nested_records_lists_and_renamed_fields()
+    {
+        var store = new Store();
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(store, outcomes).GetRequiredService<Dispatcher>();
+
+        await dispatcher.SendAsync(new SignUp("ada", new Contact("ada@example.com", "work"), [new Contact("bo@example.com", "home")], "hunter2"), Admin, CancellationToken.None);
+
+        var input = Assert.Single(store.Audited).Input;
+        Assert.DoesNotContain("example.com", input, StringComparison.Ordinal);
+        Assert.DoesNotContain("hunter2", input, StringComparison.Ordinal);
+        Assert.Contains("\"pw\":\"[secret]\"", input, StringComparison.Ordinal);
+        Assert.Contains("\"kind\":\"work\"", input, StringComparison.Ordinal);
+        Assert.Equal("contact.email", LeveeJson.FindSecret(typeof(Nested)));
+    }
+
+    public sealed record Nested(Inner Contact);
+
+    public sealed record Inner([property: Secret] string Email);
+
+    [Fact]
+    public async Task A_subscription_is_admitted_like_any_operation()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes(), more: s => s.AddScoped<IAdmission, RefuseEverything>()).GetRequiredService<Dispatcher>();
+
+        var opened = await dispatcher.SubscribeAsync(new Ticks(2), Admin, CancellationToken.None);
+
+        Assert.Equal("admission.closed", opened.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_reader_that_stops_stops_the_handler()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
+        var opened = await dispatcher.SubscribeFromClientAsync("probe.watched", default, Admin, CancellationToken.None);
+        using var reading = new CancellationTokenSource();
+
+        await foreach (var _ in opened.Value.WithCancellation(reading.Token))
+        {
+            await reading.CancelAsync();
+            break;
+        }
+
+        await WatchedHandler.Stopped.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task A_cancelled_operation_is_still_told_to_the_outcome()
+    {
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatcher.SendAsync(new Wait(), Admin, cancelled.Token));
+
+        Assert.Equal(LeveeErrors.Cancelled, Assert.Single(outcomes.Seen).Error!.Code);
+    }
+
+    [Fact]
+    public void A_default_result_is_no_success_and_no_one_makes_an_internal_error()
+    {
+        Result<int> unset = default;
+
+        Assert.False(unset.IsSuccess);
+        Assert.Equal("result.uninitialized", unset.Error.Code);
+        Assert.Throws<ArgumentException>(() => Error.Of(ErrorKind.Internal, "internal", "Forged."));
+        Assert.Equal(ErrorKind.Conflict, Error.Of(ErrorKind.Conflict, "notes.taken", "Taken.").Kind);
+    }
+}

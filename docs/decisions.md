@@ -10,7 +10,7 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 |---|---|---|---|
 | Declare a shared refusal (`because.*`) once, not on every operation | A | Declare it on each operation that can return it; share the code as a constant | An operation's error codes are its contract, read by every client from the catalog. One the operation can return but doesn't list is one no client expects. |
 | Follow a handler's helpers in LEVEE110 | A, B | No: `RefuseUndeclaredErrors` in tests instead | A helper's codes aren't all reachable from every caller: following them would demand codes an operation never returns. Tests exercise the paths that are. |
-| Skip Oxbow's unknown-kind check where a process enqueues kinds it doesn't work | A | Register every worker in every process; choose queues per process | The kind check catches typos at enqueue. Registration is the app's shared composition; which queues a process works is its deployment. |
+| Skip Oxbow's unknown-kind check where a process works some queues and enqueues kinds others work | A | Register every worker in every process; choose queues per process | The kind check catches typos at enqueue. Registration is the app's shared composition; which queues a process works is its deployment. (A process that works no queue at all skips the check: built, since it registers no worker to check against.) |
 | A hand-built HTTP envelope for the app's own clients | A | `MapLeveeOperations`, or name what it can't do | Projections are generated, with no logic of their own; a second wire shape is a second set of rules. An app's own typed routes reuse `LeveeProblems`. |
 | Write a paid vendor call's record even when its operation rolls back | B | Dispatch an internal operation for the record, as the system | That record is its own unit of work, so it's its own operation: authorized, scoped, audited. The audit rows are correct, not noise. |
 | Hand a secret to a vendor before the operation commits | B | Enqueue the handover as a job | Jobs commit with their operation (Oxbow in the unit of work): a rolled-back operation hands nothing over, with no compensation to write. |
@@ -34,13 +34,42 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 | Constraint and trigger refusals are `Conflict`, not `internal` | B | `internal` is transient: a job would retry what can never succeed. |
 | COMMIT is never cancelled by the caller | B | A cancel mid-COMMIT leaves nobody knowing whether it happened. |
 | `LeveeProblems` public | B | An app's own HTTP routes answer failures exactly as `MapLeveeOperations` does. |
-| A job honours its failure's `RetryAfter` | Levee | A vendor's rate limit says when to come back; Oxbow's backoff would guess. Built in Oxbow first (`JobRetryException`, 0.2.0-alpha.3), since a worker choosing its delay is Oxbow's to offer. |
+| A job honours its failure's `RetryAfter` | the maintainer, with the failure contract | A vendor's rate limit says when to come back; Oxbow's backoff would guess. Built in Oxbow first (`JobRetryException`, 0.2.0-alpha.3), since a worker choosing its delay is Oxbow's to offer. |
 | MCP: inputs the server binds, rendered results, a server with no dispatcher | A | `LeveeMcpOptions` | What kept A's own MCP server: a turn's id filled by the server, a page shown as an image, and a stdio server beside the client. Without them, the rule "no hand-written projections" couldn't hold. |
 | `ProblemView` in `Levee` | A | A client (an SDK) reads failures with Levee's own type, not a copy that drifts. |
-| SSE keep-alive and recheck | A | A stream outlives the authorization it opened with: a revoked key or a lost membership ends it, and idle proxies don't. |
+| SSE keep-alive and recheck | A | A stream outlives the authorization it opened with: a revoked key or a lost membership (admissions run at open and at each recheck) ends it, and idle proxies don't. |
+| The audit written only through `levee_audit_write`; side connections, scope settings and analyzers-off refused; recursive redaction | an independent audit | Each let code of the app's step around a guarantee the README claimed: forge the audit, leave the transaction, change its scope, or turn the rules off. |
 | LEVEE016 exempts operations | A | A shared marker on a message (a tenant id) is data, not a way into the application. |
 | Levee's SQL qualified by schema | B | Policies and grants that resolve through `search_path` hold only for the roles whose path happens to match. |
 | Generated code documented | B | A strict build (`GenerateDocumentationFile`, warnings as errors) refused Levee's own output. |
+
+## Trust model
+
+Levee's guarantees are against mistakes: code that compiles in the wrong shape, and writes the contract didn't declare.
+
+- **The build** refuses every way it knows for code of the app's to step around the pipeline: committing, opening a
+  connection of its own, naming the scope settings, service location, I/O in the core, calling the application from a Host.
+  Each is a rule with a test that proves it fires, and turning the rules off is itself refused (LEVEE006, LEVEE009).
+- **The database** holds what the build can't see at run time: an undeclared write fails in a read-only transaction, a write
+  outside the operation's scope fails row-level security, and the runtime role reaches the audit only through
+  `levee_audit_write`, so it can't insert, change or remove a record of its own.
+- **Not covered:** hostile code running as the app's role. The scope is a transaction setting the unit of work sets; code on
+  the same connection that sets it anyway (by reflection, or SQL the build can't see) moves into another tenant's rows. A
+  dependency the app trusts is trusted. Separating that is the database's roles, per tenant or per service, not Levee's.
+
+## Forks
+
+Where the apps disagreed before Levee, and what it chose.
+
+| Fork | Chosen | Why |
+|---|---|---|
+| Failure model: unions, `Result`/`Error`, or exceptions | `Result<T>` with a closed `ErrorKind`; domain outcomes in the result type; exceptions only for bugs, answered `internal` | Every projection and job reads one shape; a bug's detail stays in the log. |
+| The surface generated at compile time or run time | Compile time: a source generator catalogs operations, handlers and adapters, and binds ports | Wrong wiring fails the build, not the first request. |
+| Isolation: RLS, query filters, or membership checks | Row-level security keyed on the operation's scope, with membership as an `IAdmission` | A query filter forgotten in one query leaks; a policy on the table can't be forgotten. |
+| What Valkey may hold | Not Levee's: an app's store is a port and its adapter | No rule here would stop wrong code compiling either way. |
+| Auth shape | The host establishes a `Principal` (a projection's principal hook, `IJobPrincipals`); `IAccessPolicy` decides | Authentication is the host's; authorization is one decision, in one place. |
+| Live updates | Subscriptions (`ISubscription<TItem>`), authorized, scoped and admitted as they open and rechecked while they stream, projected as SSE | One pipeline for one-shot and streaming calls. |
+| The dev loop | `dotnet levee`: new, generate, check, explain, db, catalog | Pinned per app, so every agent runs the same rules. |
 
 ## Decided
 

@@ -8,38 +8,55 @@ namespace Levee.Analyzers;
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class AggregateAnalyzer : DiagnosticAnalyzer
 {
-    public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics => ImmutableArray.Create(Descriptors.AggregateState);
+    public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics => ImmutableArray.Create(Descriptors.AggregateState, Descriptors.AggregatePlacement);
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
-            if (Roles.Of(start.Options) == Role.Domain && start.Compilation.GetTypeByMetadataName(Known.AggregateRoot) is { } root)
+            var role = Roles.Of(start.Options);
+            if (role is Role.None or Role.Test || start.Compilation.GetTypeByMetadataName(Known.AggregateRoot) is not { } root)
             {
-                start.RegisterSymbolAction(c => Analyze(c, root), SymbolKind.Property, SymbolKind.Field);
+                return;
             }
+            start.RegisterSymbolAction(c => Analyze(c, root, role), SymbolKind.NamedType);
         });
     }
 
-    private static void Analyze(SymbolAnalysisContext context, INamedTypeSymbol root)
+    /// <summary>The root and every class it derives from: a public setter on a base class is a way in all the same.</summary>
+    private static void Analyze(SymbolAnalysisContext context, INamedTypeSymbol root, Role role)
     {
-        var owner = context.Symbol.ContainingType;
-        if (owner is null || !owner.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) || context.Symbol.IsImplicitlyDeclared)
+        var type = (INamedTypeSymbol)context.Symbol;
+        if (type.TypeKind != TypeKind.Class || !type.AllInterfaces.Contains(root, SymbolEqualityComparer.Default)
+            || type.Locations.All(l => Known.IsLeveeGenerated(l.SourceTree)))
         {
             return;
         }
-        var open = context.Symbol switch
+        if (role != Role.Domain)
         {
-            IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility != Accessibility.Private => true,
-            IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
-            IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
-            _ => false,
-        };
-        if (open)
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregatePlacement, type.Locations.FirstOrDefault(), type.Name, role));
+            return;
+        }
+        for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, context.Symbol.Locations.FirstOrDefault(), context.Symbol.Name, owner.Name));
+            foreach (var member in t.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol && !m.IsImplicitlyDeclared && !m.IsStatic))
+            {
+                var open = member switch
+                {
+                    IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
+                        or Accessibility.ProtectedAndInternal) => true,
+                    IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
+                    IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
+                    _ => false,
+                };
+                if (open)
+                {
+                    var location = SymbolEqualityComparer.Default.Equals(t, type) ? member.Locations.FirstOrDefault() : type.Locations.FirstOrDefault();
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
+                }
+            }
         }
     }
 
@@ -51,6 +68,25 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         "System.Collections.Generic.ISet<T>", "System.Collections.Generic.IDictionary<TKey, TValue>",
         "System.Collections.ObjectModel.Collection<T>", "System.Collections.ObjectModel.ObservableCollection<T>");
 
-    private static bool IsMutableCollection(ITypeSymbol type) =>
-        type is IArrayTypeSymbol || (type is INamedTypeSymbol named && MutableCollections.Contains(named.OriginalDefinition.ToDisplayString()));
+    /// <summary>An array, a known mutable collection, or anything deriving one or implementing a writable collection interface.</summary>
+    private static bool IsMutableCollection(ITypeSymbol type)
+    {
+        if (type is IArrayTypeSymbol)
+        {
+            return true;
+        }
+        if (type is not INamedTypeSymbol named || named.ContainingNamespace?.ToDisplayString() == "System.Collections.Immutable")
+        {
+            return false;
+        }
+        for (var t = named; t is not null; t = t.BaseType)
+        {
+            if (MutableCollections.Contains(t.OriginalDefinition.ToDisplayString()))
+            {
+                return true;
+            }
+        }
+        return named.TypeKind != TypeKind.Interface && !named.OriginalDefinition.ToDisplayString().StartsWith("System.Collections.ObjectModel.ReadOnly", StringComparison.Ordinal)
+            && named.AllInterfaces.Any(i => MutableCollections.Contains(i.OriginalDefinition.ToDisplayString()));
+    }
 }

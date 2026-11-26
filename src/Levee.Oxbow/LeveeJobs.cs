@@ -86,11 +86,11 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             throw new InvalidOperationException(
                 $"{descriptor.Name} can't run as a job: jobs run at least once, and it declares that repeating it isn't safe (Idempotency.None).");
         }
-        var secret = descriptor.InputType.GetProperties().FirstOrDefault(p => p.IsDefined(typeof(SecretAttribute), inherit: false));
+        var secret = LeveeJson.FindSecret(descriptor.InputType, levee.Json);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(
-                $"{descriptor.Name} can't run as a job: its input {secret.Name} is a secret, and job inputs are stored. Pass a reference to it, "
+                $"{descriptor.Name} can't run as a job: its input {secret} is a secret, and job inputs are stored. Pass a reference to it, "
                 + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
         }
         if (await dispatcher.AuthorizeAsync(operation, caller, ct) is { } denied)

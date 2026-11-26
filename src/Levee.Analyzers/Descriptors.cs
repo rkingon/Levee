@@ -69,7 +69,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor HostReach = Rule(
         "LEVEE013", "The Host reaches the application only through the dispatcher",
-        "{0} is {1}'s, and a Host names and holds nothing of Application's or Domain's. Fix: send an operation through the Dispatcher; move wiring that needs {0} into Composition");
+        "{0} is {1}'s, and a Host names nothing of Application's or Domain's and drives nothing of theirs or an adapter's. Fix: send an operation through the Dispatcher; move wiring that needs {0} into Composition, and owner work (migrations) into a Tool");
 
     public static readonly DiagnosticDescriptor CompositionSurface = Rule(
         "LEVEE014", "Composition exposes only registration",
@@ -87,6 +87,14 @@ internal static class Descriptors
         "LEVEE017", "A Tool is a process",
         "This Tool project builds a library, but a Tool is a process, run as the database's owner, that nothing references. Fix: set <OutputType>Exe</OutputType>; code a Host or Composition needs belongs in another role",
         WellKnownDiagnosticTags.CompilationEnd);
+
+    public static readonly DiagnosticDescriptor SideConnection = Rule(
+        "LEVEE018", "Data is reached only through the operation's unit of work",
+        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; work as the database's owner is a Tool's");
+
+    public static readonly DiagnosticDescriptor AggregatePlacement = Rule(
+        "LEVEE019", "Aggregate roots live in Domain",
+        "{0} is an aggregate root in a {1} project, where nothing guards its state. Fix: move it to a Domain project, where LEVEE007 holds it to changing only through its own methods");
 
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",
@@ -134,7 +142,7 @@ internal static class Descriptors
     public static readonly string[] Ids =
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
-        "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017",
+        "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
     ];
 }

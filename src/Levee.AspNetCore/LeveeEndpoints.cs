@@ -105,74 +105,84 @@ public static class LeveeEndpointRouteBuilderExtensions
     private static async IAsyncEnumerable<SseItem<string>> Events(IAsyncEnumerable<JsonElement> items, HttpContext http, LeveeOptions options,
         Func<CancellationToken, Task<Error?>> stillAllowed, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
     {
+        // The pump stops with the stream, however it ends (a failed recheck, a client gone), and is awaited, so the handler's
+        // own finally runs and its scope is released.
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var channel = System.Threading.Channels.Channel.CreateBounded<SseItem<string>>(16);
         var pump = Task.Run(async () =>
         {
             try
             {
-                await foreach (var item in items.WithCancellation(ct))
+                await foreach (var item in items.WithCancellation(stop.Token))
                 {
-                    await channel.Writer.WriteAsync(new SseItem<string>(item.GetRawText()), ct);
+                    await channel.Writer.WriteAsync(new SseItem<string>(item.GetRawText()), stop.Token);
                 }
             }
             catch (OperationFailedException f)
             {
-                await channel.Writer.WriteAsync(Failure(f.Error, http, options), ct);
+                channel.Writer.TryWrite(Failure(f.Error, http, options));
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {
             }
             finally
             {
                 channel.Writer.TryComplete();
             }
-        }, ct);
+        }, CancellationToken.None);
 
-        // Something now, so the status and headers go out as the stream opens, not with the first item.
-        yield return new SseItem<string>("", "keepalive");
-        var recheckAt = DateTimeOffset.UtcNow + options.SubscriptionRecheck;
-        while (true)
+        try
         {
-            using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            idle.CancelAfter(options.SubscriptionKeepAlive < options.SubscriptionRecheck ? options.SubscriptionKeepAlive : options.SubscriptionRecheck);
-            bool more;
-            var timedOut = false;
-            try
+            // Something now, so the status and headers go out as the stream opens, not with the first item.
+            yield return new SseItem<string>("", "keepalive");
+            var recheckAt = DateTimeOffset.UtcNow + options.SubscriptionRecheck;
+            while (true)
             {
-                more = await channel.Reader.WaitToReadAsync(idle.Token);
-            }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-            {
-                more = true;
-                timedOut = true;
-            }
-            if (!more)
-            {
-                break;
-            }
-            while (channel.Reader.TryRead(out var next))
-            {
-                yield return next;
-                if (next.EventType == "error")
+                using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                idle.CancelAfter(options.SubscriptionKeepAlive < options.SubscriptionRecheck ? options.SubscriptionKeepAlive : options.SubscriptionRecheck);
+                bool more;
+                var timedOut = false;
+                try
+                {
+                    more = await channel.Reader.WaitToReadAsync(idle.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    more = true;
+                    timedOut = true;
+                }
+                if (!more)
                 {
                     yield break;
                 }
-            }
-            if (DateTimeOffset.UtcNow >= recheckAt)
-            {
-                recheckAt = DateTimeOffset.UtcNow + options.SubscriptionRecheck;
-                if (await stillAllowed(ct) is { } denied)
+                while (channel.Reader.TryRead(out var next))
                 {
-                    yield return Failure(denied, http, options);
-                    yield break;
+                    yield return next;
+                    if (next.EventType == "error")
+                    {
+                        yield break;
+                    }
                 }
-            }
-            if (timedOut)
-            {
-                yield return new SseItem<string>("", "keepalive");
+                if (DateTimeOffset.UtcNow >= recheckAt)
+                {
+                    recheckAt = DateTimeOffset.UtcNow + options.SubscriptionRecheck;
+                    if (await stillAllowed(ct) is { } denied)
+                    {
+                        yield return Failure(denied, http, options);
+                        yield break;
+                    }
+                }
+                if (timedOut)
+                {
+                    yield return new SseItem<string>("", "keepalive");
+                }
             }
         }
-        await pump;
+        finally
+        {
+            await stop.CancelAsync();
+            await pump;
+        }
     }
 
     private static SseItem<string> Failure(Error error, HttpContext http, LeveeOptions options) =>

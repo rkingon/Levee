@@ -377,4 +377,17 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Equal(1, await postgres.CountAsync(Waiting, acme, started.AddMinutes(9)));
         await host.StopAsync(Ct);
     }
+
+    [Fact]
+    public async Task The_app_role_writes_the_audit_only_through_Levee()
+    {
+        await using var connection = new NpgsqlConnection(postgres.App);
+        await connection.OpenAsync(Ct);
+        await using var forge = new NpgsqlCommand(
+            "insert into levee_audit (id, at, scope, subject, operation, input) values (gen_random_uuid(), now(), null, 'someone-else', 'x', '{}')", connection);
+
+        var refused = await Assert.ThrowsAsync<PostgresException>(() => forge.ExecuteNonQueryAsync(Ct));
+
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, refused.SqlState);
+    }
 }

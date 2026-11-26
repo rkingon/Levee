@@ -18,17 +18,19 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "RollbackTransaction", "RollbackTransactionAsync", "UseTransaction", "UseTransactionAsync");
 
     private static readonly ImmutableHashSet<string> TransactionObjectMembers = ImmutableHashSet.Create(
-        "Commit", "CommitAsync", "Rollback", "RollbackAsync");
+        "Commit", "CommitAsync", "Rollback", "RollbackAsync", "Save", "SaveAsync", "Release", "ReleaseAsync");
 
     private static readonly ImmutableHashSet<string> LocatorMembers = ImmutableHashSet.Create(
-        "GetService", "GetRequiredService", "GetServices", "GetKeyedService", "GetRequiredKeyedService", "CreateScope", "CreateAsyncScope");
+        "GetService", "GetRequiredService", "GetServices", "GetKeyedService", "GetRequiredKeyedService", "GetKeyedServices", "CreateScope",
+        "CreateAsyncScope", "CreateInstance", "GetServiceOrCreateInstance", "CreateFactory");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ServiceLocation);
+        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ServiceLocation, Descriptors.SideConnection);
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        // Generated code is held to the rules too: a header is no way out. Levee's own output is skipped by its path.
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
@@ -37,13 +39,15 @@ public sealed class CodeRules : DiagnosticAnalyzer
             {
                 return;
             }
-            start.RegisterOperationAction(c => OnProperty(c, role), OperationKind.PropertyReference);
-            start.RegisterOperationAction(c => OnInvocation(c, role), OperationKind.Invocation);
-            // A Tool runs as the owner before the app exists: its transaction is its own.
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnProperty(c, role)), OperationKind.PropertyReference);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnInvocation(c, role)), OperationKind.Invocation);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
+            // A Tool runs as the owner before the app exists: its transaction and its connections are its own.
             if (role != Role.Tool)
             {
-                start.RegisterOperationAction(OnSqlCall, OperationKind.Invocation, OperationKind.ObjectCreation);
-                start.RegisterOperationAction(OnSqlText, OperationKind.SimpleAssignment);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlCall(c)), OperationKind.Invocation, OperationKind.ObjectCreation);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnSqlText(c)), OperationKind.SimpleAssignment);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnScopeSetting(c)), OperationKind.Literal, OperationKind.InterpolatedStringText);
             }
         });
     }
@@ -116,9 +120,70 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
+    /// <summary>
+    /// The settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>) named anywhere in a string: set
+    /// in SQL, built up in a variable, they'd move the operation into another tenant's rows. Only the unit of work sets them.
+    /// </summary>
+    private static void OnScopeSetting(OperationAnalysisContext context)
+    {
+        var text = context.Operation switch
+        {
+            ILiteralOperation { ConstantValue: { HasValue: true, Value: string literal } } => literal,
+            IInterpolatedStringTextOperation part => part.Text.ConstantValue.Value as string,
+            _ => null,
+        };
+        if (text is not null && (text.IndexOf("levee.scope", StringComparison.OrdinalIgnoreCase) >= 0
+            || text.IndexOf("levee.platform", StringComparison.OrdinalIgnoreCase) >= 0))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, context.Operation.Syntax.GetLocation(), "SQL naming Levee's scope setting"));
+        }
+    }
+
+    /// <summary>A connection of its own (outside the operation's transaction), or an ambient one (<c>TransactionScope</c>).</summary>
+    private static void OnCreation(OperationAnalysisContext context, Role role)
+    {
+        var type = ((IObjectCreationOperation)context.Operation).Type as INamedTypeSymbol;
+        if (role != Role.Tool && Derives(type, "System.Transactions.TransactionScope"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, context.Operation.Syntax.GetLocation(), "TransactionScope"));
+        }
+        else if (role != Role.Tool && Derives(type, "System.Data.Common.DbConnection"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
+        }
+    }
+
+    private static bool Derives(INamedTypeSymbol? type, string name)
+    {
+        for (var t = type; t is not null; t = t.BaseType)
+        {
+            if (t.ToDisplayString() == name)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static readonly ImmutableHashSet<string> DataSourceMembers = ImmutableHashSet.Create(
+        "CreateConnection", "OpenConnection", "OpenConnectionAsync", "CreateCommand", "CreateBatch");
+
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var method = ((IInvocationOperation)context.Operation).TargetMethod;
+        if (role != Role.Tool && ((DataSourceMembers.Contains(method.Name) && Derives(method.ContainingType, "System.Data.Common.DbDataSource"))
+            || (method.Name is "CreateDbContext" or "CreateDbContextAsync"
+                && method.ContainingType.AllInterfaces.Prepend(method.ContainingType).Any(i => i.OriginalDefinition.ToDisplayString() == "Microsoft.EntityFrameworkCore.IDbContextFactory<TContext>"))))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
+            return;
+        }
+        // CreateVersion7() with no time of its own reads the wall clock.
+        if (method.Name == "CreateVersion7" && method.Parameters.Length == 0 && method.ContainingType.ToDisplayString() == "System.Guid")
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.WallClock, context.Operation.Syntax.GetLocation(), "Guid.CreateVersion7()"));
+            return;
+        }
         if (role != Role.Tool && ((TransactionMembers.Contains(method.Name) && IsPersistence(method.ContainingType))
             || (TransactionObjectMembers.Contains(method.Name) && IsTransaction(method.ContainingType))
             || IsLeveeUnitOfWork(method)))
@@ -175,11 +240,13 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static bool IsLocator(IMethodSymbol method)
     {
         var owner = method.ContainingType.ToDisplayString();
-        if (owner is "System.IServiceProvider" or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory")
+        if (owner is "System.IServiceProvider" or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+            or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider" or "Microsoft.Extensions.DependencyInjection.ActivatorUtilities")
         {
             return true;
         }
         var receiver = method.IsExtensionMethod ? (method.ReducedFrom ?? method).Parameters.FirstOrDefault()?.Type.ToDisplayString() : null;
-        return receiver is "System.IServiceProvider" or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory";
+        return receiver is "System.IServiceProvider" or "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory"
+            or "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider";
     }
 }

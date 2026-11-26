@@ -61,6 +61,7 @@ public interface IAdapters<TPort>
 }
 
 /// <summary>Registered by the generated composition for every set with named adapters.</summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
 public sealed class Adapters<TPort>(IServiceProvider services, IReadOnlyCollection<string> names) : IAdapters<TPort>
     where TPort : class
 {
@@ -73,6 +74,7 @@ public sealed class Adapters<TPort>(IServiceProvider services, IReadOnlyCollecti
 }
 
 /// <summary>Called by the generated composition, at startup, for every port bound by a setting.</summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
 public static class PortSelection
 {
     /// <returns>The configured adapter's name, one of <paramref name="adapters"/>.</returns>

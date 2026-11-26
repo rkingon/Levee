@@ -21,14 +21,27 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
 
     public override void Initialize(AnalysisContext context)
     {
-        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
+        // A pragma in a file that calls itself generated is a suppression all the same.
+        context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.Analyze | GeneratedCodeAnalysisFlags.ReportDiagnostics);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(start =>
         {
             if (Roles.UsesLevee(start.Compilation))
             {
-                start.RegisterSyntaxNodeAction(OnAttribute, SyntaxKind.Attribute);
-                start.RegisterSyntaxTreeAction(OnTree);
+                start.RegisterSyntaxNodeAction(c =>
+                {
+                    if (!Known.IsLeveeGenerated(c.Node.SyntaxTree))
+                    {
+                        OnAttribute(c);
+                    }
+                }, SyntaxKind.Attribute);
+                start.RegisterSyntaxTreeAction(c =>
+                {
+                    if (!Known.IsLeveeGenerated(c.Tree))
+                    {
+                        OnTree(c);
+                    }
+                });
                 start.RegisterCompilationEndAction(OnConfiguration);
             }
         });
@@ -133,12 +146,15 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
             }
         }
 
-        const string Bulk = "dotnet_analyzer_diagnostic.category-Levee.severity";
+        // Levee's category, or every analyzer at once: either one sets Levee's rules below an error.
         var options = context.Options.AnalyzerConfigOptionsProvider;
-        if (options.GlobalOptions.TryGetValue(Bulk, out var bulk) && bulk.Trim() != "error"
-            || compilation.SyntaxTrees.Any(t => options.GetOptions(t).TryGetValue(Bulk, out var b) && b.Trim() != "error"))
+        foreach (var bulk in new[] { "dotnet_analyzer_diagnostic.category-Levee.severity", "dotnet_analyzer_diagnostic.severity" })
         {
-            Report("LEVEE*", Bulk);
+            if (options.GlobalOptions.TryGetValue(bulk, out var value) && value.Trim() != "error"
+                || compilation.SyntaxTrees.Any(t => options.GetOptions(t).TryGetValue(bulk, out var b) && b.Trim() != "error"))
+            {
+                Report("LEVEE*", bulk);
+            }
         }
     }
 

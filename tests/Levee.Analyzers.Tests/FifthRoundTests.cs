@@ -181,13 +181,14 @@ public sealed class FifthRoundTests
     }
 
     [Theory]
-    [InlineData("Contracts", false)]
-    [InlineData("Application", false)]
-    [InlineData("Adapter", true)]
-    [InlineData("Domain", true)]
-    public async Task Operations_are_declared_in_contracts_or_the_application(string role, bool refused)
+    [InlineData("Contracts", "", false)]
+    [InlineData("Application", ", Internal = true", false)]
+    [InlineData("Application", "", true)]
+    [InlineData("Adapter", "", true)]
+    [InlineData("Domain", "", true)]
+    public async Task Operations_are_declared_in_contracts_or_the_application(string role, string @internal, bool refused)
     {
-        var output = await Compile(role, """[Operation("notes.list", "member", Platform = true)] public sealed record ListNotes : IOperation<int>;""");
+        var output = await Compile(role, $$"""[Operation("notes.list", "member", Platform = true{{@internal}})] public sealed record ListNotes : IOperation<int>;""");
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
     }

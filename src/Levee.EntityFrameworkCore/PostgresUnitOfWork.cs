@@ -104,19 +104,14 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public WorkScope Scope => scope;
 
-    public Task AuditAsync(AuditEntry entry, CancellationToken ct)
+    /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction.</summary>
+    public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        db.Set<LeveeAuditRecord>().Add(new LeveeAuditRecord
-        {
-            Id = Guid.CreateVersion7(entry.At),
-            At = entry.At,
-            Scope = entry.Scope,
-            Subject = entry.Subject,
-            Operation = entry.Operation,
-            Input = entry.Input,
-        });
-        return Task.CompletedTask;
+        var schema = db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
+        await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+            $"select {schema}.levee_audit_write({{0}}, {{1}}, {{2}}, {{3}}, {{4}}, {{5}}::jsonb)",
+            Guid.CreateVersion7(entry.At), entry.At, entry.Scope, entry.Subject, entry.Operation, entry.Input), ct);
     }
 
     public async Task CommitAsync(CancellationToken ct)
