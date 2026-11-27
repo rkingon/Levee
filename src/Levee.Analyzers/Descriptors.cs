@@ -42,7 +42,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor Suppression = Rule(
         "LEVEE006", "Levee rules are suppressed only with a reason",
-        "Suppressing {0}: {1}. Fix: change the code to follow the rule. A suppression beside the code, with a reason (#pragma warning disable LEVEEnnn // why, or [SuppressMessage(..., Justification = \"why\")]), lets a migration build while the code still breaks the rule, but dotnet levee check stays red until it's gone; where Levee can't express what the code needs, report that as a gap in Levee",
+        "Suppressing {0}: {1}. Fix: change the code to follow the rule. While an app migrates onto Levee (<LeveeAllowSuppressions>true</LeveeAllowSuppressions>), a suppression beside the code, with a reason (#pragma warning disable LEVEEnnn // why, or [SuppressMessage(..., Justification = \"why\")]), lets it build while the code still breaks the rule, but dotnet levee check stays red until it's gone; where Levee can't express what the code needs, report that as a gap in Levee",
         WellKnownDiagnosticTags.NotConfigurable, WellKnownDiagnosticTags.CompilationEnd);
 
     public static readonly DiagnosticDescriptor AggregateState = Rule(

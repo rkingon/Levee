@@ -45,6 +45,8 @@
   before the app's own narrowing, which a blanket grant would undo.
 
 ### Generator and analyzers
+- **Breaking:** a LEVEE suppression builds only while the app declares it's migrating,
+  `<LeveeAllowSuppressions>true</LeveeAllowSuppressions>`; elsewhere LEVEE006 refuses it. `check` stays red either way.
 - LEVEE006 leaves .NET's own source generators' output alone (`[GeneratedRegex]` emits a bare `#pragma warning disable`),
   and holds every other generator's to the rule.
 - LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.

@@ -127,8 +127,10 @@ time by name (per tenant, per request), declare `[Port(Many = true)]`, name the 
 
 ## LEVEE006: Levee rules are suppressed only with a reason
 
-A rule weakened for a whole project is a rule nobody knows is off. The fix is the code. A suppression is migration debt:
-at that line, with the reason beside it, it lets an app build while it moves onto Levee a piece at a time,
+A rule weakened for a whole project is a rule nobody knows is off. The fix is the code. A suppression is migration debt,
+and builds only where the app says it's migrating (`<LeveeAllowSuppressions>true</LeveeAllowSuppressions>`, in the
+project or `Directory.Build.props`, where it shows in review): at that line, with the reason beside it, it lets the app
+build while it moves onto Levee a piece at a time,
 
 ```csharp
 #pragma warning disable LEVEE012 // the generated client's only I/O is this stream, owned by the SDK

@@ -28,18 +28,21 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
         {
             if (Roles.UsesLevee(start.Compilation))
             {
+                // A suppression builds only where the app has said it's migrating: elsewhere a rule broken is a build broken.
+                var allowed = start.Options.AnalyzerConfigOptionsProvider.GlobalOptions.TryGetValue(AllowProperty, out var allow)
+                    && string.Equals(allow.Trim(), "true", StringComparison.OrdinalIgnoreCase);
                 start.RegisterSyntaxNodeAction(c =>
                 {
                     if (!Known.IsLeveeGenerated(c.Node.SyntaxTree) && !Known.IsFrameworkGenerated(c.Node.SyntaxTree))
                     {
-                        OnAttribute(c);
+                        OnAttribute(c, allowed);
                     }
                 }, SyntaxKind.Attribute);
                 start.RegisterSyntaxTreeAction(c =>
                 {
                     if (!Known.IsLeveeGenerated(c.Tree) && !Known.IsFrameworkGenerated(c.Tree))
                     {
-                        OnTree(c);
+                        OnTree(c, allowed);
                     }
                 });
                 start.RegisterCompilationEndAction(OnConfiguration);
@@ -47,7 +50,12 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
         });
     }
 
-    private static void OnAttribute(SyntaxNodeAnalysisContext context)
+    private const string AllowProperty = "build_property.LeveeAllowSuppressions";
+
+    private const string NotAllowed =
+        "a suppression builds only while the app migrates onto Levee, declared in the project or Directory.Build.props: <LeveeAllowSuppressions>true</LeveeAllowSuppressions>, and dotnet levee check stays red until it's gone";
+
+    private static void OnAttribute(SyntaxNodeAnalysisContext context, bool allowed)
     {
         var attribute = (AttributeSyntax)context.Node;
         if (attribute.ArgumentList is not { Arguments.Count: >= 2 } args
@@ -86,9 +94,14 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, attribute.GetLocation(), id, "needs Justification = \"why\""));
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, Location.None, id, $"needs Justification = \"why\" ({Where(attribute)})"));
         }
+        else if (!allowed)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, attribute.GetLocation(), id, NotAllowed));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, Location.None, id, $"{NotAllowed} ({Where(attribute)})"));
+        }
     }
 
-    private static void OnTree(SyntaxTreeAnalysisContext context)
+    private static void OnTree(SyntaxTreeAnalysisContext context, bool allowed)
     {
         foreach (var trivia in context.Tree.GetRoot(context.CancellationToken).DescendantTrivia(descendIntoTrivia: true))
         {
@@ -114,6 +127,10 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
             if (comment < 0 || string.IsNullOrWhiteSpace(text.Substring(comment + 2)))
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, pragma.GetLocation(), string.Join(", ", ids), "needs a // reason"));
+            }
+            else if (!allowed)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.Suppression, pragma.GetLocation(), string.Join(", ", ids), NotAllowed));
             }
         }
     }

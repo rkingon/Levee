@@ -4,5 +4,7 @@
     <CompilerVisibleProperty Include="LeveeRole" />
     <!-- Packages a Contracts, Domain or Application project may reference beyond the BCL: exact names, or a prefix ending in *. -->
     <CompilerVisibleProperty Include="LeveeAllowedReferences" />
+    <!-- An app migrating onto Levee: a Levee rule may be suppressed beside the code, with a reason, until check is green. -->
+    <CompilerVisibleProperty Include="LeveeAllowSuppressions" />
   </ItemGroup>
 </Project>

@@ -144,26 +144,32 @@ public sealed class RuleTests
         Assert.Equal(refused, output.Ids.Contains("LEVEE005"));
     }
 
+    private static Task<Probe.Output> Migrating(bool allowed, string source) =>
+        Probe.CompileAsync(new Probe.Settings("Application", Properties: allowed ? new Dictionary<string, string> { ["LeveeAllowSuppressions"] = "true" } : null),
+            "using System;\nusing Levee;\n" + source, "App", Levee, Di, Configuration);
+
     [Theory]
-    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003")]""", true)]
-    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003", Justification = " ")]""", true)]
-    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003", Justification = "The audit stamps wall time.")]""", false)]
-    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE006", Justification = "Because.")]""", true)]
-    public async Task A_suppression_carries_its_reason(string attribute, bool refused)
+    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003")]""", true, true)]
+    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003", Justification = " ")]""", true, true)]
+    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003", Justification = "The audit stamps wall time.")]""", true, false)]
+    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE003", Justification = "The audit stamps wall time.")]""", false, true)]
+    [InlineData("""[System.Diagnostics.CodeAnalysis.SuppressMessage("Levee", "LEVEE006", Justification = "Because.")]""", true, true)]
+    public async Task A_suppression_carries_its_reason_and_builds_only_while_migrating(string attribute, bool allowed, bool refused)
     {
-        var output = await Compile("Application", $"public static class Clock {{ {attribute} public static object Now() => System.DateTime.UtcNow; }}");
+        var output = await Migrating(allowed, $"public static class Clock {{ {attribute} public static object Now() => System.DateTime.UtcNow; }}");
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE006"));
         Assert.Equal(!attribute.Contains("LEVEE003", StringComparison.Ordinal), output.Ids.Contains("LEVEE003"));
     }
 
     [Theory]
-    [InlineData("#pragma warning disable LEVEE003", true)]
-    [InlineData("#pragma warning disable LEVEE003 // the audit stamps wall time", false)]
-    [InlineData("#pragma warning disable", true)]
-    public async Task A_pragma_carries_its_reason(string pragma, bool refused)
+    [InlineData("#pragma warning disable LEVEE003", true, true)]
+    [InlineData("#pragma warning disable LEVEE003 // the audit stamps wall time", true, false)]
+    [InlineData("#pragma warning disable LEVEE003 // the audit stamps wall time", false, true)]
+    [InlineData("#pragma warning disable", true, true)]
+    public async Task A_pragma_carries_its_reason_and_builds_only_while_migrating(string pragma, bool allowed, bool refused)
     {
-        var output = await Compile("Application", $"public static class Clock {{\n{pragma}\npublic static object Now() => System.DateTime.UtcNow;\n}}");
+        var output = await Migrating(allowed, $"public static class Clock {{\n{pragma}\npublic static object Now() => System.DateTime.UtcNow;\n}}");
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE006"));
     }
