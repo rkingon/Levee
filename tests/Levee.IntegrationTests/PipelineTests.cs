@@ -570,15 +570,23 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     private sealed class SideDbContext(DbContextOptions<SideDbContext> options) : DbContext(options);
 
     [Theory]
-    [InlineData("identity", "clients", null)]
-    [InlineData("public", "notes", "IdentityDb is a separate bounded context's, but maps public.notes")]
-    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_tables_of_its_own(string schema, string table, string? refusal)
+    [InlineData("identity", "clients", false, null)]
+    [InlineData("public", "notes", false, "IdentityDb is a separate bounded context's, but maps public.notes")]
+    [InlineData("identity", "clients", true, "ForeignDb is OpenIddict's store ([SeparateContext]), but maps Ledger, which isn't OpenIddict's")]
+    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_its_librarys_tables_alone(string schema, string table, bool foreign, string? refusal)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = "none";
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
-        builder.Services.AddDbContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
+        if (foreign)
+        {
+            builder.Services.AddDbContext<ForeignDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
+        }
+        else
+        {
+            builder.Services.AddDbContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
+        }
         builder.Services.AddSingleton(new IdentityTable(schema, table));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
@@ -598,7 +606,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
     private sealed record IdentityTable(string Schema, string Table);
 
-    [SeparateContext]
+    // The test assembly stands in for a library: Ledger is its entity.
+    [SeparateContext("Levee.IntegrationTests")]
     private sealed class IdentityDb(DbContextOptions<IdentityDb> options, IdentityTable table) : DbContext(options)
     {
         public IdentityTable Table => table;
@@ -610,6 +619,13 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
                 e.Property(l => l.Id).HasColumnName("id");
                 e.Property(l => l.Tenant).HasColumnName("tenant");
             });
+    }
+
+    [SeparateContext("OpenIddict")]
+    private sealed class ForeignDb(DbContextOptions<ForeignDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e => e.ToTable("clients", "identity"));
     }
 
     // The two cases map different tables with one context type: each its own model.

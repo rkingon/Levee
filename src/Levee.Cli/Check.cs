@@ -98,6 +98,7 @@ internal static partial class Check
         if (distinct.Count == 0)
         {
             await output.WriteLineAsync($"No LEVEE findings in the {projects.Count - broken.Count} projects that compile.");
+            await output.WriteLineAsync($"Not on Levee yet: {broken.Count} project{(broken.Count == 1 ? " doesn't" : "s don't")} compile. The app is on Levee when this check is green.");
             return 1;
         }
         var open = distinct.Where(f => f.Suppressed is null).ToList();
@@ -110,6 +111,8 @@ internal static partial class Check
             await WriteAsync(debt, root, output);
         }
         await output.WriteLineAsync($"{open.Count} findings and {debt.Count} suppressed in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
+        // An agent reads the last line as the verdict: a suppression is a rule still broken, so it's never "done".
+        await output.WriteLineAsync($"Not on Levee yet: {open.Count + debt.Count} rule{(open.Count + debt.Count == 1 ? " is" : "s are")} still broken. The app is on Levee when this check is green.");
         if (!compiled && broken.Count == 0)
         {
             await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");

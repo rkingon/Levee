@@ -78,8 +78,8 @@ public sealed class TrialTests
 
     private const string Identity = """
         namespace Microsoft.EntityFrameworkCore { public class DbContextOptions { } public class DbContext { public DbContext(DbContextOptions o) { } } }
-        namespace Levee.EntityFrameworkCore { [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class SeparateContextAttribute : System.Attribute; }
-        [Levee.EntityFrameworkCore.SeparateContext]
+        namespace Levee.EntityFrameworkCore { [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class SeparateContextAttribute(string library) : System.Attribute; }
+        [Levee.EntityFrameworkCore.SeparateContext("OpenIddict")]
         public sealed class IdentityDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o) { public IdentityDb Self() => this; }
         public sealed class AppDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o);
         """;
@@ -124,6 +124,19 @@ public sealed class TrialTests
     {
         var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Host"), "using Levee;\n" + declaration
             + (role == "Host" ? "\npublic static class Program { public static void Main() { } }" : ""), "App." + role, GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
+    }
+
+    [Theory]
+    [InlineData("typeof(Dispatcher).GetMethod(\"SendJsonAsync\", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)", true)]
+    [InlineData("d.GetType().GetMethod(\"SendFromClientAsync\")", true)]
+    [InlineData("typeof(Program).GetMethod(\"Main\")", false)]
+    public async Task Levees_own_types_are_called_not_reflected_into(string lookup, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true),
+            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} public static object? Find(Dispatcher d) => {lookup}; }}",
+            "App.Host", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
     }

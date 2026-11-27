@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Data;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
@@ -39,10 +40,15 @@ public static class LeveePostgresServiceCollectionExtensions
 /// A DbContext of a separate bounded context: a generic subdomain the app doesn't model (identity: OpenIddict's stores),
 /// its tables apart from the app's, used by the library it serves and never by the app's own code (LEVEE018). Levee's
 /// unit of work, guard and row-level security check are the app's context's alone; this one is outside every operation.
-/// Startup refuses it if it maps a table the app's context maps.
+/// It names the library it serves, and maps that library's entities alone (or the app's subclasses of them): startup
+/// refuses it if it maps anything else, or a table the app's context maps, since the app's own data is the app's context's.
 /// </summary>
+/// <param name="library">The library whose store it is, as its assemblies are named: <c>OpenIddict</c>.</param>
 [AttributeUsage(AttributeTargets.Class, Inherited = false)]
-public sealed class SeparateContextAttribute : Attribute;
+public sealed class SeparateContextAttribute(string library) : Attribute
+{
+    public string Library { get; } = library;
+}
 
 /// <summary>
 /// Work as the database's owner, outside any operation: a Tool's migrations and role bootstrap. Everything else reaches the
@@ -111,7 +117,18 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
         var mine = Tables(app);
         foreach (var type in separate)
         {
-            if (scope.ServiceProvider.GetService(type) is DbContext other && Tables(other).Intersect(mine).FirstOrDefault() is { } shared)
+            if (scope.ServiceProvider.GetService(type) is not DbContext other)
+            {
+                continue;
+            }
+            var library = type.GetCustomAttribute<SeparateContextAttribute>()!.Library;
+            if (other.Model.GetEntityTypes().FirstOrDefault(e => !e.HasSharedClrType && !Of(e.ClrType, library)) is { } foreign)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{type.Name} is {library}'s store ([SeparateContext]), but maps {foreign.ClrType.Name}, which isn't {library}'s: that would be "
+                    + $"the app's own data outside every operation. Fix: map it in {context.Name}; a separate context holds its library's entities alone.");
+            }
+            if (Tables(other).Intersect(mine).FirstOrDefault() is { } shared)
             {
                 return ValidateOptionsResult.Fail(
                     $"{type.Name} is a separate bounded context's, but maps {shared}, which {context.Name} maps too: that table would be "
@@ -119,6 +136,20 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
             }
         }
         return ValidateOptionsResult.Success;
+    }
+
+    /// <summary>The library's own type, or the app's subclass of one: its assembly named for the library.</summary>
+    private static bool Of(Type type, string library)
+    {
+        for (var t = type; t is not null && t != typeof(object); t = t.BaseType)
+        {
+            var assembly = t.Assembly.GetName().Name ?? "";
+            if (assembly == library || assembly.StartsWith(library + ".", StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static HashSet<string> Tables(DbContext db) =>

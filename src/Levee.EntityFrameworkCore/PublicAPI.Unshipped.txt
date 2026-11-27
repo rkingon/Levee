@@ -1,3 +1,4 @@
 #nullable enable
 Levee.EntityFrameworkCore.SeparateContextAttribute
-Levee.EntityFrameworkCore.SeparateContextAttribute.SeparateContextAttribute() -> void
+Levee.EntityFrameworkCore.SeparateContextAttribute.Library.get -> string!
+Levee.EntityFrameworkCore.SeparateContextAttribute.SeparateContextAttribute(string! library) -> void

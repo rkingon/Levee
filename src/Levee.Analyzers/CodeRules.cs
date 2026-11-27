@@ -27,7 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -443,8 +443,38 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static readonly ImmutableHashSet<string> DataSourceMembers = ImmutableHashSet.Create(
         "CreateConnection", "OpenConnection", "OpenConnectionAsync", "CreateCommand", "CreateBatch");
 
-    private static void OnInvocation(OperationAnalysisContext context, Role role) =>
-        OnCall(context, role, ((IInvocationOperation)context.Operation).TargetMethod);
+    private static readonly ImmutableHashSet<string> ReflectionMembers = ImmutableHashSet.Create(
+        "GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetMember", "GetMembers",
+        "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "InvokeMember", "GetRuntimeMethod", "GetRuntimeMethods");
+
+    private static void OnInvocation(OperationAnalysisContext context, Role role)
+    {
+        var invocation = (IInvocationOperation)context.Operation;
+        if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && Reflected(invocation) is { } levee)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, invocation.Syntax.GetLocation(), invocation.TargetMethod.Name, levee.Name));
+            return;
+        }
+        OnCall(context, role, invocation.TargetMethod);
+    }
+
+    /// <summary>The Levee type a reflection lookup is made on: typeof(T), or x.GetType() of one, directly or as an extension's receiver.</summary>
+    private static INamedTypeSymbol? Reflected(IInvocationOperation invocation)
+    {
+        var receiver = invocation.Instance ?? (invocation.TargetMethod.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null);
+        while (receiver is IConversionOperation conversion)
+        {
+            receiver = conversion.Operand;
+        }
+        var type = receiver switch
+        {
+            ITypeOfOperation typeOf => typeOf.TypeOperand,
+            IInvocationOperation { TargetMethod.Name: "GetType", Instance: { } instance } => instance.Type,
+            _ => null,
+        };
+        return type is INamedTypeSymbol named && named.ContainingAssembly?.Name is { } assembly
+            && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)) ? named : null;
+    }
 
     private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
     {

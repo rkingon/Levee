@@ -385,7 +385,8 @@ outside tests it fails the build. So does calling the composition's own plumbing
 Sending by name is Levee's projections' alone. A route of the app's that takes an operation's name and its input as
 JSON (reading the operation's type from its descriptor, `InputType` or `ResultType`, to deserialize it) is a second
 surface beside `MapLeveeOperations`, without the strict wire, the catalog's refusals, problem responses or rechecks. So
-is a contract that sends itself: Kernel, Contracts and Domain never call the `Dispatcher`. An API of the app's own
+is a contract that sends itself: Kernel, Contracts and Domain never call the `Dispatcher`. And so is reflecting into
+Levee's own types (`typeof(Dispatcher).GetMethod("SendJsonAsync", ...)`): what Levee keeps internal is its own. An API of the app's own
 design is a Projection, its routes typed:
 
 ```csharp

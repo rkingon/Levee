@@ -13,7 +13,7 @@
   serves it over one Postgres `LISTEN` connection per process, Levee's own.
 - `[ValueObject(typeof(string), Format = ..., Pattern = ...)]`: a value object written by its own converter says what
   it writes, and every schema (the catalog's, each MCP tool's) shows that, nullable where the member is; a member's
-  `[Description]` is its description in every schema. LEVEE104 refuses a contract type written by its own converter
+  `[Description]` is its description in every schema, a nullable member with a default included. LEVEE104 refuses a contract type written by its own converter
   without one.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
@@ -29,14 +29,15 @@
   `OperationUnavailableException`.
 
 ### Levee.Testing
+- `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema.
 - New: `LeveePostgres.StartAsync`, Postgres for pipeline tests as production has it (Testcontainers): the owner runs
   Levee's schema, the app's migrations and its SQL, and the app connects as a role that owns nothing and doesn't bypass
   row-level security. Referenced from Test and TestSupport projects only.
 
 ### Levee.EntityFrameworkCore
-- `[SeparateContext]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the app's, used by
-  the library it serves outside every operation. The host's start refuses one that maps a table the app's context maps,
-  and LEVEE018 refuses the app's own code holding it.
+- `[SeparateContext("OpenIddict")]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the
+  app's, used by the library it names outside every operation. The host's start refuses one that maps an entity that
+  isn't that library's, or a table the app's context maps, and LEVEE018 refuses the app's own code holding it.
 - `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
   before the app's own narrowing, which a blanket grant would undo.
 
@@ -46,6 +47,8 @@
 - LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.
 
 ### Levee.Cli
+- `dotnet levee check` ends with its verdict: not on Levee yet while any rule is broken or suppressed, or a project
+  doesn't compile.
 - `dotnet levee db isolate` and `share` take a table in a schema of its own (`billing.invoices`), as the docs say.
 - `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
   a migration build, never makes it green.
@@ -58,6 +61,8 @@
 - LEVEE015 lets Composition call an adapter's own registration, one `IServiceCollection` extension in its Adapter
   project for what it needs beyond its ports; nothing else of an adapter's.
 - A Tool binds the ports it references, not every port the app declares (LEVEE107 holds a Host and Composition to all).
+- LEVEE020 refuses reflection into Levee's own types (`typeof(Dispatcher).GetMethod(...)`): what Levee keeps internal
+  is its own, and what it makes public is called.
 - LEVEE020 refuses a by-name surface of the app's own (reading an operation's `InputType` or `ResultType` from its
   descriptor) and a contract that sends itself (the `Dispatcher` from Kernel, Contracts or Domain): sending by name is
   `MapLeveeOperations` and `WithLeveeOperations` alone.
