@@ -30,6 +30,9 @@ handler reads again through an operation, in the subscription's own scope, as it
 // The write raises, inside its operation
 await signals.RaiseAsync("notes.changed", note.Id.ToString(), ct);
 
+// A platform operation has no scope of its own: it names the one whose rows it changed
+await signals.RaiseAsync("notes.changed", note.Id.ToString(), note.Tenant, ct);
+
 // The subscription watches first, reads, then follows: nothing that commits between is missed
 internal sealed class WatchNotesHandler(IChangeSignals signals, Dispatcher dispatcher) : ISubscriptionHandler<WatchNotes, NoteView>
 {
