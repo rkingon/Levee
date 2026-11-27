@@ -5,12 +5,9 @@ import { base } from '../lib/source.mjs';
 
 const title = 'Levee: the .NET framework that keeps your AI in check.';
 const description = "Wrong code fails the build with the fix in the error, and what the build can't see, Postgres refuses. Every agent, every repo, the same shape.";
-const install = `dotnet pack Levee.slnx -c Release -o artifacts
-feed="$PWD/artifacts"
-mkdir -p ../levee-quickstart && cd ../levee-quickstart
-dotnet new tool-manifest
-dotnet tool install Levee.Cli --add-source "$feed" --prerelease
-dotnet levee new Acme.Billing --package-source "$feed"
+const install = `dotnet new tool-manifest
+dotnet tool install Levee.Cli --prerelease
+dotnet levee new Acme.Billing
 cd Acme.Billing
 dotnet tool restore && dotnet build`;
 ---
@@ -35,7 +32,7 @@ dotnet tool restore && dotnet build`;
 		</section>
 		<section aria-labelledby="quick-start">
 			<h2 id="quick-start">Quick start</h2>
-			<p>From the root of a Levee checkout with the .NET 10 SDK, pack the tools and libraries. Install the CLI from that feed and scaffold a project with one operation end to end.</p>
+			<p>Start with the .NET 10 SDK.</p>
 			<Code code={install} lang="sh" title="Shell" />
 		</section>
 	</div>
