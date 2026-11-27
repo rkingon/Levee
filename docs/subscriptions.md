@@ -14,8 +14,10 @@ internal sealed class WatchNotesHandler : ISubscriptionHandler<WatchNotes, NoteV
   of its own. It holds no transaction while it streams.
 - **While it streams:** the projection checks again every `LeveeOptions.SubscriptionRecheck` (30 seconds): the caller's
   credentials (a revoked key, a signed-out session), the access policy, and the admissions (a lost membership). When one
-  no longer holds, the stream ends.
-- **A handler that throws** ends the stream with `OperationFailedException`, logged like any failed operation.
+  no longer holds, the stream ends. So does a recheck that finds another subject, or the same one scoped elsewhere (a
+  session switched to another tenant): the stream runs as the caller who opened it, in that caller's scope.
+- **A handler that throws**, or an item that can't be serialized, ends the stream with `OperationFailedException`, logged
+  like any failed operation.
 - **A reader that stops** stops the handler: its cancellation reaches the handler, and its `finally` runs.
 
 ## Over HTTP

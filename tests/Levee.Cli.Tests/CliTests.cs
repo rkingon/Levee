@@ -182,6 +182,11 @@ public sealed class CliTests : IDisposable
             "--scoped-by", "Tenant", "--result", "OrderLineView");
         Assert.Equal(0, again);
         Assert.DoesNotContain("record OrderLineView", Read("Shop", "src", "Shop.Contracts", "OrderLines", "GetOrderLine.cs"), StringComparison.Ordinal);
+        // From another area, it's named by its own.
+        await Run(app, "generate", "operation", "orders.last_line", "LastLine", "--access", "member", "--summary", "The last line.",
+            "--scoped-by", "Tenant", "--result", "OrderLineView");
+        Assert.Contains("using Shop.Contracts.OrderLines;", Read("Shop", "src", "Shop.Contracts", "Orders", "LastLine.cs"), StringComparison.Ordinal);
+        Assert.Contains("using Shop.Contracts.OrderLines;", Read("Shop", "src", "Shop.Application", "Orders", "LastLineHandler.cs"), StringComparison.Ordinal);
     }
 
     [Fact]

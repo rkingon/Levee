@@ -83,16 +83,26 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             return subscription.Error;
         }
         var opened = await OpenAsync(descriptor, subscription.Value, principal, ct);
-        return opened.IsSuccess ? Result<IAsyncEnumerable<JsonElement>>.Success(Json(opened.Value, descriptor.ResultType, CancellationToken.None)) : opened.Error;
+        return opened.IsSuccess ? Result<IAsyncEnumerable<JsonElement>>.Success(Json(opened.Value, descriptor, CancellationToken.None)) : opened.Error;
     }
 
     // Each wrapper passes its reader's cancellation through, or a stream stopped by its reader would leave its handler running.
-    private async IAsyncEnumerable<JsonElement> Json(IAsyncEnumerable<object?> items, Type type,
+    private async IAsyncEnumerable<JsonElement> Json(IAsyncEnumerable<object?> items, OperationDescriptor descriptor,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
         await foreach (var item in items.WithCancellation(ct))
         {
-            yield return JsonSerializer.SerializeToElement(item, type, options.Json);
+            JsonElement json;
+            try
+            {
+                json = JsonSerializer.SerializeToElement(item, descriptor.ResultType, options.Json);
+            }
+            catch (Exception e) when (e is not OperationCanceledException)
+            {
+                // An item that can't be written ends the stream as a handler's bug would: logged, and told as one last error.
+                throw new OperationFailedException(Unexpected(e, descriptor), e);
+            }
+            yield return json;
         }
     }
 

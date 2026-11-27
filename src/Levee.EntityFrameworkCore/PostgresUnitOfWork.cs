@@ -218,7 +218,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     // Outside a host nothing validates on start: the first operation does.
     private readonly OneContext _one = one.Value;
 
-    // Once a process per model and target (database, role, search path): a table's policy comes with its migration, which runs
+    // Once a process per model and target (server, database, role, search path): a table's policy comes with its migration, which runs
     // before the app does, and the same context type may reach another database or schema by its options.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Microsoft.EntityFrameworkCore.Metadata.IModel, string), byte> Isolated = new();
 
@@ -341,9 +341,11 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             }
             var key = scope.Key ?? "";
             var platform = scope.Platform ? "on" : "off";
-            // The same round trip says where the transaction resolves names: the check below holds for that target alone.
+            // The same round trip says where the transaction resolves names: the check below holds for that target alone. The
+            // server is named by its address and its start, since two clusters may share every name in it.
             var target = await db.Database.SqlQuery<string>($"""
-                select concat_ws(':', current_database(), current_user, current_setting('search_path')) as "Value"
+                select concat_ws(':', inet_server_addr(), inet_server_port(), pg_postmaster_start_time(), current_database(), current_user,
+                  current_setting('search_path')) as "Value"
                 from (select set_config('levee.scope', {key}, true), set_config('levee.platform', {platform}, true)) as scoped
                 """).SingleAsync(ct);
             if (!Isolated.ContainsKey((db.Model, target)))

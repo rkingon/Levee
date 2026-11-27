@@ -153,7 +153,8 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send = mcp.Send is { } remote
             ? (name, input, ct) => remote(request, name, input, ct)
             : await InProcessAsync(request);
-        var bound = mcp.Bind is { } bind ? await bind(request, descriptor) : null;
+        // Bind runs only for a tool that takes a bound input: an unrelated lookup can't fail the others.
+        var bound = mcp.Bind is { } bind && mcp.BoundInputs.Any(Takes) ? await bind(request, descriptor) : null;
         var log = request.Services?.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()?.CreateLogger("Levee.Mcp");
         return await CallAsync(send, request.Params?.Arguments, bound, cancellationToken, log);
     }

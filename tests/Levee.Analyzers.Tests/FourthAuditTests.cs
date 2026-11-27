@@ -168,6 +168,7 @@ public sealed class SixthAuditTests
     [InlineData("Adapter", "public sealed record Tx(System.Data.Common.DbConnection Connection);", false)]
     [InlineData("Adapter", "public sealed class Ledger { private System.Data.Common.DbConnection? Connection => null; }", false)]
     [InlineData("Tool", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", false)]
+    [InlineData("Adapter", "public sealed class Wrapped { private Wrapped(System.Data.Common.DbConnection c) { } public static Wrapped Over(System.Data.Common.DbConnection c) => new(c); }", false)]
     public async Task A_connection_the_container_hands_over_is_one_of_its_own(string role, string declaration, bool refused)
     {
         var output = await Compile(role, Data + declaration + "\npublic static class Entry { public static void Main() { } }");

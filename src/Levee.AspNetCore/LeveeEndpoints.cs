@@ -80,10 +80,16 @@ public static class LeveeEndpointRouteBuilderExtensions
             {
                 return Fail(opened.Error, http, options);
             }
-            async Task<Error?> StillAllowed(CancellationToken ct) =>
-                await principal(http) is { } now
-                    ? await dispatcher.AuthorizeFromClientAsync(name, parsed, now, ct)
-                    : Error.Unauthenticated("The caller's credentials no longer hold.");
+            // The stream runs as the caller who opened it, in that caller's scope: a recheck that finds another subject, or the same
+            // one now scoped elsewhere (a session switched to another tenant), ends it rather than authorizing what isn't running.
+            async Task<Error?> StillAllowed(CancellationToken ct) => await principal(http) switch
+            {
+                null => Error.Unauthenticated("The caller's credentials no longer hold."),
+                { } now when now.Subject != caller.Subject => Error.Unauthenticated("The stream's caller changed: open it again."),
+                { } now when (now as IScopedPrincipal)?.ScopeKey != (caller as IScopedPrincipal)?.ScopeKey =>
+                    Error.Forbidden(LeveeErrors.ScopeViolation, "The caller's scope changed: open the stream again in the new one."),
+                { } now => await dispatcher.AuthorizeFromClientAsync(name, parsed, now, ct),
+            };
             return TypedResults.ServerSentEvents(Events(opened.Value, http, options, StillAllowed, http.RequestAborted));
         });
         return group;

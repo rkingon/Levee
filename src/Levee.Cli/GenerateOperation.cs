@@ -92,9 +92,15 @@ internal static partial class GenerateOperation
             }
             """;
         // A result another operation already declared (a view two operations answer with) is reused, not declared again.
-        var declared = result == "Unit" || Directory.EnumerateFiles(Path.GetDirectoryName(contracts)!, "*.cs", SearchOption.AllDirectories)
+        var declaredIn = result == "Unit" ? null : Directory.EnumerateFiles(Path.GetDirectoryName(contracts)!, "*.cs", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
-            .Any(f => System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(f), $@"\b(record|class|struct|interface)\s+{System.Text.RegularExpressions.Regex.Escape(result)}\b"));
+            .Select(File.ReadAllText)
+            .FirstOrDefault(text => System.Text.RegularExpressions.Regex.IsMatch(text, $@"\b(record|class|struct|interface)\s+{System.Text.RegularExpressions.Regex.Escape(result)}\b"));
+        // Declared in another area: the files that name it need that area's namespace.
+        var resultNamespace = declaredIn is null ? null
+            : System.Text.RegularExpressions.Regex.Match(declaredIn, @"^\s*namespace\s+([\w.]+)", System.Text.RegularExpressions.RegexOptions.Multiline) is { Success: true } m
+                ? m.Groups[1].Value : null;
+        var declared = result == "Unit" || declaredIn is not null;
         var resultDeclaration = declared ? "" : $"""
 
             public sealed record {result}();
@@ -147,6 +153,10 @@ internal static partial class GenerateOperation
                 }
 
                 """;
+        }
+        if (resultNamespace is not null && resultNamespace != contractsNamespace)
+        {
+            files = files.ToDictionary(f => f.Key, f => f.Value.Replace("using Levee;\n", $"using Levee;\nusing {resultNamespace};\n", StringComparison.Ordinal));
         }
         Files.WriteNew(files, output);
     }

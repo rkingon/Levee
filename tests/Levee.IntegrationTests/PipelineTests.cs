@@ -623,6 +623,38 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Contains("things: no forced row-level security", await Refusal<ThingsDb>(On("target_b")), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task A_second_server_with_the_same_names_is_checked_on_its_own()
+    {
+        const string Table = "create table twin_things (id uuid primary key, tenant text not null);";
+        await postgres.ExecuteAsync(Table + LeveeSchema.Isolation("twin_things", "tenant") + "grant select on twin_things to app;");
+        await using var twin = new Testcontainers.PostgreSql.PostgreSqlBuilder(Environment.GetEnvironmentVariable("LEVEE_POSTGRES_IMAGE") ?? "postgres:17-alpine").Build();
+        await twin.StartAsync(Ct);
+        await using (var owner = new NpgsqlConnection(twin.GetConnectionString()))
+        {
+            await owner.OpenAsync(Ct);
+            // The same database, role and search path as the fixture's; the table without its policy.
+            await using var create = new NpgsqlCommand("create role app login password 'app' nosuperuser nobypassrls;" + LeveeSchema.Sql + Table
+                + LeveeSchema.Grants("app"), owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+        var twinApp = new NpgsqlConnectionStringBuilder(twin.GetConnectionString()) { Username = "app", Password = "app" }.ConnectionString;
+
+        Assert.Null(await RefusalOrNull<TwinDb>(postgres.App));
+        Assert.Contains("twin_things: no forced row-level security", await Refusal<TwinDb>(twinApp), StringComparison.Ordinal);
+    }
+
+    private sealed class TwinDb(DbContextOptions<TwinDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("twin_things");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
     private sealed class ThingsDb(DbContextOptions<ThingsDb> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>

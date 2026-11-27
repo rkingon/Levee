@@ -827,3 +827,15 @@ public sealed class NinthAuditFixTests
         Assert.Equal(LeveeErrors.Cancelled, Assert.Single(outcomes.Seen).Error?.Code);
     }
 }
+
+[Operation("probe.mine_stream", "member", CallerScoped = true)]
+public sealed record WatchMine : ISubscription<Tick>;
+
+internal sealed class WatchMineHandler : ISubscriptionHandler<WatchMine, Tick>
+{
+    public async IAsyncEnumerable<Tick> SubscribeAsync(WatchMine subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        yield return new Tick(1);
+        await Task.Delay(Timeout.Infinite, ct);
+    }
+}

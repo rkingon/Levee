@@ -15,9 +15,11 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
 `ShareAcrossScopes("plans")`.
-`LeveeSchema.Create(schema)` and the `schema` arguments put Levee's objects and the app's tables in a schema other than
-`public` (Oxbow's tables stay in `public`); every object is
-qualified by it, so policies and grants hold whatever a role's `search_path` is.
+`LeveeSchema.Create(schema)` and `Grants(role, schema)` put Levee's objects in a schema other than `public` (Oxbow's tables
+stay in `public`), each qualified by it, so they hold whatever a role's `search_path` is. For `Isolation`, `Shared` and
+their migration helpers, `schema` names where Levee's functions are, not the table: pass the table qualified
+(`EnableScopeIsolation("billing.invoices", "tenant_id", schema: "billing")`), or the owner's `search_path` decides which
+table gets the policy. `dotnet levee db isolate` and `share` qualify it for you.
 
 `tests/Levee.IntegrationTests/PostgresFixture.cs` is the whole setup, run against Postgres 16 and 17 in CI.
 

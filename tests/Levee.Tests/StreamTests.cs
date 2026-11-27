@@ -78,4 +78,29 @@ public sealed class StreamTests
 
         Assert.True(ended);
     }
+
+    [Fact]
+    public async Task A_stream_ends_when_its_callers_scope_changes()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Configuration["Probe:Greeter"] = "en";
+        builder.Services.AddSingleton(new Store())
+            .AddSingleton<IAccessPolicy, TestAccess>()
+            .AddScoped<IUnitOfWorkFactory, FakeUnitOfWorkFactory>()
+            .AddLeveeOperations(builder.Configuration, o => o.SubscriptionRecheck = TimeSpan.FromMilliseconds(100));
+        await using var app = builder.Build();
+        // The same key, its session switched to another tenant after the stream opened: still authorized there, not here.
+        var checks = 0;
+        app.MapLeveeOperations(_ => new Key("k1", Interlocked.Increment(ref checks) == 1 ? "acme" : "globex"));
+        await app.StartAsync(TestContext.Current.CancellationToken);
+        using var http = app.GetTestClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        var body = await http.GetStringAsync(new Uri("/ops/probe.mine_stream/events", UriKind.Relative), timeout.Token);
+
+        Assert.Contains("event: error", body, StringComparison.Ordinal);
+        Assert.Contains("\"code\":\"scope.violation\"", body, StringComparison.Ordinal);
+    }
 }
