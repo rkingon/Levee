@@ -1,5 +1,5 @@
 // @ts-check
-import { defineConfig } from 'astro/config';
+import { defineConfig, fontProviders } from 'astro/config';
 import { unified } from '@astrojs/markdown-remark';
 import starlight from '@astrojs/starlight';
 import { base, repo, rules } from './src/lib/source.mjs';
@@ -11,6 +11,30 @@ export default defineConfig({
 	base,
 	// Diagnostic help links need a stable canonical URL.
 	trailingSlash: 'always',
+	fonts: [
+		{
+			name: 'DM Sans',
+			cssVariable: '--sl-font',
+			provider: fontProviders.local(),
+			display: 'optional',
+			options: { variants: [{
+				src: ['@fontsource-variable/dm-sans/files/dm-sans-latin-wght-normal.woff2'],
+				weight: '100 1000',
+				style: 'normal',
+			}] },
+		},
+		{
+			name: 'Barlow Condensed',
+			cssVariable: '--display',
+			provider: fontProviders.local(),
+			display: 'optional',
+			options: { variants: [{
+				src: ['@fontsource/barlow-condensed/files/barlow-condensed-latin-600-normal.woff2'],
+				weight: 600,
+				style: 'normal',
+			}] },
+		},
+	],
 	markdown: {
 		processor: unified({ remarkPlugins: [[remarkRuleLinks, { ids: rules().list.map((r) => r.id), base }]] }),
 	},
@@ -20,7 +44,10 @@ export default defineConfig({
 			title: 'Levee',
 			description: 'The .NET framework that keeps your AI in check.',
 			social: [{ icon: 'github', label: 'GitHub', href: repo }],
-			components: { Hero: './src/components/HomeHero.astro' },
+			components: {
+				Head: './src/components/Head.astro',
+				Hero: './src/components/HomeHero.astro',
+			},
 			customCss: ['./src/styles/custom.css'],
 			sidebar: [
 				{ label: 'Start', items: ['docs', 'overview', 'principles'] },

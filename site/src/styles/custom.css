@@ -1,9 +1,4 @@
-@import '@fontsource-variable/dm-sans/wght.css';
-@import '@fontsource/barlow-condensed/latin-600.css';
-
 :root {
-	--sl-font: 'DM Sans Variable', sans-serif;
-	--display: 'Barlow Condensed', sans-serif;
 	--sl-color-accent: #37a998;
 	--sl-color-accent-low: #123832;
 	--sl-color-accent-high: #89dfcd;
