@@ -120,7 +120,14 @@ public static class LeveeEndpointRouteBuilderExtensions
             }
             catch (OperationFailedException f)
             {
-                channel.Writer.TryWrite(Failure(f.Error, http, options));
+                // Waits for room behind what the reader hasn't taken yet: the error is the stream's last word, never dropped.
+                try
+                {
+                    await channel.Writer.WriteAsync(Failure(f.Error, http, options), stop.Token);
+                }
+                catch (OperationCanceledException) when (stop.IsCancellationRequested)
+                {
+                }
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested)
             {

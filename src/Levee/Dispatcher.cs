@@ -119,7 +119,13 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 denied = await AdmitAsync(descriptor, subscription, principal, scoped.Value, ct);
             }
         }
-        catch (Exception e) when (!(e is OperationCanceledException && ct.IsCancellationRequested))
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(subscription), scoped.IsSuccess ? scoped.Value : null, principal,
+                Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was cancelled by its caller as it opened.")), CancellationToken.None);
+            throw;
+        }
+        catch (Exception e)
         {
             // A policy or an admission that throws is a bug, answered as one, the same as in an operation.
             denied = Unexpected(e, descriptor);
@@ -324,7 +330,20 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// Where the operation runs, as it declares: its input's scope, its caller's, or every scope (platform). A scope it needs
     /// and lacks is a refusal, never the platform's by default.
     /// </summary>
-    private static Result<WorkScope> ScopeOf(OperationDescriptor descriptor, IOperation operation, Principal principal) =>
+    /// <summary>A scope key the app computes (a getter that parses an id) may throw: a bug, answered as one.</summary>
+    private Result<WorkScope> ScopeOf(OperationDescriptor descriptor, IOperation operation, Principal principal)
+    {
+        try
+        {
+            return Scoping(descriptor, operation, principal);
+        }
+        catch (Exception e)
+        {
+            return Unexpected(e, descriptor);
+        }
+    }
+
+    private static Result<WorkScope> Scoping(OperationDescriptor descriptor, IOperation operation, Principal principal) =>
         (descriptor.Platform, descriptor.CallerScoped, operation) switch
         {
             (true, false, not IScopedOperation) => new WorkScope(null, descriptor.ReadOnly),

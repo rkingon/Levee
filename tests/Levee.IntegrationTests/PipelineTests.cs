@@ -601,6 +601,39 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Contains("loose_rows: no forced row-level security", await Refusal<ReadsOverLoose>(postgres.App), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Each_target_a_context_reaches_is_checked_on_its_own()
+    {
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var create = new NpgsqlCommand("""
+                create schema target_a; create schema target_b;
+                grant usage on schema target_a, target_b to app;
+                create table target_a.things (id uuid primary key, tenant text not null);
+                create table target_b.things (id uuid primary key, tenant text not null);
+                grant select on target_a.things, target_b.things to app;
+                """ + LeveeSchema.Isolation("target_a.things", "tenant"), owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+        string On(string schema) => new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = schema }.ConnectionString;
+
+        // The same context type, checked once against target_a, then sent to target_b by its options.
+        Assert.Null(await RefusalOrNull<ThingsDb>(On("target_a")));
+        Assert.Contains("things: no forced row-level security", await Refusal<ThingsDb>(On("target_b")), StringComparison.Ordinal);
+    }
+
+    private sealed class ThingsDb(DbContextOptions<ThingsDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable("things");
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
     private abstract class ReadsDb(DbContextOptions options, string view) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>

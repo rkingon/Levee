@@ -131,6 +131,21 @@ public sealed class McpTests
     }
 
     [Fact]
+    public async Task A_binding_reaches_only_the_tools_that_take_it()
+    {
+        var (send, tools) = Build(new LeveeMcpOptions
+        {
+            BoundInputs = ["text"],
+            Bind = (_, _) => ValueTask.FromResult<IReadOnlyDictionary<string, JsonElement>>(new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("bound") }),
+        });
+
+        var now = await tools.Single(t => t.ProtocolTool.Name == "probe_now").CallAsync(send, new Dictionary<string, JsonElement>(),
+            new Dictionary<string, JsonElement> { ["text"] = JsonSerializer.SerializeToElement("bound") }, CancellationToken.None);
+
+        Assert.NotEqual(true, now.IsError);
+    }
+
+    [Fact]
     public void A_bound_input_leaves_the_schema_in_any_casing()
     {
         var (_, tools) = Build(new LeveeMcpOptions { BoundInputs = ["Text"], Bind = (_, _) => default });

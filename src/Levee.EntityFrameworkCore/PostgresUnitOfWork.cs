@@ -218,8 +218,9 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     // Outside a host nothing validates on start: the first operation does.
     private readonly OneContext _one = one.Value;
 
-    // Once a process: a table's policy comes with its migration, which runs before the app does.
-    private static int _isolated;
+    // Once a process per model and target (database, role, search path): a table's policy comes with its migration, which runs
+    // before the app does, and the same context type may reach another database or schema by its options.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(Microsoft.EntityFrameworkCore.Metadata.IModel, string), byte> Isolated = new();
 
     /// <summary>
     /// Row-level security holds everything the context reads and writes: a migration that forgot a policy, or a view that reads
@@ -265,7 +266,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                 and not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid)))
               or (c.relkind = 'v'
                 and not exists (select 1 from pg_catalog.pg_options_to_table(c.reloptions) o
-                                where o.option_name = 'security_invoker' and lower(o.option_value) in ('on', 'true', '1', 'yes'))
+                                where o.option_name = 'security_invoker' and o.option_value::boolean)
                 and (r.rolsuper or r.rolbypassrls))
               or c.relkind in ('m', 'f')
             """).ToListAsync(ct);
@@ -340,11 +341,15 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             }
             var key = scope.Key ?? "";
             var platform = scope.Platform ? "on" : "off";
-            await db.Database.ExecuteSqlAsync($"select set_config('levee.scope', {key}, true), set_config('levee.platform', {platform}, true)", ct);
-            if (Volatile.Read(ref _isolated) == 0)
+            // The same round trip says where the transaction resolves names: the check below holds for that target alone.
+            var target = await db.Database.SqlQuery<string>($"""
+                select concat_ws(':', current_database(), current_user, current_setting('search_path')) as "Value"
+                from (select set_config('levee.scope', {key}, true), set_config('levee.platform', {platform}, true)) as scoped
+                """).SingleAsync(ct);
+            if (!Isolated.ContainsKey((db.Model, target)))
             {
                 await VerifyIsolationAsync(ct);
-                Volatile.Write(ref _isolated, 1);
+                Isolated.TryAdd((db.Model, target), 0);
             }
             ambient.Current = (db.Database.GetDbConnection(), tx.GetDbTransaction());
             return new PostgresUnitOfWork(db, tx, scope, ambient);

@@ -91,7 +91,11 @@ internal static partial class GenerateOperation
                 string IScopedOperation.ScopeKey => {{scopedBy}};
             }
             """;
-        var resultDeclaration = result == "Unit" ? "" : $"""
+        // A result another operation already declared (a view two operations answer with) is reused, not declared again.
+        var declared = result == "Unit" || Directory.EnumerateFiles(Path.GetDirectoryName(contracts)!, "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Any(f => System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(f), $@"\b(record|class|struct|interface)\s+{System.Text.RegularExpressions.Regex.Escape(result)}\b"));
+        var resultDeclaration = declared ? "" : $"""
 
             public sealed record {result}();
 

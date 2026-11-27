@@ -9,7 +9,7 @@ namespace Levee.IntegrationTests;
 
 /// <summary>
 /// Postgres as production has it: the owner runs the schema, the app connects as a role that owns nothing, can create
-/// nothing and doesn't bypass row-level security.
+/// nothing in the app's schema and doesn't bypass row-level security.
 /// </summary>
 public sealed class PostgresFixture : IAsyncLifetime
 {

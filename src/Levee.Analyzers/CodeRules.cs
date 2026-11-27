@@ -323,7 +323,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             at = at.Parent;
         }
-        return at is IArgumentOperation { Parent: IInvocationOperation map } && map.TargetMethod.Name.StartsWith("Map", StringComparison.Ordinal);
+        return at is IArgumentOperation { Parent: IInvocationOperation map } && map.TargetMethod.Name.StartsWith("Map", StringComparison.Ordinal)
+            && (map.TargetMethod.ReducedFrom ?? map.TargetMethod) is { IsExtensionMethod: true } extension && extension.Parameters.Length > 0
+            && extension.Parameters[0].Type is var receiver
+            && (receiver.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"
+                || receiver.AllInterfaces.Any(i => i.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"));
     }
 
     private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is

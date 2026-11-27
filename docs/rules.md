@@ -63,7 +63,7 @@ internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetU
 
 `Guid.CreateVersion7()` reads the clock too: pass the time, `Guid.CreateVersion7(context.Now)`.
 
-Only Composition or a Host registers `TimeProvider.System`; tests register a `FakeTimeProvider`.
+Only Composition, a Host or a Tool uses `TimeProvider.System`; tests register a `FakeTimeProvider`.
 
 ## LEVEE004: Only the dispatcher saves and commits
 

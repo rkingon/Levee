@@ -93,6 +93,12 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
 
     public OperationDescriptor Descriptor => descriptor;
 
+    private readonly HashSet<string> _inputs = LeveeJson.Schema(descriptor.InputType, levee.Json)["properties"] is System.Text.Json.Nodes.JsonObject properties
+        ? properties.Select(p => p.Key).ToHashSet(StringComparer.OrdinalIgnoreCase)
+        : [];
+
+    private bool Takes(string input) => _inputs.Contains(input);
+
     public static List<OperationTool> For(OperationCatalog catalog, LeveeOptions levee, LeveeMcpOptions mcp)
     {
         var tools = catalog.All.Where(d => !d.Internal && !d.Streams && (mcp.Include?.Invoke(d) ?? true))
@@ -183,7 +189,8 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
                 merged[name] = value;
             }
         }
-        foreach (var name in mcp.BoundInputs)
+        // Only the inputs this operation takes: a binding for one tool's input isn't another's to carry.
+        foreach (var name in mcp.BoundInputs.Where(Takes))
         {
             if (bound is null || !bound.TryGetValue(name, out var value))
             {

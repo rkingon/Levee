@@ -13,7 +13,10 @@ public interface IJobs
     Task<Result<Enqueued>> EnqueueAsync(IOperation operation, JobOptions? options, CancellationToken ct);
 }
 
-/// <summary>When and where a job runs. <c>Unique</c> skips the insert while an equal job (same operation and input) is still to run.</summary>
+/// <summary>
+/// When and where a job runs. <c>Unique</c> skips the insert while an equal job is still to run: the same operation and input,
+/// enqueued by the same caller in the same scope, since who it runs as is part of what's stored.
+/// </summary>
 public sealed record JobOptions(DateTimeOffset? RunAt = null, string? Queue = null, int? MaxAttempts = null, bool Unique = false);
 
 /// <summary>The job inserted, or with <c>Duplicate</c> the equal one already queued.</summary>

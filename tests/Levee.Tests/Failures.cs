@@ -777,3 +777,53 @@ public sealed class SeventhAuditFixTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(2), $"{clock.Elapsed}");
     }
 }
+
+[Operation("probe.parsed_scope", "member")]
+public sealed record ParsedScope(string Tenant) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Guid.Parse(Tenant).ToString();
+}
+
+internal sealed class ParsedScopeHandler : IOperationHandler<ParsedScope, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(ParsedScope operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+[Refuses]
+internal sealed class CancelledAccess(CancellationTokenSource caller) : IAccessPolicy
+{
+    public async ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct)
+    {
+        await caller.CancelAsync();
+        ct.ThrowIfCancellationRequested();
+        return null;
+    }
+}
+
+public sealed class NinthAuditFixTests
+{
+    private static readonly Member Admin = new("ada", "acme", Admin: true);
+
+    [Fact]
+    public async Task A_scope_key_that_throws_is_a_bug_answered_as_one()
+    {
+        var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new ParsedScope("not-a-guid"), Admin, CancellationToken.None);
+
+        Assert.Equal(ErrorKind.Internal, result.Error!.Kind);
+    }
+
+    [Fact]
+    public async Task A_subscription_cancelled_as_it_opens_is_told()
+    {
+        var outcomes = new Outcomes();
+        using var caller = new CancellationTokenSource();
+        var dispatcher = DispatcherTests.Services(new Store(), outcomes, more: s => s.AddSingleton<IAccessPolicy>(new CancelledAccess(caller))).GetRequiredService<Dispatcher>();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => dispatcher.SubscribeFromClientAsync("probe.ticks",
+            System.Text.Json.JsonDocument.Parse("""{"count":1}""").RootElement.Clone(), Admin, caller.Token));
+
+        Assert.Equal(LeveeErrors.Cancelled, Assert.Single(outcomes.Seen).Error?.Code);
+    }
+}
