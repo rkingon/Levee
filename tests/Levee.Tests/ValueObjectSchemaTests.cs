@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using System.ComponentModel;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -44,5 +46,30 @@ public sealed class ValueObjectSchemaTests
         Assert.Equal("Where they were born.", properties["born"]!["description"]!.GetValue<string>());
         // A nullable reference the serializer writes as null: its schema says so.
         Assert.Equal("""["string","null"]""", properties["plate"]!["type"]!.ToJsonString());
+    }
+}
+
+public sealed class OptionsConverterTests
+{
+    private sealed class Loud : JsonConverter<string>
+    {
+        public override string Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => reader.GetString()!.ToLowerInvariant();
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) => writer.WriteStringValue(value.ToUpperInvariant());
+    }
+
+    [Fact]
+    public void A_converter_in_the_serializers_options_that_nothing_describes_stops_the_dispatcher_being_made()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(Microsoft.Extensions.Logging.Abstractions.NullLogger<>));
+        services.AddSingleton<IAccessPolicy, TestAccess>();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection([new("Probe:Greeter", "en")]).Build();
+        Generated.LeveeComposition.AddLeveeOperations(services, configuration, o => o.Json = LeveeJson.Create(j => j.Converters.Add(new Loud())));
+
+        var refused = Assert.Throws<InvalidOperationException>(() => services.BuildServiceProvider().GetRequiredService<Dispatcher>());
+
+        Assert.Contains("probe.echo's input", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("[ValueObject(typeof(string))]", refused.Message, StringComparison.Ordinal);
     }
 }

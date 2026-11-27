@@ -454,7 +454,8 @@ public sealed record FindHomes([property: Description("The area's five-digit zip
 ```
 
   A member's `[Description]` (System.ComponentModel's) is its description in every schema: the catalog's and each MCP
-  tool's.
+  tool's. A converter registered in the serializer's options (`LeveeJson.Create`) is out of the build's sight, so the
+  dispatcher checks the same when it's first made, under the app's own options, and refuses to start without it.
 
 ## LEVEE105: Operations with effects declare their idempotency
 

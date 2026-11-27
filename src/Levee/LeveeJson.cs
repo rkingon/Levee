@@ -31,7 +31,21 @@ public static class LeveeJson
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
-    internal static JsonNode Schema(Type type, JsonSerializerOptions? options = null)
+    internal static JsonNode Schema(Type type, JsonSerializerOptions? options = null) => Schema(type, options, shapeless: null);
+
+    /// <summary>
+    /// Where <paramref name="type"/>'s schema says nothing (a value its own converter writes, registered in the serializer's
+    /// options or on the type, with no <see cref="ValueObjectAttribute"/> to say what): every client would take it as
+    /// anything at all.
+    /// </summary>
+    internal static IReadOnlyList<string> Shapeless(Type type, JsonSerializerOptions? options = null)
+    {
+        var found = new List<string>();
+        Schema(type, options, found.Add);
+        return found;
+    }
+
+    private static JsonNode Schema(Type type, JsonSerializerOptions? options, Action<string>? shapeless)
     {
         var json = options ?? Options;
         var exporter = new JsonSchemaExporterOptions
@@ -53,6 +67,7 @@ public static class LeveeJson
                 else if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
                 {
                     node = new JsonObject();
+                    shapeless?.Invoke(context.Path.Length == 0 ? context.TypeInfo.Type.Name : $"{string.Join(".", context.Path.ToArray().Where(p => p != "properties"))} ({context.TypeInfo.Type.Name})");
                 }
                 // A member with a default whose type has no shape of the exporter's own is never transformed on its own (it's
                 // written as just its default), so its value object is filled in here, from the object that holds it.
