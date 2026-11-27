@@ -13,8 +13,13 @@ public sealed class TrialTests
     [Theory]
     [InlineData("System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/RegexGenerator.g.cs", false)]
     [InlineData("/app/obj/Debug/net10.0/generated/System.Text.Json.SourceGeneration/System.Text.Json.SourceGeneration.JsonSourceGenerator/Ctx.g.cs", false)]
+    [InlineData("/app/obj/Debug/net10.0/System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/RegexGenerator.g.cs", false)]
     [InlineData("App.Generators/App.Generators.Silencer/Silencer.g.cs", true)]
     [InlineData("App.Application.cs", true)]
+    [InlineData("/app/src/System.Text.Json.SourceGeneration/Patterns.cs", true)]
+    [InlineData("/app/src/System.Text.RegularExpressions.Generator/Patterns/Patterns.cs", true)]
+    [InlineData("/app/System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/Mine/Patterns.cs", true)]
+    [InlineData("/app/Microsoft.Extensions.Logging.Generators/System.Text.RegularExpressions.Generator.RegexGenerator/Patterns.cs", true)]
     public async Task Only_NET_generators_may_silence_warnings_wholesale(string path, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Application", Path: path), Generated, "App.Application", GeneratorTests.Levee);
