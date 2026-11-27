@@ -181,18 +181,7 @@ public sealed class OperationCatalog
         }
     }
 
-    private static readonly HashSet<Type> Scalars =
-    [
-        typeof(string), typeof(char), typeof(bool), typeof(byte), typeof(sbyte), typeof(short), typeof(ushort), typeof(int), typeof(uint),
-        typeof(long), typeof(ulong), typeof(float), typeof(double), typeof(decimal), typeof(Guid), typeof(DateOnly), typeof(TimeOnly),
-        typeof(TimeSpan), typeof(DateTime), typeof(DateTimeOffset), typeof(Uri), typeof(Version), typeof(Unit),
-    ];
-
-    private static readonly HashSet<Type> Collections =
-    [
-        typeof(List<>), typeof(IList<>), typeof(ICollection<>), typeof(IEnumerable<>), typeof(IReadOnlyList<>), typeof(IReadOnlyCollection<>),
-        typeof(HashSet<>), typeof(ISet<>), typeof(Dictionary<,>), typeof(IDictionary<,>), typeof(IReadOnlyDictionary<,>),
-    ];
+    private static string MetadataName(Type type) => (type.IsGenericType ? type.GetGenericTypeDefinition() : type).FullName ?? type.Name;
 
     /// <summary>
     /// The first type a contract carries outside the contract language, with why, or null: the build's LEVEE104 again, as the
@@ -207,7 +196,7 @@ public sealed class OperationCatalog
         while (next.TryPop(out var type))
         {
             type = Nullable.GetUnderlyingType(type) ?? type;
-            if (!seen.Add(type) || type.IsEnum || Scalars.Contains(type) || LeveeJson.IsValueObject(type))
+            if (!seen.Add(type) || type.IsEnum || ContractLanguage.Scalars.Contains(MetadataName(type)) || LeveeJson.IsValueObject(type))
             {
                 continue;
             }
@@ -220,11 +209,10 @@ public sealed class OperationCatalog
                 next.Push(type.GetElementType()!);
                 continue;
             }
-            if (type.IsGenericType && Collections.Contains(type.GetGenericTypeDefinition()))
+            if (type.IsGenericType && ContractLanguage.Collections.Contains(MetadataName(type)))
             {
                 var arguments = type.GetGenericArguments();
-                // A key is any scalar the wire writes as a property name, as LEVEE104 holds: not Unit, which has no name.
-                if (arguments.Length == 2 && !(arguments[0].IsEnum || Scalars.Contains(arguments[0]) && arguments[0] != typeof(Unit)))
+                if (arguments.Length == 2 && !(arguments[0].IsEnum || ContractLanguage.Key(MetadataName(arguments[0]))))
                 {
                     return $"{type.Name} is keyed by {arguments[0].Name}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum (LEVEE104).";
                 }

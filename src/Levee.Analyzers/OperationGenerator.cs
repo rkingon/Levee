@@ -660,15 +660,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
         "System.Guid", "System.DateOnly", "System.TimeOnly", "System.TimeSpan", "System.DateTime", "System.DateTimeOffset", "System.Uri",
     ];
 
-    /// <summary>The collections a contract may carry: each read back as the wire writes it.</summary>
-    private static readonly HashSet<string> ContractCollections =
-    [
-        "System.Collections.Generic.List<T>", "System.Collections.Generic.IList<T>", "System.Collections.Generic.ICollection<T>",
-        "System.Collections.Generic.IEnumerable<T>", "System.Collections.Generic.IReadOnlyList<T>", "System.Collections.Generic.IReadOnlyCollection<T>",
-        "System.Collections.Generic.HashSet<T>", "System.Collections.Generic.ISet<T>",
-        "System.Collections.Generic.Dictionary<TKey, TValue>", "System.Collections.Generic.IDictionary<TKey, TValue>",
-        "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>",
-    ];
+    /// <summary>A type's metadata name, as <see cref="ContractLanguage"/> names it: System.Int32, System.Collections.Generic.List`1.</summary>
+    private static string MetadataName(INamedTypeSymbol type) => $"{type.ContainingNamespace.ToDisplayString()}.{type.MetadataName}";
 
     private const string Language = "Fix: a contract is made of what the wire reads back as it writes it: strings, numbers, bool, Guid, dates and times, "
         + "enums and value objects; arrays, List<T>, IReadOnlyList<T> and the like, and dictionaries keyed by string; positional records, "
@@ -732,15 +725,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)
             || ns.StartsWith("Microsoft.", StringComparison.Ordinal)))
         {
-            if (ScalarWires.Contains(display) || display == "System.Version")
+            if (ContractLanguage.Scalars.Contains(MetadataName(named)))
             {
                 return null;
             }
-            if (ContractCollections.Contains(named.OriginalDefinition.ToDisplayString()))
+            if (ContractLanguage.Collections.Contains(MetadataName(named.OriginalDefinition)))
             {
-                // A key is any scalar the wire writes as a property name: the scalars and Version, as LeveeJson's catalog check holds.
                 if (named.TypeArguments.Length == 2 && named.TypeArguments[0] is var key && key.TypeKind != TypeKind.Enum
-                    && key.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString() is var keyName && !ScalarWires.Contains(keyName) && keyName != "System.Version")
+                    && !(key is INamedTypeSymbol keyType && ContractLanguage.Key(MetadataName(keyType))))
                 {
                     return (path.Length == 0 ? display : path, $"is a dictionary keyed by {key.ToDisplayString()}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum");
                 }
@@ -748,7 +740,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
             return (path.Length == 0 ? display : path, $"is {display}, which isn't in the contract language. {Language}");
         }
-        if (display == "Levee.Unit")
+        if (ContractLanguage.Scalars.Contains(MetadataName(named)))
         {
             return null;
         }

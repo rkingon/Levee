@@ -31,4 +31,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
     <AdditionalFiles Include="PublicAPI.Shipped.txt;PublicAPI.Unshipped.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/ContractLanguage.cs" Link="ContractLanguage.cs" />
+  </ItemGroup>
 </Project>

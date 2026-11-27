@@ -10,4 +10,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../Shared/ContractLanguage.cs" Link="ContractLanguage.cs" />
+  </ItemGroup>
 </Project>
