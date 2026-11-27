@@ -178,6 +178,10 @@ internal static class Descriptors
         "LEVEE112", "Every process input has one process",
         "Process input {0} is run by {1} processes ({2}), and a queued job names only its input, so which one runs is the container's registration order. Fix: keep one IProcess<{0}>; if they do different things, give each an input type of its own");
 
+    public static readonly DiagnosticDescriptor ScopeUnread = Rule(
+        "LEVEE113", "An access policy decides by scope",
+        "{0} authorizes without reading the request's Scope, but an input-scoped operation runs in whatever scope its input names, so a caller it grants is granted every tenant's rows. Fix: decide who may act in which scope: compare request.Scope.Key with the caller's own (a member's tenant), and grant platform scope (request.Scope.Platform) only to the platform's operators");
+
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
     [
@@ -185,6 +189,6 @@ internal static class Descriptors
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
         "LEVEE021",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
-        "LEVEE112",
+        "LEVEE112", "LEVEE113",
     ];
 }

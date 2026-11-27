@@ -298,6 +298,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE110 | A handler fails only with the codes its operation declares (or Levee's own). |
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
+| LEVEE113 | An access policy reads the scope it authorizes (`AccessRequest.Scope`): it decides who may act in which scope. |
 
 ## Decisions
 

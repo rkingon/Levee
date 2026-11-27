@@ -277,4 +277,41 @@ public sealed class Alpha2AuditTests
         Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
         Assert.Equal(refused, output.Ids.Contains("LEVEE021"));
     }
+
+    [Theory]
+    [InlineData("ValueTask.FromResult<Error?>(request.Principal is SystemPrincipal ? null : Error.Forbidden(\"access.denied\", \"No.\"))", true)]
+    [InlineData("ValueTask.FromResult<Error?>(request.Scope.Key == \"acme\" ? null : Error.Forbidden(\"access.denied\", \"No.\"))", false)]
+    [InlineData("ValueTask.FromResult<Error?>(request is { Scope.Platform: true } ? null : Error.Forbidden(\"access.denied\", \"No.\"))", false)]
+    [InlineData("ValueTask.FromResult(Decide(request)); private static Error? Decide(AccessRequest request) => request.Scope.Key is null ? Error.Forbidden(\"access.denied\", \"No.\") : null", false)]
+    [InlineData("ValueTask.FromResult(Elsewhere.Decide(request))", true)]
+    public async Task An_access_policy_reads_the_scope_it_authorizes(string body, bool refused)
+    {
+        var output = await Compile("Composition", $$"""
+            using Levee;
+            using System.Threading;
+            using System.Threading.Tasks;
+            internal static class Elsewhere { public static Error? Decide(AccessRequest request) => request.Scope.Platform ? null : Error.Forbidden("access.denied", "No."); }
+            [Refuses("access.denied")]
+            internal sealed class Access : IAccessPolicy
+            {
+                public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) => {{body}};
+            }
+            """);
+
+        Assert.Equal(refused ? ["LEVEE113"] : [], output.Ids.Distinct());
+    }
+
+    [Fact]
+    public async Task A_tests_policy_is_held_to_no_scope()
+    {
+        var output = await Probe.CompileAsync("Test", """
+            using Levee;
+            internal sealed class LetAll : IAccessPolicy
+            {
+                public System.Threading.Tasks.ValueTask<Error?> AuthorizeAsync(AccessRequest request, System.Threading.CancellationToken ct) => default;
+            }
+            """, "App.Tests", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.DoesNotContain("LEVEE113", output.Ids);
+    }
 }

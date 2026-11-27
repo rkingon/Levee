@@ -60,7 +60,7 @@ public sealed class ErrorTests
             internal sealed class Access : IAccessPolicy
             {
                 public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) =>
-                    ValueTask.FromResult<Error?>(Error.Forbidden("{{code}}", "No."));
+                    ValueTask.FromResult<Error?>(request.Scope.Platform ? null : Error.Forbidden("{{code}}", "No."));
             }
             """, "App.Composition", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
 

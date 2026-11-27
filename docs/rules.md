@@ -674,3 +674,22 @@ internal sealed class ScoreTurn : IProcess<TurnStarted> { ... }
 internal sealed class RunTurn : IProcess<TurnStarted> { ... }
 internal sealed class ScoreTurn : IProcess<TurnScored> { ... }
 ```
+
+## LEVEE113: An access policy decides by scope
+
+An input-scoped operation runs in the scope its input names, and row-level security then holds it to exactly that
+scope: the one the caller picked. So the access policy decides who may act *where*, not only who may act. A policy that
+grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant.
+
+```csharp
+// Wrong: any member, in whatever tenant the input names
+"member" => request.Principal is Member ? null : Error.Forbidden("access.members_only", "Sign in."),
+
+// Right: a member, in their own tenant; the platform's scope only to its operators
+"member" => request.Principal is Member m && request.Scope.Key == m.Tenant ? null : Error.Forbidden("access.tenant", "Not your tenant."),
+"platform-admin" => request.Scope.Platform && request.Principal is Operator ? null : Error.Forbidden("access.platform", "Operators only."),
+```
+
+The build refuses a policy (outside tests) that never reads `request.Scope`, in a member access, a property pattern
+(`request is { Scope.Platform: true }`) or a deconstruction, in its own code: a helper of its own that reads it counts,
+one elsewhere doesn't. Reading it is the build's to see; comparing it rightly is the policy's, and the access tests'.
