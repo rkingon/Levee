@@ -25,10 +25,13 @@ internal static partial class GenerateOperation
         var access = args.Required("access", "what the caller needs, as the app's access policy names it");
         var summary = args.Required("summary", "what the operation does, for every projection and agent that lists it");
         var platform = args.Flag("platform");
+        var unscoped = args.Flag("unscoped");
+        var callerScoped = args.Flag("caller-scoped");
         var scopedBy = args.Option("scoped-by");
-        if (platform == scopedBy is not null)
+        if (new[] { platform, unscoped, callerScoped, scopedBy is not null }.Count(declared => declared) != 1)
         {
-            throw new CliException("Say whose rows it sees: --scoped-by <Property> (its scope key, e.g. Tenant) or --platform (every scope).");
+            throw new CliException("Say whose rows it sees, exactly one: --scoped-by <Property> (its input names the tenant, e.g. Tenant), --caller-scoped "
+                + "(the caller's credentials carry it), --unscoped (no tenant's rows: anyone's) or --platform (every tenant's rows: an operator's).");
         }
         if (scopedBy is not null && !TypeName().IsMatch(scopedBy))
         {
@@ -79,6 +82,14 @@ internal static partial class GenerateOperation
         if (platform)
         {
             metadata.Add("Platform = true");
+        }
+        if (unscoped)
+        {
+            metadata.Add("Unscoped = true");
+        }
+        if (callerScoped)
+        {
+            metadata.Add("CallerScoped = true");
         }
         if (errors.Length > 0)
         {

@@ -474,11 +474,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } shapeless)
             {
-                Report(shapeless.OnMember
-                    ? $"its {what}'s {shapeless.Path} has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes"
-                    : shapeless.Wire is { } wire
-                    ? $"its {what}'s {shapeless.Path} is a value object written as {wire}, which isn't one JSON value, so its converter decides a shape no schema shows. Fix: a value object is one JSON scalar: [ValueObject(typeof(string))] (or a number, bool, enum, Guid, DateOnly, DateTimeOffset); a value with members of its own is a record the serializer writes, with no converter"
-                    : $"its {what}'s {shapeless.Path} is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
+                Report($"its {what}'s {shapeless.Path} {shapeless.Problem}");
                 return null;
             }
         }
@@ -668,7 +664,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         "System.Guid", "System.DateOnly", "System.TimeOnly", "System.TimeSpan", "System.DateTime", "System.DateTimeOffset", "System.Uri",
     ];
 
-    private static (string Path, string? Wire, bool OnMember)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
     {
         // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
         // does a library's attribute deriving JsonConverterAttribute, which makes its converter itself.
@@ -690,10 +686,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
         static ITypeSymbol Unwrapped(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : t;
         static AttributeData? ValueObject(ITypeSymbol t) => Unwrapped(t).GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
         static bool Declared(ITypeSymbol t) => ValueObject(t) is not null;
-        static (string, string?, bool)? NotScalar(ITypeSymbol t, string at) =>
+        static (string, string)? NotScalar(ITypeSymbol t, string at) =>
             ValueObject(t)?.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol wire
                 && Unwrapped(wire) is { TypeKind: not TypeKind.Enum } scalar && !ScalarWires.Contains(scalar.ToDisplayString())
-                ? (at, scalar.ToDisplayString(), false)
+                ? (at, $"is a value object written as {scalar.ToDisplayString()}, which isn't one JSON value, so its converter decides a shape no schema shows. Fix: a value object is one JSON scalar: [ValueObject(typeof(string))] (or a number, bool, enum, Guid, DateOnly, DateTimeOffset); a value with members of its own is a record the serializer writes, with no converter")
                 : null;
         if (!seen.Add(type))
         {
@@ -718,13 +714,18 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return null;
         }
-        if (NotScalar(named, path.Length == 0 ? named.Name : $"{path} ({named.Name})") is { } declaredOtherwise)
+        var here = path.Length == 0 ? named.Name : $"{path} ({named.Name})";
+        if (NotScalar(named, here) is { } declaredOtherwise)
         {
             return declaredOtherwise;
         }
         if (Converted(named) && !Declared(named))
         {
-            return (path.Length == 0 ? named.Name : $"{path} ({named.Name})", null, false);
+            return (here, "is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
+        }
+        if (Declared(named) && !Converted(named))
+        {
+            return (here, "is a [ValueObject] with no converter of its own, so the serializer writes its members, not the scalar its schema shows. Fix: put the converter that writes it as that scalar on the type, [JsonConverter(typeof(...))] beside [ValueObject]");
         }
         foreach (var member in named.GetMembers())
         {
@@ -735,7 +736,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
             if (Converted(member))
             {
-                return (at, null, true);
+                return (at, "has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes");
             }
             if (Shapeless(memberType, seen, at) is { } found)
             {

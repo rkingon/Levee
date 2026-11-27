@@ -281,6 +281,20 @@ public sealed class CliTests : IDisposable
     }
 
     [Theory]
+    [InlineData("--unscoped", "Unscoped = true")]
+    [InlineData("--caller-scoped", "CallerScoped = true")]
+    public async Task Generate_in_no_scope_or_the_callers(string flag, string declared)
+    {
+        await Run(_dir, "new", "Shop");
+
+        var (code, _, error) = await Run(Path.Combine(_dir, "Shop"), "generate", "operation", "status.read", "ReadStatus", "--access", "anyone", "--summary", "The status.", flag);
+
+        Assert.True(code == 0, error);
+        Assert.Contains($"Summary = \"The status.\", {declared})]", Read("Shop", "src", "Shop.Contracts", "Status", "ReadStatus.cs"), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--summary", "s", "--unscoped", "--platform")]
     [InlineData("--summary", "s", "--writes", "--idempotency", "none")]
     [InlineData("--summary", "s", "--platform", "--scoped-by", "Tenant")]
     [InlineData("--summary", "s", "--platform", "--writes")]
@@ -328,7 +342,7 @@ public sealed class CliTests : IDisposable
 
         Assert.Equal(0, code);
         var create = output.Split('\n').Single(l => l.StartsWith("notes.create ", StringComparison.Ordinal));
-        Assert.Matches(@"^notes\.create\s+member\s+write\s+conflicts\s+scoped\s+yes\s+Writes a note\.$", create.TrimEnd());
+        Assert.Matches(@"^notes\.create\s+member\s+write\s+conflicts\s+input\s+yes\s+Writes a note\.$", create.TrimEnd());
     }
 
     [Fact]
@@ -336,7 +350,7 @@ public sealed class CliTests : IDisposable
     {
         var (_, output, _) = await Run(_dir, "catalog", AppContext.BaseDirectory, "--json");
 
-        Assert.Contains("""{"name":"notes.list","access":"member","effects":"read","idempotency":"safe","platform":false,"internal":false,"streams":false,"handled":true,""", output, StringComparison.Ordinal);
+        Assert.Contains("""{"name":"notes.list","access":"member","effects":"read","idempotency":"safe","platform":false,"scope":"input","internal":false,"streams":false,"handled":true,""", output, StringComparison.Ordinal);
     }
 
     [Fact]

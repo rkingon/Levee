@@ -37,7 +37,7 @@ internal static class CatalogCommand
         string[] header = ["NAME", "ACCESS", "EFFECTS", "IDEMPOTENCY", "SCOPE", "HANDLED", "SUMMARY"];
         var rows = operations.Select(o => new[]
         {
-            o.Name, o.Access, o.Effects, o.Idempotency, (o.Platform ? "platform" : "scoped") + (o.Internal ? ", internal" : "") + (o.Streams ? ", streams" : ""),
+            o.Name, o.Access, o.Effects, o.Idempotency, o.Scope + (o.Internal ? ", internal" : "") + (o.Streams ? ", streams" : ""),
             o.Handled ? "yes" : "NO", o.Summary,
         }).ToList();
         var widths = header.Select((h, i) => rows.Select(r => r[i].Length).Append(h.Length).Max()).ToArray();
@@ -47,8 +47,9 @@ internal static class CatalogCommand
         }
     }
 
-    internal sealed record OperationView(string Name, string Access, string Effects, string Idempotency, bool Platform, bool Internal, bool Streams, bool Handled,
-        string Summary, string Type, string Result);
+    /// <param name="Scope">Whose rows it sees: <c>input</c>, <c>caller</c>, <c>unscoped</c> (none) or <c>platform</c> (every tenant's).</param>
+    internal sealed record OperationView(string Name, string Access, string Effects, string Idempotency, bool Platform, string Scope, bool Internal, bool Streams,
+        bool Handled, string Summary, string Type, string Result);
 
     internal static IReadOnlyList<OperationView> Read(string directory)
     {
@@ -85,6 +86,10 @@ internal static class CatalogCommand
             string.Join("|", new[] { (1, "read"), (2, "write"), (4, "external") }.Where(f => (effects & f.Item1) != 0).Select(f => f.Item2)),
             ((Idempotency)idempotency).ToString().ToLowerInvariant(),
             named.TryGetValue("Platform", out var p) && p is true,
+            p is true ? "platform"
+                : named.TryGetValue("Unscoped", out var u) && u is true ? "unscoped"
+                : named.TryGetValue("CallerScoped", out var c) && c is true ? "caller"
+                : "input",
             named.TryGetValue("Internal", out var internalValue) && internalValue is true,
             streams,
             handled,

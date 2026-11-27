@@ -8,8 +8,8 @@ public abstract record Principal(string Subject);
 
 /// <summary>
 /// A caller with no credentials, for what anyone may do (a customer's status page, a sign-in). The access policy decides
-/// what that is; an operation that runs in its caller's own scope answers it <see cref="ErrorKind.Unauthenticated"/>, since
-/// what it lacks is credentials, not permission.
+/// what that is, within what's in no one's scope (<c>Unscoped</c>); an operation that runs in its caller's own scope, or
+/// across every scope, answers it <see cref="ErrorKind.Unauthenticated"/>, since what it lacks is credentials, not permission.
 /// </summary>
 public sealed record AnonymousPrincipal() : Principal("anonymous");
 

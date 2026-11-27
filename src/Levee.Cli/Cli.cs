@@ -8,7 +8,7 @@ internal static class Cli
         Usage:
           dotnet levee new <Name> [--output DIR] [--package-source SOURCE]
               An app with a project per role, wired to Levee, building clean.
-          dotnet levee generate operation <name> <Type> --access A --summary S (--platform | --scoped-by PROPERTY)
+          dotnet levee generate operation <name> <Type> --access A --summary S (--scoped-by PROPERTY | --caller-scoped | --unscoped | --platform)
                                           [--writes --idempotency idempotent|conflicts|none] [--result TYPE] [--errors CODE,...]
               The contract, its handler and a catalog test, in the app's Contracts, Application and Test projects.
           dotnet levee catalog [PROJECT | ASSEMBLY | DIRECTORY] [--no-build] [--json]
@@ -82,7 +82,7 @@ internal sealed class CliException(string message) : Exception(message);
 /// <summary>Positional arguments, <c>--name value</c> options and the known <c>--flags</c>.</summary>
 internal sealed class Args
 {
-    private static readonly HashSet<string> Flags = ["platform", "writes", "jobs", "json", "no-build"];
+    private static readonly HashSet<string> Flags = ["platform", "unscoped", "caller-scoped", "writes", "jobs", "json", "no-build"];
     private readonly List<string> _positionals = [];
     private readonly Dictionary<string, string> _options = new(StringComparer.Ordinal);
     private readonly HashSet<string> _flags = new(StringComparer.Ordinal);

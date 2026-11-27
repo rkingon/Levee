@@ -1156,13 +1156,13 @@ public sealed record Labels(ILabelled Item, List<int> Counts);
 public sealed class NumbersAsStringsTests
 {
     [Fact]
-    public void Numbers_written_as_strings_keep_both_their_format_and_every_mark()
+    public void Numbers_are_numbers_on_the_wire_and_marks_hold_through_an_interface()
     {
-        var options = LeveeJson.Create(o => o.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.WriteAsString);
+        Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(o => o.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.WriteAsString));
 
-        var audited = LeveeJson.Redact(new Labels(new Labelled("Example label", [1]), [7]), typeof(Labels), options);
+        var audited = LeveeJson.Redact(new Labels(new Labelled("Example label", [1]), [7]), typeof(Labels));
 
         Assert.DoesNotContain("Example label", audited, StringComparison.Ordinal);
-        Assert.Contains("\"counts\":[\"7\"]", audited, StringComparison.Ordinal);
+        Assert.Contains("\"counts\":[7]", audited, StringComparison.Ordinal);
     }
 }

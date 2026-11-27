@@ -33,7 +33,10 @@
   one JSON scalar; LEVEE104 refuses any other wire, and so does the contract wire.
 - **Breaking:** the contract wire is Levee's. `LeveeJson.Create` refuses a converter or a type resolver, and
   `LeveeOptions.Json` takes only options it made: a value's JSON is its value object's own, a .NET type's is
-  System.Text.Json's. A converter on a member, or on a type with no `[ValueObject]`, is refused as the wire meets it. A
+  System.Text.Json's. A converter on a member, or on a type with no `[ValueObject]`, is refused as the wire meets it, and
+  so is a `[ValueObject]` with no converter. Numbers are strict both ways (Web's reading of a number from a string is
+  off) and `NumberHandling` isn't the app's to change: a value that travels as a string is a value object. A value
+  object keyed in a dictionary keeps its converter's property-name methods. A
   value object's schema and the JSON it accepts come from one description of its wire: an enum by name, a nullable one
   with null.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
@@ -49,14 +52,6 @@
   themselves. In `Levee.AspNetCore`, `OperationView` (the catalog's wire shape); in `Levee.Oxbow`,
   `OperationUnavailableException`.
 
-### Levee.Analyzers
-- LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
-  is one too.
-- LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
-  that takes a principal (`Action<Principal>`) as holding one.
-- LEVEE003: a handler holding a port that tells the time (an interface or delegate answering a date or time at once
-  without being handed one) holds a clock, as one holding `TimeProvider` does.
-
 ### Levee.Testing
 - `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema, and `Schema` for one
   that keeps Levee's objects in a schema of their own, as production does.
@@ -71,8 +66,14 @@
   grants first, then the app's own.
 - Before the first operation, what the role can reach beyond Levee's grants (by table or column, in any schema it can use) is
   checked as what the context maps is. The tables Levee.Oxbow installs are left to it by name, not by prefix.
-- `LeveeSchema.Grants` resets the role in every schema, and grants only this installation's tables: a second Levee
-  schema's tables and audit stay its own role's.
+- `LeveeSchema.Grants` resets the role to its allow-list: it revokes exactly what the role holds, wherever it is (by
+  table or column) and the default privileges (per schema and database-wide) that would grant it more, then fails naming
+  anything another role granted that it couldn't take back. It grants only this installation's tables: a second Levee
+  schema's tables and audit stay its own role's. A schema's owner provisions it without rights over anyone else's.
+- **Breaking (schema):** the audit's policies are a read (`levee_scope`) and an insert (`levee_audit_insert`) that takes an
+  unscoped operation's record, so an unscoped write commits when the audit's owner is an ordinary role. A database
+  made by an earlier alpha runs, as the audit's owner: `drop policy levee_scope on levee_audit;` then the two
+  `create policy` statements from `LeveeSchema.Create`.
 - A context registered more than once (the separate store beside its `AddLeveeSeparateContext`) fails the host's start.
 - A watch waiting for, or reading, the listening connection ends when the host does.
 - `[SeparateContext("OpenIddict")]` and `AddLeveeSeparateContext<T>`: a separate bounded context's store (identity:
@@ -117,6 +118,9 @@
 - LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.
 
 ### Levee.Cli
+- `generate operation` takes `--unscoped` and `--caller-scoped` beside `--scoped-by` and `--platform`; `catalog` shows
+  each operation's scope (`input`, `caller`, `unscoped`, `platform`), as `scope` in its JSON.
+- The scaffold's anonymous caller is Levee's `AnonymousPrincipal`, so the dispatcher's 401s hold for it.
 - `dotnet levee check` no longer passes a failed analyzed build: a project whose analyzed build fails on anything but a
   LEVEE rule is named with its errors and its analysis is incomplete, in the verdict and in `--json` (an entry per project,
   `"incomplete": true` and no rule; each finding gains `"incomplete": false`). It reads a multi-target project's findings
@@ -131,6 +135,13 @@
   still checked.
 
 ### Generator and analyzers
+- LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
+  is one too; a `[ValueObject]` has its converter.
+- LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
+  that takes a principal (`Action<Principal>`) as holding one.
+- LEVEE003: a handler holding a port that tells the time (a `[Port]` or delegate answering a date or time at once without
+  being handed one) holds a clock, as one holding `TimeProvider` does. In Application only a process holds a clock: a
+  helper class holding one would hand the wall clock to every handler that takes it.
 - `[Port(SelectedBy = "...", Default = "none")]`: an optional port's null object serves when its setting isn't set, so
   only a deployment that uses the port configures it (LEVEE108 holds the default to an adapter that exists).
 - LEVEE015 lets Composition call an adapter's own registration, one `IServiceCollection` extension in its Adapter

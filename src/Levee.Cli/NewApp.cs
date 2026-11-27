@@ -249,12 +249,8 @@ internal static partial class NewApp
                 /// <summary>Who a request runs as. Replace with the app's authentication; until then, everyone is anonymous.</summary>
                 internal static class Authentication
                 {
-                    public static Principal? Principal(HttpContext http) => Anonymous.Instance;
-                }
-
-                internal sealed record Anonymous() : Principal("anonymous")
-                {
-                    public static readonly Anonymous Instance = new();
+                    // Levee's own: the dispatcher answers it 401 for what needs a caller (its own scope, every tenant's).
+                    public static Principal? Principal(HttpContext http) => new AnonymousPrincipal();
                 }
 
                 /// <summary>

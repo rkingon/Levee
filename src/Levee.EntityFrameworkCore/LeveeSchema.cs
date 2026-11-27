@@ -54,7 +54,15 @@ public static class LeveeSchema
               as $$ insert into {schema}.{AuditTable} (id, at, scope, subject, operation, input)
                     values (p_id, now(), p_scope, p_subject, p_operation, p_input) $$;
             {AppendOnly($"{schema}.{AuditTable}", schema)}
-            {Isolated($"{schema}.{AuditTable}", "scope", "text", schema, "select")}
+            alter table {schema}.{AuditTable} enable row level security;
+            alter table {schema}.{AuditTable} force row level security;
+            -- Read as any isolated table is. Added to with the transaction's own scope, or none for an unscoped operation's
+            -- record, which no tenant reads: forced, so the writer function's owner is held to it too.
+            create policy levee_scope on {schema}.{AuditTable} for select
+              using ({schema}.levee_platform() or scope = nullif({schema}.levee_scope(), ''));
+            create policy levee_audit_insert on {schema}.{AuditTable} for insert
+              with check ({schema}.levee_platform() or scope is not distinct from nullif({schema}.levee_scope(), ''));
+            {Admit($"{schema}.{AuditTable}", schema, "select")}
             """;
     }
 
@@ -128,14 +136,42 @@ public static class LeveeSchema
         Identifier(schema, nameof(schema));
         return $"""
             do $levee$
-            declare s name;
+            declare r record;
+            declare residue text;
             begin
-              for s in select n.nspname from pg_namespace n where n.nspname <> 'information_schema' and n.nspname not like 'pg\_%' loop
-                execute format('revoke all on all tables in schema %I from {role}', s);
-                execute format('revoke all on all sequences in schema %I from {role}', s);
-                execute format('alter default privileges in schema %I revoke all on tables from {role}', s);
-                execute format('alter default privileges in schema %I revoke all on sequences from {role}', s);
+              -- Exactly what the role holds, wherever it is: by table or column, and the defaults that would grant it more.
+              for r in select distinct held.rel from (
+                         select c.oid::regclass as rel, (aclexplode(c.relacl)).grantee from pg_class c where c.relacl is not null
+                         union all
+                         select a.attrelid::regclass, (aclexplode(a.attacl)).grantee from pg_attribute a where a.attacl is not null
+                       ) held where held.grantee = '{role}'::regrole loop
+                begin
+                  execute format('revoke all on %s from {role}', r.rel);
+                exception when insufficient_privilege then null;
+                end;
               end loop;
+              for r in select distinct d.defaclrole::regrole as grantor, n.nspname, d.defaclobjtype from pg_default_acl d
+                       left join pg_namespace n on n.oid = d.defaclnamespace
+                       cross join lateral aclexplode(d.defaclacl) g
+                       where g.grantee = '{role}'::regrole and pg_has_role(d.defaclrole, 'member') loop
+                execute format('alter default privileges for role %I %s revoke all on %s from {role}', r.grantor,
+                  case when r.nspname is null then '' else format('in schema %I', r.nspname) end,
+                  case r.defaclobjtype when 'r' then 'tables' when 'S' then 'sequences' when 'f' then 'functions' when 'T' then 'types' else 'schemas' end);
+              end loop;
+              -- What another role granted, this one can't take back: named, so whoever granted it does.
+              select string_agg(what, ', ') into residue from (
+                select distinct held.rel::text || ' (granted by ' || (held.acl).grantor::regrole || ')' as what from (
+                  select c.oid::regclass as rel, aclexplode(c.relacl) as acl from pg_class c where c.relacl is not null
+                  union all
+                  select a.attrelid::regclass, aclexplode(a.attacl) from pg_attribute a where a.attacl is not null
+                ) held where (held.acl).grantee = '{role}'::regrole
+                union
+                select distinct 'default privileges of ' || d.defaclrole::regrole from pg_default_acl d cross join lateral aclexplode(d.defaclacl) g
+                where g.grantee = '{role}'::regrole) held;
+              if residue is not null then
+                raise exception 'Levee can''t reset {role} to its allow-list: it still holds %', residue
+                  using hint = 'Run, as the role that granted each: revoke all on <table> from {role}; or alter default privileges revoke ... from {role}. Then run Levee''s grants again.';
+              end if;
             end $levee$;
             grant usage on schema {schema} to {role};
             grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role};

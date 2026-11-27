@@ -68,7 +68,8 @@ A handler (`IOperationHandler`, `ISubscriptionHandler`) holds no clock: a `TimeP
 constructor's parameter, a field or a property is refused, wrapped or not. So is a port that tells the time (an interface
 or a delegate answering a date or time at once without being handed one: `ITime.Current()`, `Func<DateTime>`,
 `IBusinessCalendar.Today(timeZone)`): whatever it wraps, it's the wall clock in production. A time worked out from
-another is handed it (`calendar.NextBusinessDay(context.Now)`); a vendor's is awaited. An operation's handler reads
+another is handed it (`calendar.NextBusinessDay(context.Now)`); a vendor's is awaited. In Application only a process
+holds a clock: a helper class the handlers share (`Deadlines`) takes the time as an argument, `deadlines.Due(context.Now)`. An operation's handler reads
 `OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,
@@ -741,7 +742,9 @@ internal sealed class ScoreTurn : IProcess<TurnScored> { ... }
 An input-scoped operation runs in the scope its input names, and row-level security then holds it to exactly that
 scope: the one the caller picked. So the access policy decides who may act *where*, not only who may act. A policy that
 grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant,
-and so does one that asks only whether the scope is the platform's: `Scope.Platform` is whether there's a key, not which.
+and so does one that asks only whether the scope is the platform's: `Scope.Platform` says the operation sees every
+tenant's rows, not which tenant's a keyed one sees. A null `Key` is either every tenant's (`Platform`) or none
+(`Unscoped`), so a policy never grants on `Key is null` alone.
 
 ```csharp
 // Wrong: any member, in whatever tenant the input names
@@ -754,6 +757,8 @@ and so does one that asks only whether the scope is the platform's: `Scope.Platf
 // Right: a member, in their own tenant; the platform's scope only to its operators
 "member" => request.Principal is Member m && request.Scope.Key == m.Tenant ? null : Error.Forbidden("access.tenant", "Not your tenant."),
 "platform-admin" => request.Scope.Platform && request.Principal is Operator ? null : Error.Forbidden("access.platform", "Operators only."),
+// Right: anyone, only where no tenant's rows are seen
+"anyone" when request.Scope.Unscoped => null,
 ```
 
 The build refuses a policy (outside tests) that never reads the scope's `Key`, in a member access

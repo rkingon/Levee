@@ -27,6 +27,8 @@ public static class LeveeJson
             RespectNullableAnnotations = true,
             RespectRequiredConstructorParameters = true,
             DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+            // A number is a number on the wire, as its schema says: Web's defaults would also read one from a string.
+            NumberHandling = JsonNumberHandling.Strict,
             // An API's JSON, never embedded in HTML: '+' in a timestamp reads as '+'.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
@@ -35,6 +37,13 @@ public static class LeveeJson
         configure?.Invoke(o);
         // The contract wire is Levee's: a value's own JSON is its value object's ([JsonConverter] with [ValueObject]), which
         // the build sees and the schema says. A converter or a resolver handed in here would be neither.
+        // How numbers are written is the wire's too: a number the schema says is a number is one, both ways.
+        if (o.NumberHandling != JsonNumberHandling.Strict)
+        {
+            throw new InvalidOperationException(
+                "Contract JSON is Levee's: number handling changes what every schema says a number is. Fix: leave it strict; a value that must travel "
+                + "as a string (an id past 2^53) is a value object, [ValueObject(typeof(string))] with its converter.");
+        }
         if (o.Converters.Any(c => !ReferenceEquals(c, enums)) || o.TypeInfoResolver is not null)
         {
             throw new InvalidOperationException(
@@ -66,8 +75,14 @@ public static class LeveeJson
                     + $"Fix: put the converter on {member.PropertyType.Name} itself, with [ValueObject(typeof(T))] saying the JSON scalar it writes (LEVEE104).");
             }
         }
-        if (!BuiltIn(info.Converter) && info.Converter is not IValueObjectWire
-            && (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [])
+        var declared = (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is not [];
+        if (declared && (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false) is [])
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name} is a [ValueObject] with no converter of its own, so the serializer would write its members, not the scalar its "
+                + "schema shows. Fix: put the converter that writes it as that scalar on the type, [JsonConverter(typeof(...))] beside [ValueObject] (LEVEE104).");
+        }
+        if (!BuiltIn(info.Converter) && info.Converter is not IValueObjectWire && !declared)
         {
             throw new InvalidOperationException(
                 $"{info.Type.Name} is written by a converter of its own, which no schema can read. Fix: say what it writes on the type, "
@@ -115,6 +130,13 @@ public static class LeveeJson
                     : throw new JsonException($"{typeof(T).Name} is written as {wire.Name}, not {reader.TokenType}.");
 
             public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) => inner.Write(writer, value, options);
+
+            // A dictionary keyed by the value object: its key is the converter's own, as System.Text.Json would ask it.
+            public override T ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                inner.ReadAsPropertyName(ref reader, typeToConvert, options);
+
+            public override void WriteAsPropertyName(Utf8JsonWriter writer, T value, JsonSerializerOptions options) =>
+                inner.WriteAsPropertyName(writer, value!, options);
         }
     }
 
