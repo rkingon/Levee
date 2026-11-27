@@ -36,6 +36,8 @@ internal static partial class Db
                 return;
             case "grants":
                 var role = Identifier(args.Positional(1, "the app's role"), "role");
+                // One transaction, so Levee's and Oxbow's grants hold together or not at all, whatever the client's autocommit.
+                output.WriteLine("begin;");
                 output.WriteLine(LeveeSchema.Grants(role, schema));
                 if (args.Flag("jobs"))
                 {
@@ -43,6 +45,7 @@ internal static partial class Db
                     // Oxbow's tables are in public whatever the app's schema is.
                     output.WriteLine($"revoke insert, update, delete on public.oxbow_migration from {role};");
                 }
+                output.WriteLine("commit;");
                 return;
             case var other:
                 throw new CliException($"There's no db command {other}: schema, isolate, share or grants.");

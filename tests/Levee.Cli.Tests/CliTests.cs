@@ -368,6 +368,7 @@ public sealed class CliTests : IDisposable
         Assert.Contains("create table elsewhere.levee_audit", (await Run(_dir, "db", "schema", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
         Assert.Contains("grant usage on schema elsewhere to app", (await Run(_dir, "db", "grants", "app", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
         Assert.Contains("then 'grant select on %s to app'", grants, StringComparison.Ordinal);
+        Assert.Equal(("begin;", "commit;"), (grants.Trim().Split('\n')[0].Trim(), grants.Trim().Split('\n')[^1].Trim()));
         Assert.Contains("grant execute on function public.levee_audit_write", grants, StringComparison.Ordinal);
         Assert.Contains("revoke insert, update, delete on public.oxbow_migration from app;", grants, StringComparison.Ordinal);
         // Oxbow's tables stay in public whatever the app's schema is.

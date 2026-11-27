@@ -772,6 +772,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 return found;
             }
         }
+        // A declared subtype is written with its own members, wherever its base is.
+        foreach (var derived in named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute"))
+        {
+            if (derived.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol subtype && Shapeless(subtype, seen, path) is { } inDerived)
+            {
+                return inDerived;
+            }
+        }
         // An interface is written with the members of every interface it extends.
         foreach (var extended in named.TypeKind == TypeKind.Interface ? named.Interfaces : [])
         {

@@ -147,9 +147,35 @@ public sealed class OperationCatalog
         {
             throw new InvalidOperationException($"Two operations are named {duplicate.Key}.");
         }
+        // Every contract proven against the wire where the catalog is made (a host's start, the generated catalog test), not
+        // when a caller first meets it: one the wire refuses would otherwise fail its calls, and every listing of the catalog.
+        Prove(list.SelectMany(o => new[] { o.InputType, o.ResultType }.Distinct().Select(type => (o.Name, type))));
         _byName = list.ToFrozenDictionary(o => o.Name, StringComparer.Ordinal);
         _byType = list.ToFrozenDictionary(o => o.InputType);
         All = list;
+    }
+
+    internal static void Prove(IEnumerable<(string Operation, Type Contract)> contracts)
+    {
+        var refused = contracts.Select(c => (c.Operation, c.Contract, Problem: Unwired(c.Contract))).Where(c => c.Problem is not null).ToList();
+        if (refused.Count > 0)
+        {
+            throw new InvalidOperationException(string.Join(Environment.NewLine,
+                refused.Select(c => $"{c.Operation}'s {c.Contract.Name} isn't one the contract wire carries: {c.Problem}")));
+        }
+    }
+
+    private static string? Unwired(Type type)
+    {
+        try
+        {
+            LeveeJson.Schema(type);
+            return null;
+        }
+        catch (InvalidOperationException e)
+        {
+            return e.Message;
+        }
     }
 
     public IReadOnlyList<OperationDescriptor> All { get; }

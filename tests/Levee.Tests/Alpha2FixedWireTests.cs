@@ -26,3 +26,24 @@ public sealed class Alpha2FixedWireTests
         Assert.Throws<InvalidOperationException>(() => LeveeJson.Options.TypeInfoResolverChain.Add(new DefaultJsonTypeInfoResolver()));
     }
 }
+
+[System.Text.Json.Serialization.JsonDerivedType(typeof(Wholesale), "wholesale")]
+public abstract record PriceList;
+
+public sealed record Wholesale(int Tier) : PriceList
+{
+    [System.Text.Json.Serialization.JsonIgnore] public string? Note { get; init; }
+}
+
+public sealed class CatalogWireTests
+{
+    [Fact]
+    public void A_contract_the_wire_refuses_fails_where_the_catalog_is_made_naming_its_operation()
+    {
+        // The build refuses such a contract first (LEVEE104); this is what holds where the build couldn't see.
+        var refused = Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("prices.list", typeof(PriceList))]));
+
+        Assert.Contains("prices.list's PriceList isn't one the contract wire carries", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("[JsonIgnore]", refused.Message, StringComparison.Ordinal);
+    }
+}
