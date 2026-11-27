@@ -23,8 +23,8 @@
   it writes, and every schema (the catalog's, each MCP tool's) shows that, nullable where the member is; a member's
   `[Description]` is its description in every schema, a nullable member with a default included; a nullable reference
   value object allows null. LEVEE104 refuses a contract type written by its own converter
-  without one, and the dispatcher, when first made, refuses a schema left saying nothing by a converter in the
-  serializer's options.
+  without one. `AddLeveeOperations` refuses, as the app composes, a schema left saying nothing by a converter in the
+  serializer's options, and a value object's converter is handed only the JSON its `[ValueObject]` says it writes.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
   startup, the guard on the context, the audit, classified failures). `AddLeveePostgres<TContext>()` is the unit of work.

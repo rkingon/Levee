@@ -18,26 +18,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 {
     public static readonly ActivitySource Source = new("Levee");
 
-    // Checked once, as the dispatcher is first made: what the build can't see (a converter in the serializer's options).
-    private readonly bool _truthful = Truthful(catalog, options);
-
     public OperationCatalog Catalog => catalog;
-
-    /// <summary>Every operation's input and result has a schema that says what it is, under the app's own serializer options.</summary>
-    private static bool Truthful(OperationCatalog catalog, LeveeOptions options)
-    {
-        var shapeless = catalog.All
-            .SelectMany(d => LeveeJson.Shapeless(d.InputType, options.Json).Select(m => $"{d.Name}'s input {m}")
-                .Concat(LeveeJson.Shapeless(d.ResultType, options.Json).Select(m => $"{d.Name}'s result {m}")))
-            .Distinct()
-            .ToList();
-        return shapeless.Count == 0
-            ? true
-            : throw new InvalidOperationException(
-                $"Written by a converter of the app's own, with nothing to say what it writes, so every client and agent takes it as anything at all: "
-                + $"{string.Join("; ", shapeless)}. Fix: declare [ValueObject(typeof(string))] (with Format or Pattern if it has one) on the type the converter writes, "
-                + "wherever the converter is registered (on the type, the member, or the serializer's options).");
-    }
 
     public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, CancellationToken ct)
     {

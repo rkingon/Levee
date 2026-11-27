@@ -59,17 +59,46 @@ public sealed class OptionsConverterTests
     }
 
     [Fact]
-    public void A_converter_in_the_serializers_options_that_nothing_describes_stops_the_dispatcher_being_made()
+    public void A_converter_in_the_serializers_options_that_nothing_describes_is_refused_as_the_app_composes()
     {
-        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
-        services.AddSingleton(typeof(Microsoft.Extensions.Logging.ILogger<>), typeof(Microsoft.Extensions.Logging.Abstractions.NullLogger<>));
-        services.AddSingleton<IAccessPolicy, TestAccess>();
+        var services = new ServiceCollection();
         var configuration = new ConfigurationBuilder().AddInMemoryCollection([new("Probe:Greeter", "en")]).Build();
-        Generated.LeveeComposition.AddLeveeOperations(services, configuration, o => o.Json = LeveeJson.Create(j => j.Converters.Add(new Loud())));
 
-        var refused = Assert.Throws<InvalidOperationException>(() => services.BuildServiceProvider().GetRequiredService<Dispatcher>());
+        var refused = Assert.Throws<InvalidOperationException>(() =>
+            Generated.LeveeComposition.AddLeveeOperations(services, configuration, o => o.Json = LeveeJson.Create(j => j.Converters.Add(new Loud()))));
 
         Assert.Contains("probe.echo's input", refused.Message, StringComparison.Ordinal);
-        Assert.Contains("[ValueObject(typeof(string))]", refused.Message, StringComparison.Ordinal);
+        // A .NET type can't take an attribute: the fix is to leave its JSON alone, or wrap it.
+        Assert.Contains("remove it so the type is written as System.Text.Json writes it", refused.Message, StringComparison.Ordinal);
+    }
+}
+
+[JsonConverter(typeof(AnythingJson))]
+[ValueObject(typeof(string))]
+public sealed record Note(string Text);
+
+/// <summary>Takes whatever JSON it's given, as a careless converter would.</summary>
+public sealed class AnythingJson : JsonConverter<Note>
+{
+    public override Note Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        using var document = JsonDocument.ParseValue(ref reader);
+        return new(document.RootElement.GetRawText());
+    }
+
+    public override void Write(Utf8JsonWriter writer, Note value, JsonSerializerOptions options) => writer.WriteStringValue(value.Text);
+}
+
+public sealed record Noted(Note Body);
+
+public sealed class ValueObjectWireTests
+{
+    [Fact]
+    public void A_value_objects_converter_is_handed_only_what_its_schema_promises()
+    {
+        Assert.Equal("\"hi\"", JsonSerializer.Deserialize<Noted>("""{"body":"hi"}""", LeveeJson.Options)!.Body.Text);
+        var refused = Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Noted>("""{"body":{"anything":1}}""", LeveeJson.Options));
+        Assert.Contains("Note is written as String, not StartObject", refused.Message, StringComparison.Ordinal);
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Noted>("""{"body":42}""", LeveeJson.Options));
     }
 }

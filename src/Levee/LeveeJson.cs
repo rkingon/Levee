@@ -26,8 +26,54 @@ public static class LeveeJson
         };
         o.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
         configure?.Invoke(o);
+        // First, over the app's own: a value object's converter is handed only the JSON its [ValueObject] says it writes.
+        o.Converters.Insert(0, new ValueObjectWire());
         o.MakeReadOnly(populateMissingResolver: true);
         return o;
+    }
+
+    /// <summary>
+    /// What a value object's schema promises (a string, a number), held on the way in: JSON of another kind is refused before
+    /// its converter sees it, so a converter that would take anything can't make the schema a lie.
+    /// </summary>
+    private sealed class ValueObjectWire : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) =>
+            typeToConvert.GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [ValueObjectAttribute]
+            && typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false) is [JsonConverterAttribute { ConverterType: not null }];
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
+        {
+            var declared = (ValueObjectAttribute)typeToConvert.GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false)[0];
+            var converterType = ((JsonConverterAttribute)typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false)[0]).ConverterType!;
+            var inner = (JsonConverter)Activator.CreateInstance(converterType)!;
+            if (inner is JsonConverterFactory factory)
+            {
+                inner = factory.CreateConverter(typeToConvert, options)!;
+            }
+            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire)!;
+        }
+
+        private sealed class Checked<T>(JsonConverter<T> inner, Type wire) : JsonConverter<T>
+        {
+            private readonly JsonTokenType[] _accepts = Type.GetTypeCode(Nullable.GetUnderlyingType(wire) ?? wire) switch
+            {
+                TypeCode.Boolean => [JsonTokenType.True, JsonTokenType.False],
+                TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32 or TypeCode.Int64
+                    or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal => [JsonTokenType.Number],
+                TypeCode.Object when wire.IsArray || typeof(System.Collections.IEnumerable).IsAssignableFrom(wire) && wire != typeof(string) => [JsonTokenType.StartArray],
+                TypeCode.Object when !wire.IsPrimitive && wire != typeof(Guid) && wire != typeof(DateOnly) && wire != typeof(TimeOnly)
+                    && wire != typeof(TimeSpan) && wire != typeof(DateTimeOffset) && wire != typeof(Uri) => [JsonTokenType.StartObject],
+                _ => [JsonTokenType.String],
+            };
+
+            public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+                _accepts.Contains(reader.TokenType)
+                    ? inner.Read(ref reader, typeToConvert, options)
+                    : throw new JsonException($"{typeof(T).Name} is written as {wire.Name}, not {reader.TokenType}.");
+
+            public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) => inner.Write(writer, value, options);
+        }
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
@@ -38,14 +84,48 @@ public static class LeveeJson
     /// options or on the type, with no <see cref="ValueObjectAttribute"/> to say what): every client would take it as
     /// anything at all.
     /// </summary>
-    internal static IReadOnlyList<string> Shapeless(Type type, JsonSerializerOptions? options = null)
+    internal static IReadOnlyList<(string Where, Type Type)> Shapeless(Type type, JsonSerializerOptions? options = null)
     {
-        var found = new List<string>();
-        Schema(type, options, found.Add);
+        var found = new List<(string, Type)>();
+        Schema(type, options, (where, written) => found.Add((where, written)));
         return found;
     }
 
-    private static JsonNode Schema(Type type, JsonSerializerOptions? options, Action<string>? shapeless)
+    /// <summary>
+    /// Refuses a catalog whose schemas say nothing somewhere, under the app's own serializer options: a converter registered
+    /// in the options is out of the build's sight (LEVEE104 sees those on a type or a member).
+    /// </summary>
+    internal static void RefuseShapeless(IEnumerable<OperationDescriptor> operations, JsonSerializerOptions options)
+    {
+        var shapeless = operations
+            .SelectMany(d => Shapeless(d.InputType, options).Select(m => (Where: $"{d.Name}'s input {m.Where}", m.Type))
+                .Concat(Shapeless(d.ResultType, options).Select(m => (Where: $"{d.Name}'s result {m.Where}", m.Type))))
+            .DistinctBy(m => m.Where)
+            .ToList();
+        if (shapeless.Count == 0)
+        {
+            return;
+        }
+        // .NET's own types can't take an attribute: their JSON is the serializer's, and an app's converter over it is a change of wire.
+        var own = shapeless.Where(m => m.Type.Namespace is not { } ns || !(ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal))).ToList();
+        var framework = shapeless.Except(own).ToList();
+        var fixes = new List<string>();
+        if (own.Count > 0)
+        {
+            fixes.Add($"{string.Join("; ", own.Select(m => m.Where))}: declare on the type what its converter writes, [ValueObject(typeof(T))] with T "
+                + "the JSON it writes (string, a number type, bool), and Format or Pattern if it has one");
+        }
+        if (framework.Count > 0)
+        {
+            fixes.Add($"{string.Join("; ", framework.Select(m => m.Where))}: a converter in the serializer's options rewrites a .NET type's JSON, which "
+                + "no schema can follow; remove it so the type is written as System.Text.Json writes it, or wrap the value in a value object of the "
+                + "app's own with [ValueObject(typeof(T))]");
+        }
+        throw new InvalidOperationException(
+            $"Written by a converter of the app's own, with nothing to say what it writes, so every client and agent takes it as anything at all. Fix: {string.Join(". ", fixes)}.");
+    }
+
+    private static JsonNode Schema(Type type, JsonSerializerOptions? options, Action<string, Type>? shapeless)
     {
         var json = options ?? Options;
         var exporter = new JsonSchemaExporterOptions
@@ -67,7 +147,8 @@ public static class LeveeJson
                 else if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
                 {
                     node = new JsonObject();
-                    shapeless?.Invoke(context.Path.Length == 0 ? context.TypeInfo.Type.Name : $"{string.Join(".", context.Path.ToArray().Where(p => p != "properties"))} ({context.TypeInfo.Type.Name})");
+                    shapeless?.Invoke(context.Path.Length == 0 ? context.TypeInfo.Type.Name : $"{string.Join(".", context.Path.ToArray().Where(p => p != "properties"))} ({context.TypeInfo.Type.Name})",
+                        context.TypeInfo.Type);
                 }
                 // A member with a default whose type has no shape of the exporter's own is never transformed on its own (it's
                 // written as just its default), so its value object is filled in here, from the object that holds it.
