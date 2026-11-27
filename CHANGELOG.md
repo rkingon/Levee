@@ -39,8 +39,9 @@
   (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, any `[JsonIgnore]`: a member off
   the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. Contracts are written in a closed language: what the wire reads back as it writes it. Scalars (strings,
   numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays, `List<T>`,
-  `IReadOnlyList<T>` and the like, and dictionaries keyed by a scalar; positional records (or records whose every member is
-  set on its own), and abstract records whose every subtype has a discriminator. LEVEE104 refuses anything else, an
+  `IReadOnlyList<T>` and the like (one dimension), and dictionaries keyed by a scalar; positional records (or records
+  whose every member is set on its own) that forward to a base by name, and records whose every declared subtype, under
+  an abstract base or not, has a discriminator. LEVEE104 refuses anything else, an
   interface, a collection of the app's own, a constructor of two or more values written by hand (which decides where each
   lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
   made (a host's start, the generated catalog test), naming each operation it refuses. A value object's schema and the

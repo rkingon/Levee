@@ -191,7 +191,7 @@ public sealed class OperationCatalog
     private static readonly HashSet<Type> Collections =
     [
         typeof(List<>), typeof(IList<>), typeof(ICollection<>), typeof(IEnumerable<>), typeof(IReadOnlyList<>), typeof(IReadOnlyCollection<>),
-        typeof(HashSet<>), typeof(ISet<>), typeof(IReadOnlySet<>), typeof(Dictionary<,>), typeof(IDictionary<,>), typeof(IReadOnlyDictionary<,>),
+        typeof(HashSet<>), typeof(ISet<>), typeof(Dictionary<,>), typeof(IDictionary<,>), typeof(IReadOnlyDictionary<,>),
     ];
 
     /// <summary>
@@ -213,13 +213,18 @@ public sealed class OperationCatalog
             }
             if (type.IsArray)
             {
+                if (type.GetArrayRank() != 1)
+                {
+                    return $"{type.Name} is a many-dimensional array, which JSON has no shape for. Fix: an array of arrays (LEVEE104).";
+                }
                 next.Push(type.GetElementType()!);
                 continue;
             }
             if (type.IsGenericType && Collections.Contains(type.GetGenericTypeDefinition()))
             {
                 var arguments = type.GetGenericArguments();
-                if (arguments.Length == 2 && !(arguments[0].IsEnum || Scalars.Contains(arguments[0])))
+                // A key is any scalar the wire writes as a property name, as LEVEE104 holds: not Unit, which has no name.
+                if (arguments.Length == 2 && !(arguments[0].IsEnum || Scalars.Contains(arguments[0]) && arguments[0] != typeof(Unit)))
                 {
                     return $"{type.Name} is keyed by {arguments[0].Name}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum (LEVEE104).";
                 }
@@ -245,22 +250,28 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} isn't in the contract language." + language;
             }
+            if (type.IsAbstract && info.PolymorphismOptions is not { DerivedTypes.Count: > 0 }
+                || info.PolymorphismOptions is { } some && some.DerivedTypes.Any(d => d.TypeDiscriminator is null))
+            {
+                return $"{type.Name} is read as one of its subtypes only by a discriminator each declares." + language;
+            }
+            // Each declared subtype is a shape the wire carries here, whether its base is abstract or not.
+            foreach (var derived in info.PolymorphismOptions?.DerivedTypes ?? [])
+            {
+                next.Push(derived.DerivedType);
+            }
             if (type.IsAbstract)
             {
-                if (info.PolymorphismOptions is not { } polymorphic || polymorphic.DerivedTypes.Count == 0
-                    || polymorphic.DerivedTypes.Any(d => d.TypeDiscriminator is null))
-                {
-                    return $"{type.Name} is abstract, and the wire reads one only by a discriminator each subtype declares." + language;
-                }
-                foreach (var derived in polymorphic.DerivedTypes)
-                {
-                    next.Push(derived.DerivedType);
-                }
                 continue;
             }
             if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
             {
                 return $"{type.Name} has no constructor the wire can call, so it writes it but can't read it back. Fix: a positional record (LEVEE104).";
+            }
+            if (info.ConstructorAttributeProvider is System.Reflection.MethodBase constructor
+                && constructor.GetParameters().FirstOrDefault(p => !info.Properties.Any(m => m.AssociatedParameter?.Name == p.Name)) is { } unbound)
+            {
+                return $"{type.Name}'s constructor takes {unbound.Name}, which no member of its name carries, so the wire can't read it. Fix: a positional record (LEVEE104).";
             }
             if (input && info.Properties.FirstOrDefault(p => p.Set is null && p.AssociatedParameter is null) is { } writeOnly)
             {

@@ -574,8 +574,9 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
   collection (`ArrayList`, `Hashtable`, `ExpandoObject`). Redaction and the secret check go by type, and the wire's schema says nothing about an untyped member.
 - **Contracts are written in the contract language**: what the wire reads back as it writes it, and nothing else. Scalars
   (strings, numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays,
-  `List<T>`, `IReadOnlyList<T>` and their kin, and dictionaries keyed by a scalar or enum; positional records (or records
-  whose every member sets on its own), and abstract records whose every subtype declares a discriminator
+  `List<T>`, `IReadOnlyList<T>` and their kin (one dimension; not `IReadOnlySet<T>`, which the wire can't build), and
+  dictionaries keyed by a scalar or enum; positional records (or records whose every member sets on its own, `[JsonInclude]`
+  counting) that forward to a base parameter by its own name, and records whose every declared subtype has a discriminator
   (`[JsonDerivedType(typeof(Card), "card")]`). Not an interface (written, never read back), a collection of the app's own,
   or a constructor of two or more values written by hand, which decides where each value lands where no schema shows
   it. An input's every member is one it reads: a computed member, or `ScopeKey` implemented publicly, is a caller's

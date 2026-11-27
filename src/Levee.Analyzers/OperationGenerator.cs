@@ -665,7 +665,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
     [
         "System.Collections.Generic.List<T>", "System.Collections.Generic.IList<T>", "System.Collections.Generic.ICollection<T>",
         "System.Collections.Generic.IEnumerable<T>", "System.Collections.Generic.IReadOnlyList<T>", "System.Collections.Generic.IReadOnlyCollection<T>",
-        "System.Collections.Generic.HashSet<T>", "System.Collections.Generic.ISet<T>", "System.Collections.Generic.IReadOnlySet<T>",
+        "System.Collections.Generic.HashSet<T>", "System.Collections.Generic.ISet<T>",
         "System.Collections.Generic.Dictionary<TKey, TValue>", "System.Collections.Generic.IDictionary<TKey, TValue>",
         "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>",
     ];
@@ -716,7 +716,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (type is IArrayTypeSymbol array)
         {
-            return Shapeless(array.ElementType, seen, path, input);
+            return array.Rank == 1
+                ? Shapeless(array.ElementType, seen, path, input)
+                : (path.Length == 0 ? type.ToDisplayString() : path, $"is {type.ToDisplayString()}, a many-dimensional array, which JSON has no shape for. Fix: an array of arrays");
         }
         if (type is not INamedTypeSymbol named)
         {
@@ -736,8 +738,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
             if (ContractCollections.Contains(named.OriginalDefinition.ToDisplayString()))
             {
+                // A key is any scalar the wire writes as a property name: the scalars and Version, as LeveeJson's catalog check holds.
                 if (named.TypeArguments.Length == 2 && named.TypeArguments[0] is var key && key.TypeKind != TypeKind.Enum
-                    && !ScalarWires.Contains(key.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString()))
+                    && key.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString() is var keyName && !ScalarWires.Contains(keyName) && keyName != "System.Version")
                 {
                     return (path.Length == 0 ? display : path, $"is a dictionary keyed by {key.ToDisplayString()}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum");
                 }
@@ -789,14 +792,19 @@ public sealed class OperationGenerator : IIncrementalGenerator
             return (here, $"is a collection of the app's own, which the wire reads as the collection it derives from, not as itself. {Language}");
         }
         var subtypes = named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute").ToList();
+        if (named.IsAbstract && subtypes.Count == 0 || subtypes.Any(d => d.ConstructorArguments.Length < 2))
+        {
+            return (here, $"is read as one of its subtypes only by a discriminator each declares. {Language}");
+        }
+        // Each declared subtype is a shape the wire carries here, whether its base is abstract or not.
+        if (subtypes.Select(d => d.ConstructorArguments[0].Value as ITypeSymbol).OfType<ITypeSymbol>()
+                .Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null) is { } inSubtype)
+        {
+            return inSubtype;
+        }
         if (named.IsAbstract)
         {
-            if (subtypes.Count == 0 || subtypes.Any(d => d.ConstructorArguments.Length < 2))
-            {
-                return (here, $"is abstract, and the wire reads one only by a discriminator each subtype declares. {Language}");
-            }
-            return subtypes.Select(d => d.ConstructorArguments[0].Value as ITypeSymbol).OfType<ITypeSymbol>()
-                .Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null);
+            return null;
         }
         // As System.Text.Json chooses: the one [JsonConstructor] marks, a public parameterless one, or the only public one.
         var publicConstructors = named.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public).ToList();
@@ -841,7 +849,20 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 return (path.Length == 0 ? bound.Member.Name : $"{path}.{bound.Member.Name}", $"is declared again on {named.Name}, set from something other than its parameter {parameter.Name}, so a value can land in another member. Fix: let the positional parameter be the member");
             }
         }
-        if (input && wired.FirstOrDefault(w => w.Member is IPropertySymbol { SetMethod: null or { DeclaredAccessibility: not Accessibility.Public } }
+        // A positional record forwards to its base by name: an argument read from another parameter lands a value in another member.
+        if (positional && constructor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax record
+            && record.BaseList?.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() is { } forwarded
+            && named.BaseType?.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == forwarded.ArgumentList.Arguments.Count) is { } baseConstructor
+            && forwarded.ArgumentList.Arguments.Select((argument, i) => (argument, parameter: baseConstructor.Parameters[i]))
+                .FirstOrDefault(f => !(f.argument.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id
+                    && string.Equals(id.Identifier.Text, f.parameter.Name, StringComparison.OrdinalIgnoreCase))) is { argument: not null } misrouted)
+        {
+            return (here, $"passes {misrouted.argument} to its base's {misrouted.parameter.Name}, so a value can land in another member. Fix: forward each parameter to the base parameter of its own name");
+        }
+        static bool Settable(IPropertySymbol property) =>
+            property.SetMethod is { DeclaredAccessibility: Accessibility.Public }
+            || property.SetMethod is not null && property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+        if (input && wired.FirstOrDefault(w => w.Member is IPropertySymbol property && !Settable(property)
                 && !constructor.Parameters.Any(p => string.Equals(p.Name, w.Member.Name, StringComparison.OrdinalIgnoreCase))) is { Member: { } writeOnly })
         {
             return (path.Length == 0 ? writeOnly.Name : $"{path}.{writeOnly.Name}", "is a member the wire writes but never reads, so a caller's value for it is dropped, not refused. Fix: take it as a positional parameter, or move it off the input: a method, the result, or an interface's member implemented explicitly (string IScopedOperation.ScopeKey => Tenant)");
