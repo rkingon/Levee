@@ -86,7 +86,9 @@ One context is exempt: a separate bounded context's, marked `[SeparateContext("O
 (identity: OpenIddict's applications, authorizations and tokens) keeps its own store, used by the library it serves
 outside every operation, since it's not the product's data and not a tenant's. Its tables are its own (its own schema,
 written by its own role or the owner): the host's start refuses it if it maps an entity that isn't the library's (nor
-the app's subclass of one), or a table the app's context maps, so the app's own data can't hide in it; and the
+the app's subclass of one), or a table or view the app's context maps (every one an entity is split across), so the
+app's own data can't hide in it. It's opened the way it's registered (itself, behind an interface, through its
+factory), and one that can't be opened is refused, not trusted; and the
 build refuses the app's own code holding it (LEVEE018), so only the library's registration in Composition or the Host
 names it.
 

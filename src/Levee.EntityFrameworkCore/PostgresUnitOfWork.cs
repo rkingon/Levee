@@ -90,16 +90,12 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
     public ValidateOptionsResult Validate(string? name, OneContext options)
     {
         // By its options (AddDbContext, AddDbContextFactory), as itself or behind an interface (configured in OnConfiguring).
-        var others = services
-            .SelectMany(d => new[] { d.ServiceType, d.IsKeyedService ? d.KeyedImplementationType : d.ImplementationType,
-                (d.IsKeyedService ? d.KeyedImplementationInstance : d.ImplementationInstance)?.GetType() })
-            .OfType<Type>()
-            .Select(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) ? t.GenericTypeArguments[0] : t)
-            .Where(t => typeof(DbContext).IsAssignableFrom(t) && t != context)
-            .Distinct()
+        var registered = services
+            .SelectMany(d => Contexts(d).Select(t => (Context: t, Descriptor: d)))
+            .Where(r => r.Context != context)
             .ToList();
-        var separate = others.Where(t => t.IsDefined(typeof(SeparateContextAttribute), inherit: false)).ToList();
-        others = [.. others.Except(separate)];
+        var separate = registered.Where(r => r.Context.IsDefined(typeof(SeparateContextAttribute), inherit: false)).ToList();
+        var others = registered.Select(r => r.Context).Except(separate.Select(r => r.Context)).Distinct().ToList();
         if (others.Count > 0)
         {
             return ValidateOptionsResult.Fail(
@@ -113,29 +109,71 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
         {
             return ValidateOptionsResult.Fail(problem);
         }
-        // A separate context over the app's own tables would be the app's data outside every operation.
+        // A separate context over the app's own tables would be the app's data outside every operation: each is opened the
+        // way it's registered, and one that can't be is refused, not trusted.
         var mine = Tables(app);
-        foreach (var type in separate)
+        foreach (var store in separate.GroupBy(r => r.Context))
         {
-            if (scope.ServiceProvider.GetService(type) is not DbContext other)
-            {
-                continue;
-            }
-            var library = type.GetCustomAttribute<SeparateContextAttribute>()!.Library;
-            if (other.Model.GetEntityTypes().FirstOrDefault(e => !e.HasSharedClrType && !Of(e.ClrType, library)) is { } foreign)
+            var type = store.Key;
+            var other = store.Select(r => Open(scope.ServiceProvider, r.Descriptor, type)).FirstOrDefault(c => c is not null);
+            if (other is null)
             {
                 return ValidateOptionsResult.Fail(
-                    $"{type.Name} is {library}'s store ([SeparateContext]), but maps {foreign.ClrType.Name}, which isn't {library}'s: that would be "
-                    + $"the app's own data outside every operation. Fix: map it in {context.Name}; a separate context holds its library's entities alone.");
+                    $"{type.Name} is a separate bounded context's, but Levee couldn't open it to check what it maps. Fix: register it with "
+                    + $"AddDbContext<{type.Name}> (or AddDbContextFactory), so it can be checked before the first operation.");
             }
-            if (Tables(other).Intersect(mine).FirstOrDefault() is { } shared)
+            using (other.Owned)
             {
-                return ValidateOptionsResult.Fail(
-                    $"{type.Name} is a separate bounded context's, but maps {shared}, which {context.Name} maps too: that table would be "
-                    + $"reached outside every operation. Fix: keep the separate context's tables its own (its own schema), and map the app's in {context.Name} alone.");
+                var library = type.GetCustomAttribute<SeparateContextAttribute>()!.Library;
+                if (other.Context.Model.GetEntityTypes().FirstOrDefault(e => !e.HasSharedClrType && !Of(e.ClrType, library)) is { } foreign)
+                {
+                    return ValidateOptionsResult.Fail(
+                        $"{type.Name} is {library}'s store ([SeparateContext]), but maps {foreign.ClrType.Name}, which isn't {library}'s: that would be "
+                        + $"the app's own data outside every operation. Fix: map it in {context.Name}; a separate context holds its library's entities alone.");
+                }
+                if (Tables(other.Context).Intersect(mine).FirstOrDefault() is { } shared)
+                {
+                    return ValidateOptionsResult.Fail(
+                        $"{type.Name} is a separate bounded context's, but maps {shared}, which {context.Name} maps too: that table would be "
+                        + $"reached outside every operation. Fix: keep the separate context's tables its own (its own schema), and map the app's in {context.Name} alone.");
+                }
             }
         }
         return ValidateOptionsResult.Success;
+    }
+
+    /// <summary>The contexts a registration provides: itself, its implementation, or the context its options or factory are for.</summary>
+    private static IEnumerable<Type> Contexts(ServiceDescriptor d) =>
+        new[] { d.ServiceType, d.IsKeyedService ? d.KeyedImplementationType : d.ImplementationType,
+                (d.IsKeyedService ? d.KeyedImplementationInstance : d.ImplementationInstance)?.GetType() }
+            .OfType<Type>()
+            .SelectMany(t => t.IsGenericType ? t.GenericTypeArguments.Prepend(t) : [t])
+            .Where(t => typeof(DbContext).IsAssignableFrom(t))
+            .Distinct();
+
+    private sealed record Opened(DbContext Context, IDisposable? Owned);
+
+    /// <summary>The context a registration resolves to, as the app would get it: itself, behind an interface, or from its factory.</summary>
+    private static Opened? Open(IServiceProvider provider, ServiceDescriptor registration, Type context)
+    {
+        if (registration.ServiceType.IsGenericType && registration.ServiceType.GetGenericTypeDefinition() == typeof(DbContextOptions<>))
+        {
+            return null;
+        }
+        var service = registration.IsKeyedService
+            ? (provider as IKeyedServiceProvider)?.GetKeyedService(registration.ServiceType, registration.ServiceKey)
+            : provider.GetService(registration.ServiceType);
+        if (service is DbContext resolved && context.IsInstanceOfType(resolved))
+        {
+            return new Opened(resolved, null);
+        }
+        if (service is not null && service.GetType().GetInterfaces().Any(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IDbContextFactory<>)
+            && i.GenericTypeArguments[0] == context))
+        {
+            var made = (DbContext)typeof(IDbContextFactory<>).MakeGenericType(context).GetMethod(nameof(IDbContextFactory<DbContext>.CreateDbContext))!.Invoke(service, null)!;
+            return new Opened(made, made);
+        }
+        return null;
     }
 
     /// <summary>The library's own type, or the app's subclass of one: its assembly named for the library.</summary>
@@ -152,10 +190,17 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
         return false;
     }
 
-    private static HashSet<string> Tables(DbContext db) =>
-    [
-        .. db.Model.GetEntityTypes().Select(e => e.GetTableName() is { } table ? $"{e.GetSchema() ?? "public"}.{table}" : null).OfType<string>(),
-    ];
+    /// <summary>Every table and view the model maps, an entity split across several included, by schema as Postgres resolves it.</summary>
+    private static HashSet<string> Tables(DbContext db)
+    {
+        var model = db.Model.GetRelationalModel();
+        var fallback = db.Model.GetDefaultSchema() ?? "public";
+        return
+        [
+            .. model.Tables.Select(t => $"{t.Schema ?? fallback}.{t.Name}"),
+            .. model.Views.Select(v => $"{v.Schema ?? fallback}.{v.Name}"),
+        ];
+    }
 
     /// <summary>What the context's own configuration would undo: the guard, or a transaction the caller begins.</summary>
     public static string? Unfit(DbContext db)

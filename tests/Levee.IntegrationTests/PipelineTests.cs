@@ -684,6 +684,60 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
     private sealed record IdentityTable(string Schema, string Table);
 
+    [Theory]
+    [InlineData("interface")]
+    [InlineData("factory")]
+    [InlineData("split")]
+    public async Task A_separate_store_is_checked_however_it_is_registered_and_mapped(string how)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        switch (how)
+        {
+            case "interface":
+                // Behind an interface alone: resolved the way the library gets it.
+                builder.Services.AddSingleton(new DbContextOptionsBuilder<AppTablesDb>().UseNpgsql(postgres.Owner).Options);
+                builder.Services.AddScoped<IIdentityStore, AppTablesDb>();
+                break;
+            case "factory":
+                builder.Services.AddDbContextFactory<AppTablesDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+            default:
+                builder.Services.AddDbContext<SplitSeparateDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+        }
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+
+        Assert.Contains("but maps public.notes", refused.Message, StringComparison.Ordinal);
+    }
+
+    private interface IIdentityStore;
+
+    [SeparateContext("Levee.IntegrationTests")]
+    private sealed class AppTablesDb(DbContextOptions<AppTablesDb> options) : DbContext(options), IIdentityStore
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Ledger>(e => e.ToTable("notes"));
+    }
+
+    // Its own table first, then split onto the app's: every table it maps is compared, not the first.
+    [SeparateContext("Levee.IntegrationTests")]
+    private sealed class SplitSeparateDb(DbContextOptions<SplitSeparateDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<IdentityRow>(e =>
+            {
+                e.ToTable("clients", "identity").SplitToTable("notes", "public", t => t.Property(r => r.Tenant));
+            });
+    }
+
+    private sealed record IdentityRow(Guid Id, string Name, string Tenant);
+
     // The test assembly stands in for a library: Ledger is its entity.
     [SeparateContext("Levee.IntegrationTests")]
     private sealed class IdentityDb(DbContextOptions<IdentityDb> options, IdentityTable table) : DbContext(options)

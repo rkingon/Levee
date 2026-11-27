@@ -45,7 +45,8 @@
 ### Levee.EntityFrameworkCore
 - `[SeparateContext("OpenIddict")]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the
   app's, used by the library it names outside every operation. The host's start refuses one that maps an entity that
-  isn't that library's, or a table the app's context maps, and LEVEE018 refuses the app's own code holding it.
+  isn't that library's, or a table or view the app's context maps (every one an entity is split across), opening it as
+  it's registered and refusing one it can't open; LEVEE018 refuses the app's own code holding it.
 - `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
   before the app's own narrowing, which a blanket grant would undo.
 
