@@ -6,8 +6,9 @@
 - `[Operation(Unscoped = true)]`: an operation in no one's scope, for what touches no tenant's rows (a health check, a
   lookup in a `Shared` table). It sees no tenant's rows, where `Platform = true` sees every one; `WorkScope.Unscoped`
   tells an access policy which it is.
-- `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope
-  answers it `Unauthenticated` (401), not `scope.caller` (403).
+- `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope,
+  or across every scope (platform), answers it `Unauthenticated` (401), whatever the access policy grants: what anyone
+  may do is `Unscoped`. A policy from alpha.1's scaffold (`"anyone" when Scope.Key is null`) grants unscoped operations now.
 - `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
   42-bit counter in the version's sequence bits, RFC 9562's method 1, seeded from random bits of its own, so every id
   keeps the operation's own time and operations in one millisecond don't collide), where
@@ -16,11 +17,12 @@
   transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation
   it sends through `ProcessContext`, as its starter, in their scope; `Snooze` runs it again later, from the top, reading
   where it was. The generated registration finds a process in Application. A process started in a scope (or in none) stays in it, step
-  by step, its principal held there by whatever path it reaches the dispatcher; one the platform started may act in any. A stored process resolves only to a registered process's input, and
+  by step, its principal (each run's own copy) held there by whatever path it reaches the dispatcher; one the platform started may act in any. A stored process resolves only to a registered process's input, and
   one that snoozes before its first await isn't counted as failed.
 - `IChangeSignals`: change notifications, the store's own. Raised in an operation and delivered when it commits, never if it
   rolls back; watched from a subscription's handler in the scope the dispatcher authorized (every scope's for a platform
-  one). `WatchAsync` returns once Levee listens, so watching, reading, then following misses nothing, and a signal with no
+  one). A platform operation names the scope it changed; one with no scope is an unscoped
+  operation's, heard only by unscoped watchers. `WatchAsync` returns once Levee listens, so watching, reading, then following misses nothing, and a signal with no
   key after the listening connection comes back says to read again. A signal is a kind and a key, a hint to read again.
   `Levee.EntityFrameworkCore` serves it over one Postgres `LISTEN` connection per process, Levee's own.
 - `[ValueObject(typeof(string), Format = ..., Pattern = ...)]`: a value object written by its own converter says what
@@ -52,8 +54,8 @@
   is one too.
 - LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
   that takes a principal (`Action<Principal>`) as holding one.
-- LEVEE003: a handler holding a port that tells the time (an interface or delegate answering a date or time when asked
-  nothing) holds a clock, as one holding `TimeProvider` does.
+- LEVEE003: a handler holding a port that tells the time (an interface or delegate answering a date or time at once
+  without being handed one) holds a clock, as one holding `TimeProvider` does.
 
 ### Levee.Testing
 - `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema, and `Schema` for one

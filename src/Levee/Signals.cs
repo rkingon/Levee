@@ -11,7 +11,10 @@ public sealed record ChangeSignal(string Kind, string? Key, string? Scope);
 /// </summary>
 public interface IChangeSignals
 {
-    /// <summary>Raises <paramref name="kind"/> in the operation's own scope, delivered when it commits.</summary>
+    /// <summary>
+    /// Raises <paramref name="kind"/> in the operation's own scope, delivered when it commits. An unscoped operation's is heard
+    /// only by unscoped watchers; a platform operation has no scope of its own, so it names one with the other overload.
+    /// </summary>
     Task RaiseAsync(string kind, string? key, CancellationToken ct);
 
     /// <summary>As <see cref="RaiseAsync(string, string?, CancellationToken)"/>, into <paramref name="scope"/>: a platform operation's, changing one scope's rows.</summary>

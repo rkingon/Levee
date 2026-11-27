@@ -118,6 +118,20 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_platform_operations_signal_names_the_scope_it_changed()
+    {
+        using var host = Build();
+        var (acme, _) = NewTenant();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+
+        // With no scope it would reach every unscoped (anyone's) watcher and none of acme's.
+        var unnamed = await dispatcher.SendAsync(new PlatformSignal(null, "x"), new SystemPrincipal("ops"), Ct);
+        Assert.False(unnamed.IsSuccess);
+        var named = await dispatcher.SendAsync(new PlatformSignal(acme, "x"), new SystemPrincipal("ops"), Ct);
+        Assert.True(named.IsSuccess, named.IsSuccess ? null : named.Error.Message);
+    }
+
+    [Fact]
     public async Task A_watch_outside_a_subscription_is_refused()
     {
         using var host = Build();
@@ -192,6 +206,28 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state in ('completed', 'discarded')", globex), 1);
         Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", globex));
         Assert.Contains("scope.violation", await postgres.TextAsync("select errors::text from oxbow_job where args::text like '%' || $1 || '%'", globex), StringComparison.Ordinal);
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
+    public async Task Runs_restored_as_one_principal_object_are_each_confined_to_their_own_scope()
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var (acme, _) = NewTenant();
+        var (globex, _) = NewTenant();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+
+        // Both restored as the same object. Acme's run is confined to acme and held; globex's then runs (confined to globex)
+        // and writes; acme's, let go, tries globex.
+        Assert.True((await dispatcher.SendAsync(new StartHandedProcess(acme, globex, Hold: true), new SystemPrincipal("cached"), Ct)).IsSuccess);
+        await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state = 'running'", globex), 1);
+        Assert.True((await dispatcher.SendAsync(new StartHandedProcess(globex, globex), new SystemPrincipal("cached"), Ct)).IsSuccess);
+        await Until(() => postgres.CountAsync("select count(*) from notes where tenant = $1", globex), 1);
+        HandedProcess.Gates.GetOrAdd(globex, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();
+
+        await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state in ('completed', 'discarded')", globex), 2);
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from notes where tenant = $1", globex));
         await host.StopAsync(Ct);
     }
 

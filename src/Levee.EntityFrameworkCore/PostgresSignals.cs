@@ -38,6 +38,14 @@ internal sealed partial class PostgresSignals<TContext>(TContext db, SignalHub<T
         {
             throw new InvalidOperationException($"{context.Descriptor.Name} raised {kind} into another scope: only a platform operation names one.");
         }
+        // A signal with no scope is an unscoped operation's, heard by unscoped watchers (anyone's). A platform operation
+        // changes some scope's rows, so it says whose, or its change would reach everyone but that scope.
+        if (scope is null && context.Scope.Platform)
+        {
+            throw new InvalidOperationException(
+                $"{context.Descriptor.Name} is a platform operation raising {kind} with no scope, which would reach every unscoped watcher and none of the "
+                + "scope whose rows changed. Fix: name it: RaiseAsync(kind, key, scope, ct), once for each scope it changed.");
+        }
         // The scope is the transaction's own setting, so a signal can't claim a scope its operation wasn't authorized in.
         // Typed: a null key or scope is a parameter Postgres can't infer a type for inside json_build_object's variadic any.
         await db.Database.ExecuteSqlAsync(

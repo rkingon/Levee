@@ -192,6 +192,17 @@ public sealed class CallerScopeTests
     }
 
     [Fact]
+    public async Task An_anonymous_caller_never_runs_across_every_scope()
+    {
+        var dispatcher = DispatcherTests.Services(_store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var everyone = await dispatcher.SendAsync(new Crash(), new AnonymousPrincipal(), CancellationToken.None);
+
+        Assert.Equal(ErrorKind.Unauthenticated, everyone.Error!.Kind);
+        Assert.Empty(_store.Begun);
+    }
+
+    [Fact]
     public void A_job_runs_in_the_scope_its_caller_carried() =>
         Assert.Equal("acme", ((IScopedPrincipal)new JobPrincipal("key_1", System: false, Scope: "acme")).ScopeKey);
 }

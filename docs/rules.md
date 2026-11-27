@@ -66,8 +66,9 @@ internal sealed class Lease(TimeProvider time) : ILease { DateTimeOffset Now => 
 
 A handler (`IOperationHandler`, `ISubscriptionHandler`) holds no clock: a `TimeProvider` or NodaTime `IClock` as its
 constructor's parameter, a field or a property is refused, wrapped or not. So is a port that tells the time (an interface
-or a delegate answering a date or time when asked nothing, `ITime.Current()`, `Func<DateTime>`): whatever it wraps, it's
-the wall clock in production. A port that asks a vendor for a time takes what it asks about, or is awaited. An operation's handler reads
+or a delegate answering a date or time at once without being handed one: `ITime.Current()`, `Func<DateTime>`,
+`IBusinessCalendar.Today(timeZone)`): whatever it wraps, it's the wall clock in production. A time worked out from
+another is handed it (`calendar.NextBusinessDay(context.Now)`); a vendor's is awaited. An operation's handler reads
 `OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,

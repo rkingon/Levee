@@ -273,6 +273,9 @@ internal static class Run
         {
             throw new JobCancelException($"Restored as {principal.Subject}, not {subject}, who started it.");
         }
+        // This run's own copy: an IJobPrincipals that hands every run of one user the same object would otherwise let a later
+        // run's confinement replace this one's.
+        principal = principal with { };
         // Held to where it was started, the platform's work aside, whichever way the principal reaches the dispatcher.
         if (scope is not null || unscoped)
         {

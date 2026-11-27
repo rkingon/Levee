@@ -485,9 +485,12 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 return Error.Forbidden(LeveeErrors.ScopeViolation, $"{descriptor.Name}'s caller is now scoped elsewhere than when it was asked for.");
             }
             var scoped = Scoping(descriptor, operation, caller);
-            return !scoped.IsSuccess && principal is AnonymousPrincipal && scoped.Error.Code == LeveeErrors.CallerUnscoped
+            return principal is AnonymousPrincipal && (scoped is { IsSuccess: false, Error.Code: LeveeErrors.CallerUnscoped })
                 ? Error.Unauthenticated($"{descriptor.Name} runs in its caller's own scope: sign in first.")
-                : scoped;
+                // Every tenant's rows are never what anyone may do, whatever the policy grants: that's Unscoped, which sees none.
+                : principal is AnonymousPrincipal && scoped is { IsSuccess: true, Value.Platform: true }
+                    ? Error.Unauthenticated($"{descriptor.Name} runs across every scope: sign in first.")
+                    : scoped;
         }
         catch (Exception e)
         {

@@ -210,6 +210,7 @@ internal sealed class EnqueueElsewhereKindHandler(IOxbowClient oxbow) : IOperati
 internal sealed class RestoreMembers : IJobPrincipals
 {
     public static readonly System.Collections.Concurrent.ConcurrentBag<string> Restored = [];
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Principal> Cached = new();
 
     public ValueTask<Principal> RestoreAsync(JobPrincipal job, CancellationToken ct)
     {
@@ -217,6 +218,11 @@ internal sealed class RestoreMembers : IJobPrincipals
         if (job.Subject.StartsWith("key_", StringComparison.Ordinal))
         {
             return ValueTask.FromResult<Principal>(job);
+        }
+        // One object handed to every run, as a restore that caches by subject would.
+        if (job.System && job.Subject == "cached")
+        {
+            return ValueTask.FromResult(Cached.GetOrAdd(job.Subject, _ => job));
         }
         // The platform's own work stays the platform's.
         if (job.System)
@@ -454,7 +460,7 @@ internal sealed class CountPlatformHandler(INotes notes) : IOperationHandler<Cou
 
 /// <summary>Starts, from one tenant's operation, a process that hands its principal to something holding the Dispatcher.</summary>
 [Operation("probe.start_handed_process", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
-public sealed record StartHandedProcess(string Tenant, string Target) : IOperation<Unit>, IScopedOperation
+public sealed record StartHandedProcess(string Tenant, string Target, bool Hold = false) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
 }
@@ -463,21 +469,43 @@ internal sealed class StartHandedProcessHandler(IJobs jobs) : IOperationHandler<
 {
     public async Task<Result<Unit>> HandleAsync(StartHandedProcess operation, OperationContext context, CancellationToken ct)
     {
-        await jobs.StartAsync(new HandedInput(operation.Target), new JobOptions(MaxAttempts: 1), ct);
+        await jobs.StartAsync(new HandedInput(operation.Target, operation.Hold), new JobOptions(MaxAttempts: 1), ct);
         return Unit.Value;
     }
 }
 
-public sealed record HandedInput(string Target);
+public sealed record HandedInput(string Target, bool Hold = false);
 
 internal sealed class HandedProcess(Dispatcher dispatcher) : IProcess<HandedInput>
 {
+    /// <summary>Held runs wait here, already restored and confined, until a test lets them go.</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, TaskCompletionSource> Gates = new();
+
     public async Task RunAsync(HandedInput input, ProcessContext context, CancellationToken ct)
     {
+        if (input.Hold)
+        {
+            await Gates.GetOrAdd(input.Target, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task.WaitAsync(ct);
+        }
         var written = await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Target, "handed"), context.Principal, ct);
         if (!written.IsSuccess)
         {
             throw new InvalidOperationException($"{written.Error.Code}: {written.Error.Message}");
         }
+    }
+}
+
+/// <summary>An operator's change to one tenant's rows, signalled with or without naming the tenant.</summary>
+[Operation("probe.platform_signal", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record PlatformSignal(string? Tenant, string Key) : IOperation<Unit>;
+
+internal sealed class PlatformSignalHandler(IChangeSignals signals) : IOperationHandler<PlatformSignal, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(PlatformSignal operation, OperationContext context, CancellationToken ct)
+    {
+        await (operation.Tenant is { } tenant
+            ? signals.RaiseAsync("notes.changed", operation.Key, tenant, ct)
+            : signals.RaiseAsync("notes.changed", operation.Key, ct));
+        return Unit.Value;
     }
 }
