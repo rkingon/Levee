@@ -882,9 +882,9 @@ public sealed class TwelfthAuditFixTests
     }
 
     [Fact]
-    public void A_member_never_written_holds_no_secret()
+    public void A_member_left_off_the_wire_is_refused_on_a_contract()
     {
-        Assert.Null(LeveeJson.FindSecret(typeof(Unwritten)));
+        Assert.Contains("[JsonIgnore]", Assert.Throws<InvalidOperationException>(() => LeveeJson.FindSecret(typeof(Unwritten))).Message, StringComparison.Ordinal);
     }
 
     public sealed record Unwritten(string Name)

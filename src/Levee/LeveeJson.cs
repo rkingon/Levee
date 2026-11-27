@@ -53,13 +53,15 @@ public static class LeveeJson
                 + "Fix: drop it; the wire refuses what a contract doesn't declare (LEVEE104).");
         }
         // Every member is written, as the strict reader requires it: one written only sometimes reads back as missing.
-        // Always (never on the wire) or Never (always on it): any other condition writes or reads a member only sometimes.
+        // A contract is its wire: a member left off it is skipped when sent, not refused, and one on it only sometimes may not
+        // read back. Every member is on the wire, always.
         if (info.Properties.FirstOrDefault(p => p.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: true)
-                is [JsonIgnoreAttribute { Condition: not (JsonIgnoreCondition.Always or JsonIgnoreCondition.Never) }, ..]) is { } sometimes)
+                is [JsonIgnoreAttribute { Condition: not JsonIgnoreCondition.Never }, ..]) is { } ignored)
         {
             throw new InvalidOperationException(
-                $"{info.Type.Name}.{sometimes.Name} is written or read only sometimes ([JsonIgnore(Condition = ...)]), so what it writes the wire may "
-                + "refuse, or lose, reading it back. Fix: drop the condition; a member is on the wire always, or ([JsonIgnore]) never (LEVEE104).");
+                $"{info.Type.Name}.{ignored.Name} is left off the wire ([JsonIgnore]), always or sometimes: a caller that sends it is silently ignored, "
+                + "not refused, and one written only sometimes may not read back. Fix: a contract carries what's on its wire and nothing else: move "
+                + "the member off the contract (to the domain type, or a method) (LEVEE104).");
         }
         if (info.Properties.FirstOrDefault(p => p.IsExtensionData) is { } extension)
         {

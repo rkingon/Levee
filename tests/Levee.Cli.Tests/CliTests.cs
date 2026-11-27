@@ -366,7 +366,7 @@ public sealed class CliTests : IDisposable
         Assert.Contains("oxbow_job", withJobs, StringComparison.Ordinal);
         Assert.Contains("tenant_id = nullif(public.levee_scope(), '')::uuid", isolate, StringComparison.Ordinal);
         Assert.Contains("create table elsewhere.levee_audit", (await Run(_dir, "db", "schema", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
-        Assert.Contains("grant usage on schema elsewhere to app;", (await Run(_dir, "db", "grants", "app", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
+        Assert.Contains("grant usage on schema elsewhere to app", (await Run(_dir, "db", "grants", "app", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
         Assert.Contains("then 'grant select on %s to app'", grants, StringComparison.Ordinal);
         Assert.Contains("grant execute on function public.levee_audit_write", grants, StringComparison.Ordinal);
         Assert.Contains("revoke insert, update, delete on public.oxbow_migration from app;", grants, StringComparison.Ordinal);

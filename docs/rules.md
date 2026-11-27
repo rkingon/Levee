@@ -580,8 +580,8 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
   never on a member, where it would outrank the type's and its check; a library's attribute deriving
   `JsonConverterAttribute` is a converter too. The contract wire holds the same at run time. The members checked, here
   and for types and secrets, are the ones System.Text.Json writes: public properties, and fields and non-public properties `[JsonInclude]`
-  adds, less any `[JsonIgnore]` always drops. A member written only sometimes (`[JsonIgnore(Condition = WhenWritingNull)]`
-  or `WhenWritingDefault`) is refused: the strict reader would refuse what it writes.
+  adds. A contract member left off the wire (`[JsonIgnore]`, with any condition) is refused: sent anyway, it would be
+  skipped, not refused.
 
 ```csharp
 [JsonConverter(typeof(ZipJson))]
@@ -595,8 +595,8 @@ public sealed record FindHomes([property: Description("The area's five-digit zip
   tool's. The contract wire is Levee's, one and unconfigurable (`LeveeJson.Options`): strict, with
   numbers as numbers, so a value's JSON is its value object's own (on the type, where the build sees it) and a .NET
   type's is System.Text.Json's. A contract can't loosen it either: `[JsonNumberHandling]`,
-  `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]` and a `[JsonIgnore]` condition other than always or never are
-  refused, in the build and on the wire. On the way in, a value object's converter is handed only the JSON its `[ValueObject]`
+  `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]` and `[JsonIgnore]` are refused, in the build and on the wire: a
+  contract carries what's on its wire and nothing else. On the way in, a value object's converter is handed only the JSON its `[ValueObject]`
   says it writes, so a converter that would take anything can't make its schema a lie.
 
 ## LEVEE105: Operations with effects declare their idempotency

@@ -743,20 +743,21 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         foreach (var member in named.GetMembers())
         {
+            var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
+            // Before Wired, which leaves an always-ignored member out. JsonIgnoreCondition.Never is 0; with no condition it's Always.
+            if (member is IPropertySymbol { IsStatic: false, IsImplicitlyDeclared: false, IsIndexer: false } or IFieldSymbol { IsStatic: false, IsImplicitlyDeclared: false }
+                && member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
+                    && !a.NamedArguments.Any(n => n.Key == "Condition" && n.Value.Value is 0)))
+            {
+                return (at, "is left off the wire ([JsonIgnore]), always or sometimes: a caller that sends it is silently ignored, not refused, and one written only sometimes may not read back. Fix: a contract carries what's on its wire and nothing else: move the member off the contract (to the domain type, or a method)");
+            }
             if (Wired(member) is not { } memberType)
             {
                 continue;
             }
-            var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
             if (Loosened(member))
             {
                 return (at, Numbers);
-            }
-            // JsonIgnoreCondition: Never is 0, Always 1; any other writes or reads a member only sometimes.
-            if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
-                && a.NamedArguments.Any(n => n.Key == "Condition" && n.Value.Value is int condition && condition is not (0 or 1))))
-            {
-                return (at, "is written or read only sometimes ([JsonIgnore(Condition = ...)]), so what it writes the wire may refuse, or lose, reading it back. Fix: drop the condition; a member is on the wire always, or ([JsonIgnore]) never");
             }
             if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonExtensionDataAttribute"))
             {

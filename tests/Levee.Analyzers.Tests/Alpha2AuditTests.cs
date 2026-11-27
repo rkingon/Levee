@@ -10,7 +10,7 @@ public sealed class Alpha2AuditTests
 
     [Theory]
     [InlineData("public Label Shown => new(Query);", true)]
-    [InlineData("[JsonIgnore] public Label Derived => new(Query);", false)]
+    [InlineData("[JsonIgnore] public Label Derived => new(Query);", true)]
     [InlineData("[JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public Label? Sometimes { get; init; }", true)]
     [InlineData("[JsonInclude] public Label? Extra;", true)]
     [InlineData("[JsonInclude] internal Label? Hidden { get; init; }", true)]

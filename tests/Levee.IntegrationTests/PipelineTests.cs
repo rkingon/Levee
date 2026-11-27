@@ -1010,6 +1010,18 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
     }
 
+    [Fact]
+    public async Task A_refused_grants_script_changes_nothing()
+    {
+        await postgres.ExecuteAsync("create role atomic_candidate; create role atomic_group; grant atomic_group to atomic_candidate;");
+
+        // Run as one statement by its own design, whatever the client's autocommit.
+        await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants("atomic_candidate")));
+
+        Assert.Equal("app", await postgres.TextAsync("select public.levee_runtime()"));
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from information_schema.role_table_grants where grantee = 'atomic_candidate'"));
+    }
+
     [Theory]
     [InlineData("reach_group")]
     [InlineData("pg_read_all_data")]

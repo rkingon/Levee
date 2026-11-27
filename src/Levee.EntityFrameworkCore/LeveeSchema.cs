@@ -134,11 +134,23 @@ public static class LeveeSchema
     {
         Identifier(role, nameof(role));
         Identifier(schema, nameof(schema));
+        // One statement, so all or nothing under any client: a refusal leaves the role, and its registration, as they were.
         return $"""
             do $levee$
             declare r record;
+            declare t regclass;
             declare residue text;
+            declare reached text;
+            declare belongs text;
             begin
+              -- A role it belongs to lends it everything that role holds, a predefined one (pg_read_all_data) included, none of it
+              -- in any ACL: the runtime role belongs to none.
+              select string_agg(granted.rolname, ', ') into belongs from pg_auth_members m join pg_roles granted on granted.oid = m.roleid
+              where m.member = '{role}'::regrole;
+              if belongs is not null then
+                raise exception '{role} belongs to %, and holds whatever that holds', belongs
+                  using hint = 'Revoke each from {role}: the runtime role holds Levee''s grants and nothing else. Then run Levee''s grants again.';
+              end if;
               -- Exactly what the role holds, wherever it is: by table or column, and the defaults that would grant it more.
               for r in select distinct held.rel from (
                          select c.oid::regclass as rel, (aclexplode(c.relacl)).grantee from pg_class c where c.relacl is not null
@@ -173,22 +185,18 @@ public static class LeveeSchema
                 raise exception 'Levee can''t reset {role} to its allow-list: it still holds %', residue
                   using hint = 'Run, as the role that granted each: revoke all on <table> from {role}; or alter default privileges revoke ... from {role}. Then run Levee''s grants again.';
               end if;
-            end $levee$;
-            grant usage on schema {schema} to {role};
-            grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role};
-            grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role};
-            create or replace function {schema}.levee_runtime() returns text language sql immutable as $$ select '{role}' $$;
-            create or replace function {schema}.levee_runtime_sequences(t regclass) returns void language plpgsql as $$
-            declare s regclass;
-            begin
-              for s in select d.objid::regclass from pg_depend d join pg_class c on c.oid = d.objid
-                       where c.relkind = 'S' and d.refobjid = t and d.deptype in ('a', 'i') loop
-                execute format('grant usage, select on sequence %s to %I', s, {schema}.levee_runtime());
-              end loop;
-            end $$;
-            do $levee$
-            declare t regclass;
-            begin
+              execute 'grant usage on schema {schema} to {role}';
+              execute 'grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role}';
+              execute 'grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role}';
+              execute $ddl$create or replace function {schema}.levee_runtime() returns text language sql immutable as $body$ select '{role}' $body$$ddl$;
+              execute $ddl$create or replace function {schema}.levee_runtime_sequences(t regclass) returns void language plpgsql as $body$
+                declare s regclass;
+                begin
+                  for s in select d.objid::regclass from pg_depend d join pg_class c on c.oid = d.objid
+                           where c.relkind = 'S' and d.refobjid = t and d.deptype in ('a', 'i') loop
+                    execute format('grant usage, select on sequence %s to %I', s, {schema}.levee_runtime());
+                  end loop;
+                end $body$$ddl$;
               -- This installation's policies only: each reads this schema's functions, so another installation's tables (and its
               -- audit) stay its own role's.
               for t in select distinct p.polrelid::regclass from pg_policy p
@@ -200,19 +208,6 @@ public static class LeveeSchema
                                     else 'grant select, insert, update, delete on %s to {role}' end, t);
                 perform {schema}.levee_runtime_sequences(t);
               end loop;
-            end $levee$;
-            do $levee$
-            declare reached text;
-            declare belongs text;
-            begin
-              -- A role it belongs to lends it everything that role holds, a predefined one (pg_read_all_data) included, none of it
-              -- in any ACL: the runtime role belongs to none.
-              select string_agg(r.rolname, ', ') into belongs from pg_auth_members m join pg_roles r on r.oid = m.roleid
-              where m.member = '{role}'::regrole;
-              if belongs is not null then
-                raise exception '{role} belongs to %, and holds whatever that holds', belongs
-                  using hint = 'Revoke each from {role}: the runtime role holds Levee''s grants and nothing else. Then run Levee''s grants again.';
-              end if;
               -- What the role holds in effect, through itself, a role it belongs to, PUBLIC or ownership, against what each
               -- relation allows: an allow-list over the ACLs, so a privilege a later Postgres adds is refused, not missed.
               with held as (
