@@ -414,6 +414,20 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
 - **Typed all the way down**: no member, at any depth (fields `[JsonInclude]` adds, a base record's, a declared derived
   type's, the items of a collection of the app's own), is `object`, `dynamic`, raw JSON, `Array` or a non-generic
   collection (`ArrayList`, `Hashtable`, `ExpandoObject`). Redaction and the secret check go by type, and the wire's schema says nothing about an untyped member.
+- **Value objects say what they write**: a type of the app's that a converter of its own writes (on the type, or on the
+  member), in the input or the result, declares the primitive it's written as. No schema can read a converter, so
+  without it every client and agent sees the member as anything at all.
+
+```csharp
+[JsonConverter(typeof(ZipJson))]
+[ValueObject(typeof(string), Pattern = "^[0-9]{5}$")]
+public readonly record struct Zip(string Value);
+
+public sealed record FindHomes([property: Description("The area's five-digit zip.")] Zip Area) : IOperation<HomeList>;
+```
+
+  A member's `[Description]` (System.ComponentModel's) is its description in every schema: the catalog's and each MCP
+  tool's.
 
 ## LEVEE105: Operations with effects declare their idempotency
 

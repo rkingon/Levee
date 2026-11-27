@@ -432,6 +432,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report($"its input's {untyped} is untyped, so its schema, redaction and the strict wire can't see what it holds. Fix: give it a type of its own");
             return null;
         }
+        foreach (var (what, walked) in new[] { ("input", (ITypeSymbol)type), ("result", contract.TypeArguments[0]) })
+        {
+            if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } shapeless)
+            {
+                Report($"its {what}'s {shapeless} is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
+                return null;
+            }
+        }
         if (type.DeclaredAccessibility != Accessibility.Public || type.ContainingType is not null)
         {
             Report("an operation is a public top-level type, so every host can catalog it. Fix: make it public and move it out of its containing type");
@@ -604,6 +612,68 @@ public sealed class OperationGenerator : IIncrementalGenerator
     // Non-generic collections (ArrayList, Hashtable, IEnumerable) and the dynamic types (ExpandoObject) hold objects.
     private static bool IsUntypedNamespace(ITypeSymbol type) =>
         type.ContainingNamespace?.ToDisplayString() is "System.Collections" or "System.Dynamic";
+
+    /// <summary>
+    /// The path to the first of the app's types in a contract, at any depth, that a converter of its own writes (on the type
+    /// or on the member) without saying what it writes (<c>[ValueObject]</c>), or null.
+    /// </summary>
+    private static string? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    {
+        static bool Converted(ISymbol symbol) =>
+            symbol.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConverterAttribute");
+        static bool Declared(ITypeSymbol t) =>
+            (t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : t)
+                .GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
+        if (!seen.Add(type))
+        {
+            return null;
+        }
+        if (type is IArrayTypeSymbol array)
+        {
+            return Shapeless(array.ElementType, seen, path);
+        }
+        if (type is not INamedTypeSymbol named)
+        {
+            return null;
+        }
+        foreach (var argument in named.TypeArguments)
+        {
+            if (Shapeless(argument, seen, path) is { } inArgument)
+            {
+                return inArgument;
+            }
+        }
+        if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)))
+        {
+            return null;
+        }
+        if (Converted(named) && !Declared(named))
+        {
+            return path.Length == 0 ? named.Name : $"{path} ({named.Name})";
+        }
+        foreach (var member in named.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        {
+            var memberType = member switch
+            {
+                IPropertySymbol { IsIndexer: false, DeclaredAccessibility: Accessibility.Public } p => p.Type,
+                _ => null,
+            };
+            if (memberType is null)
+            {
+                continue;
+            }
+            var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
+            if (Converted(member) && !Declared(memberType))
+            {
+                return at;
+            }
+            if (Shapeless(memberType, seen, at) is { } found)
+            {
+                return found;
+            }
+        }
+        return named.BaseType is { SpecialType: not SpecialType.System_Object } baseType ? Shapeless(baseType, seen, path) : null;
+    }
 
     /// <summary>The path to the first member of an input, at any depth, typed as anything at all (object, raw JSON, dynamic), or null.</summary>
     private static string? Untyped(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)

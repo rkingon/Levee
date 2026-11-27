@@ -33,16 +33,31 @@ public static class LeveeJson
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
     internal static JsonNode Schema(Type type, JsonSerializerOptions? options = null)
     {
+        var json = options ?? Options;
         var exporter = new JsonSchemaExporterOptions
         {
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, node) =>
             {
                 // A converter of the app's writes the value its own way (a typed id as a string): the contract's shape isn't the
-                // wire's, so the schema promises no shape at all rather than the wrong one.
-                if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
+                // wire's. A value object says what it writes; anything else promises no shape rather than the wrong one.
+                var underlying = Nullable.GetUnderlyingType(context.TypeInfo.Type);
+                var declared = (underlying ?? context.TypeInfo.Type).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [ValueObjectAttribute v] ? v : null;
+                // A nullable value object's converter is the serializer's own wrapper, so the exporter knows no shape for it either.
+                if (declared is not null && (underlying is not null || !BuiltIn(context.TypeInfo.Converter)
+                    || context.PropertyInfo?.CustomConverter is { } wrapped && !BuiltIn(wrapped)))
+                {
+                    node = WireSchema(declared, json, underlying is not null || AllowsNull(node));
+                }
+                else if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
                 {
                     node = new JsonObject();
+                }
+                if (node is JsonObject described
+                    && (context.PropertyInfo?.AttributeProvider ?? (context.PropertyInfo is null ? context.TypeInfo.Type : null))?
+                        .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true) is [System.ComponentModel.DescriptionAttribute { Description: { Length: > 0 } text }, ..])
+                {
+                    described["description"] = text;
                 }
                 if (Marked(context.PropertyInfo?.AttributeProvider, context.PropertyInfo?.DeclaringType, typeof(SecretAttribute)) && node is JsonObject obj)
                 {
@@ -55,6 +70,32 @@ public static class LeveeJson
     }
 
     private static bool BuiltIn(JsonConverter converter) => converter.GetType().Assembly == typeof(JsonSerializer).Assembly;
+
+    private static bool AllowsNull(JsonNode node) =>
+        node is JsonObject o && o["type"] is JsonArray types && types.Any(t => t?.GetValue<string>() == "null");
+
+    /// <summary>The schema of what a value object's converter writes, with its format and pattern, and null if the member allows it.</summary>
+    private static JsonNode WireSchema(ValueObjectAttribute declared, JsonSerializerOptions json, bool nullable)
+    {
+        var schema = json.GetJsonSchemaAsNode(declared.Wire, new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true });
+        if (schema is not JsonObject wire)
+        {
+            return schema;
+        }
+        if (declared.Format is { } format)
+        {
+            wire["format"] = format;
+        }
+        if (declared.Pattern is { } pattern)
+        {
+            wire["pattern"] = pattern;
+        }
+        if (nullable && wire["type"] is JsonValue single && single.GetValue<string>() is { } only)
+        {
+            wire["type"] = new JsonArray(only, "null");
+        }
+        return wire;
+    }
 
     /// <summary>
     /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>

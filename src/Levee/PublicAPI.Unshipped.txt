@@ -43,3 +43,10 @@ Levee.PortAttribute.Default.get -> string?
 Levee.PortAttribute.Default.set -> void
 static Levee.PortSelection.Select(Microsoft.Extensions.Configuration.IConfiguration? configuration, string! setting, string! port, System.Collections.Generic.IReadOnlyCollection<string!>! adapters, string? fallback) -> string!
 static Levee.PortSelection.Wants(Microsoft.Extensions.Configuration.IConfiguration? configuration, string! setting, string! adapter, string? fallback) -> bool
+Levee.ValueObjectAttribute
+Levee.ValueObjectAttribute.Format.get -> string?
+Levee.ValueObjectAttribute.Format.set -> void
+Levee.ValueObjectAttribute.Pattern.get -> string?
+Levee.ValueObjectAttribute.Pattern.set -> void
+Levee.ValueObjectAttribute.ValueObjectAttribute(System.Type! wire) -> void
+Levee.ValueObjectAttribute.Wire.get -> System.Type!

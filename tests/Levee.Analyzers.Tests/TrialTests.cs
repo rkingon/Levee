@@ -50,4 +50,29 @@ public sealed class TrialTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
     }
+
+    private const string Zip = """
+        public sealed class ZipJson : System.Text.Json.Serialization.JsonConverter<Zip>
+        {
+            public override Zip Read(ref System.Text.Json.Utf8JsonReader reader, System.Type type, System.Text.Json.JsonSerializerOptions options) => new(reader.GetString()!);
+            public override void Write(System.Text.Json.Utf8JsonWriter writer, Zip value, System.Text.Json.JsonSerializerOptions options) => writer.WriteStringValue(value.Value);
+        }
+        """;
+
+    [Theory]
+    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] public readonly record struct Zip(string Value);", "Zip? Area", true)]
+    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(string), Pattern = \"^[0-9]{5}$\")] public readonly record struct Zip(string Value);", "Zip? Area", false)]
+    [InlineData("public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] Zip Area", true)]
+    [InlineData("public readonly record struct Zip(string Value);", "Zip Area", false)]
+    public async Task A_value_written_by_its_own_converter_says_what_it_writes(string zip, string member, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""
+            using Levee;
+            {{Zip}}
+            {{zip}}
+            [Operation("homes.find", "member", Platform = true)] public sealed record FindHomes({{member}}) : IOperation<int>;
+            """, "App.Contracts", GeneratorTests.Levee);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
+    }
 }

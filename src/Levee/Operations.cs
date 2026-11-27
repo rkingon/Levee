@@ -100,6 +100,24 @@ public sealed class OperationMetadataAttribute : Attribute;
 public sealed class SecretAttribute : Attribute;
 
 /// <summary>
+/// A value object written on the wire as a primitive by a converter of its own (a typed id as a string, a zip code, a
+/// date of birth): what every schema shows for it, since no schema can read the converter. A contract type written by
+/// its own converter declares one (LEVEE104).
+/// </summary>
+/// <param name="wire">The type the converter writes: <c>typeof(string)</c>, <c>typeof(int)</c>, <c>typeof(DateOnly)</c>.</param>
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false)]
+public sealed class ValueObjectAttribute(Type wire) : Attribute
+{
+    public Type Wire { get; } = wire;
+
+    /// <summary>The JSON Schema format the value takes, as <c>uuid</c>, <c>date</c>, <c>email</c>.</summary>
+    public string? Format { get; set; }
+
+    /// <summary>The pattern the value matches, as a JSON Schema regular expression: <c>^[0-9]{5}$</c>.</summary>
+    public string? Pattern { get; set; }
+}
+
+/// <summary>
 /// Personal data (a name, an address, an email): the handler and the result see it, but the audit and
 /// <see cref="IOperationOutcome"/> keep <c>[personal]</c> in its place, since an append-only record can never forget it.
 /// Property-only, like <see cref="SecretAttribute"/>: <c>[property: Personal]</c> on a positional record.
