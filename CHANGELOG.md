@@ -9,7 +9,7 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   (`[OperationMetadata]`) and one scope: the input's (`IScopedOperation`), the caller's (`CallerScoped`, `IScopedPrincipal`)
   or every scope (`Platform`). `Internal` operations never reach a projection. Subscriptions (`ISubscription<TItem>`).
 - **The dispatcher.** Scope, authorize (`IAccessPolicy`), unit of work, admit (`IAdmission`), handler, audit, commit, for
-  every call, job and subscription. `IOperationOutcome` is told how each ended, cancellations included.
+  every call, job and subscription. `IOperationOutcome` is told how each call ended, cancellations included, and how each subscription opened.
   `OperationContext.Now` at the store's precision.
 - **Failures.** `Result<T>` and `Error`, made only by its factories, with a closed `ErrorKind`: `internal` is the
   dispatcher's alone, for a bug, logged once under its trace. `Fields`, `RetryAfter`, `Transient`. `LeveeErrors` for
@@ -36,7 +36,7 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 
 ### Levee.EntityFrameworkCore
 - Every table the app's context writes to, however it's mapped, has forced row-level security and a policy (`Isolation`,
-  `Shared`, or the app's own), and every view it reads is `security_invoker` or owned by a role row-level security holds,
+  `Shared`, or the app's own), and every view it maps is judged by what it reads, down to the tables,
   checked before the first operation: a forgotten policy fails closed. Refusals classified
   as `store.stale` (no row to change) and `store.invalid_value` besides the others.
 - The Postgres unit of work: one transaction per operation, `read only` when declared, `levee.scope` for row-level

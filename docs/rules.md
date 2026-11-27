@@ -325,7 +325,8 @@ Every other rule holds: it drives the application only through the dispatcher, l
 A connection of its own (`new NpgsqlConnection`, a `DbDataSource`'s, an `IDbContextFactory`'s context, a design-time
 factory's `CreateDbContext`, which is `dotnet ef`'s to call, `new` on a context, the context's own connection through
 `GetDbConnection`, EF's accessor to its internal services, `GetService<T>`, or a connection or data source the container
-hands over, to a constructor, an endpoint's or action's parameter, or an injected property) is outside the operation's
+hands over, to a constructor, a minimal API handler's parameter (a lambda or a method group passed to a `Map*` call), an
+action's parameter, or an injected property) is outside the operation's
 transaction, or can be: not read-only when the operation declares only reads, not rolled back with it, not audited, and
 free to set its own scope.
 

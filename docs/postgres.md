@@ -27,12 +27,17 @@ The app connects as a role that is not a superuser, owns nothing and doesn't byp
 what `LeveeSchema.Grants(role)` prints:
 
 - every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
-  Every table the app's context writes to, however it's mapped (split across tables, beside a view, found through the
-  search path), must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the
-  app's own), and every view it reads must be `security_invoker` or owned by a role that is neither a superuser nor
-  bypasses row-level security (a view reads with its owner's rights, so otherwise it hands every scope every row): one
-  that isn't is found before the first operation, which fails with the fix. A forgotten policy fails closed
-  rather than opening the table to every tenant. A table the context doesn't map isn't checked;
+  Everything the app's context maps, however it's mapped (split across tables, as a view, found through the search path),
+  is judged by what it is in the database, and every view among it by what it reads, down to the tables:
+  - a table must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the app's
+    own);
+  - a view must be `security_invoker` or owned by a role that is neither a superuser nor bypasses row-level security,
+    since a view reads with its owner's rights;
+  - a materialized view or a foreign table is refused: row-level security can't hold either.
+
+  What fails is found before the first operation, which fails with the fix, so a forgotten policy fails closed rather
+  than opening the table to every tenant. Not followed: a table the context doesn't map at all, and what a function or a
+  mapped SQL query reads;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a

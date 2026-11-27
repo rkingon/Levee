@@ -299,13 +299,31 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
-    /// <summary>A minimal API's handler takes its services as parameters: a lambda's are handed over by the container.</summary>
+    /// <summary>
+    /// A minimal API's handler (a lambda or a method group passed to a Map* call) takes its services as parameters, handed
+    /// over by the container. Other delegates (a helper over the operation's own connection, a data source's configuration)
+    /// are the app's to call.
+    /// </summary>
     private static void OnLambda(OperationAnalysisContext context)
     {
-        foreach (var parameter in ((IAnonymousFunctionOperation)context.Operation).Symbol.Parameters)
+        if (IsEndpointHandler(context.Operation))
         {
-            Report(context.ReportDiagnostic, parameter, parameter.Type);
+            foreach (var parameter in ((IAnonymousFunctionOperation)context.Operation).Symbol.Parameters)
+            {
+                Report(context.ReportDiagnostic, parameter, parameter.Type);
+            }
         }
+    }
+
+    private static bool IsEndpointHandler(IOperation handler)
+    {
+        // Through the delegate it becomes, and the conversion to Delegate a Map* overload takes it as.
+        var at = handler.Parent;
+        while (at is IDelegateCreationOperation or IConversionOperation)
+        {
+            at = at.Parent;
+        }
+        return at is IArgumentOperation { Parent: IInvocationOperation map } && map.TargetMethod.Name.StartsWith("Map", StringComparison.Ordinal);
     }
 
     private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is
@@ -329,8 +347,18 @@ public sealed class CodeRules : DiagnosticAnalyzer
         _ => null,
     };
 
-    private static void OnMethodGroup(OperationAnalysisContext context, Role role) =>
-        OnCall(context, role, ((IMethodReferenceOperation)context.Operation).Method);
+    private static void OnMethodGroup(OperationAnalysisContext context, Role role)
+    {
+        var reference = (IMethodReferenceOperation)context.Operation;
+        if (role != Role.Tool && IsEndpointHandler(reference))
+        {
+            foreach (var parameter in reference.Method.Parameters)
+            {
+                Report(context.ReportDiagnostic, parameter, parameter.Type);
+            }
+        }
+        OnCall(context, role, reference.Method);
+    }
 
     private static bool IsLevee(INamedTypeSymbol? type, string name) =>
         type is not null && type.Name == name && type.ContainingNamespace?.ToDisplayString() == "Levee";

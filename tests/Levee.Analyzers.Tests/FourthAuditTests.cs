@@ -141,6 +141,7 @@ public sealed class SixthAuditTests
         Probe.CompileAsync(new Probe.Settings(role, Exe: role is "Tool" or "Host"), "using System;\nusing Levee;\n" + source, assembly, [GeneratorTests.Levee, .. more]);
 
     private const string Data = """
+        public static class Routes { public static void MapGet(this object app, string pattern, Delegate handler) { } }
         namespace System.Data.Common { public abstract class DbConnection { } public abstract class DbDataSource { } }
         namespace Npgsql
         {
@@ -153,7 +154,9 @@ public sealed class SixthAuditTests
     [InlineData("Adapter", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", true)]
     [InlineData("Adapter", "public sealed class Side(Lazy<Npgsql.NpgsqlConnection> connection) { }", true)]
     [InlineData("Host", "public sealed class Side(Npgsql.NpgsqlDataSource source) { }", true)]
-    [InlineData("Host", "public static class Endpoints { public static Func<Npgsql.NpgsqlConnection, int> Delete => (Npgsql.NpgsqlConnection c) => 0; }", true)]
+    [InlineData("Host", "public static class Endpoints { public static void Map(object app) => app.MapGet(\"/x\", (Npgsql.NpgsqlConnection c) => 0); }", true)]
+    [InlineData("Host", "public static class Endpoints { public static void Map(object app) => app.MapGet(\"/x\", Count); static int Count(Npgsql.NpgsqlConnection c) => 0; }", true)]
+    [InlineData("Adapter", "public static class Helper { public static int Run(Func<System.Data.Common.DbConnection, int> work) => work(null!); public static int Go() => Run(c => 0); }", false)]
     [InlineData("Host", "public static class Side { public static object? Go(IServiceProvider sp) => sp.GetService(typeof(Npgsql.NpgsqlConnection)); }", true)]
     [InlineData("Host", "public static class Side { public static object? Go(IServiceProvider sp) => sp.GetService(typeof(Npgsql.NpgsqlDataSource)); }", false)]
     [InlineData("Adapter", "public sealed record Tx(System.Data.Common.DbConnection Connection);", false)]

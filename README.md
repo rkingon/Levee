@@ -100,7 +100,7 @@ attribute, and only an aggregate root has one. `[Port(Many = true)]` is a set ev
 channels), taken as `IEnumerable<TPort>`; name its adapters (`[Adapter("ecs")]`) and it's routed too: `IAdapters<TPort>`
 gives one by name, made only when asked for (a launcher per workbench). An adapter serving several ports is one instance. An adapter is scoped to the operation unless it says
 `[Adapter(Lifetime = AdapterLifetime.Singleton)]` (a client a vendor's SDK wants kept). A connection of its own, even
-one the container hands it (to a constructor, an endpoint's or action's parameter, an injected property, `GetService`),
+one the container hands it (to a constructor, a minimal API handler's or an action's parameter, an injected property, `GetService`),
 is outside every operation (LEVEE018): a listener that truly needs one suppresses at that
 line, with why. The Host composes and
 drives: it names nothing of Application's or Domain's, and reaches them only through the dispatcher (LEVEE013).
@@ -140,7 +140,7 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   a principal that is an `IScopedPrincipal`: an API key issued to one tenant), or every scope (`Platform = true`). The
   dispatcher refuses a missing or blank scope key. A job runs in the scope its enqueuer carried. `ScopeKey` sets `levee.scope` for the
   transaction, and `LeveeSchema.Isolation(table, column)` is the RLS policy that holds a table to it (`Shared(table)` for one every scope
-  reads); a table the app's context maps without a policy, or a view it reads around one, fails before the first operation. Platform scope
+  reads); a table the app's context maps without a policy, or a view it maps that reads one, fails before the first operation. Platform scope
   (`levee.platform`) sees every row, so the access policy decides who may run a platform operation
   (`AccessRequest.Operation.Platform`).
 - Every write is audited in the operation's own transaction (`levee_audit`, append-only, `[Secret]` and `[Personal]`
@@ -230,7 +230,8 @@ Projections an app writes itself (typed REST routes, a webhook) answer failures 
 The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation` or `Shared`; the app connects
 as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` gives it. That
 role adds to the audit only through `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a
-record. The app's context refuses any command outside an operation, and a table it maps without a policy. [docs/postgres.md](docs/postgres.md) has the setup,
+record. The app's context refuses any command outside an operation, and a table or view it maps that row-level security
+doesn't hold. [docs/postgres.md](docs/postgres.md) has the setup,
 and [the trust model](docs/decisions.md#trust-model) where the guarantees stop.
 
 ## Rules

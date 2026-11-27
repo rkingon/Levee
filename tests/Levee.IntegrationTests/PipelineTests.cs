@@ -536,7 +536,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
         await Begin();
 
-        Assert.Contains("ledger has no row-level security policy", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("ledger: no forced row-level security with a policy", refused.Message, StringComparison.Ordinal);
     }
 
     private sealed record Ledger(Guid Id, string Tenant);
@@ -564,10 +564,63 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         Assert.Contains("split_detail", await Refusal<SplitDb>(postgres.App), StringComparison.Ordinal);
         // The fixture's owner is a superuser, as a container's is: a plain view reads every row.
-        Assert.Contains("viewed_v reads around row-level security", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
+        Assert.Contains("viewed_v: a view that reads with its owner's rights", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
         Assert.Null(await RefusalOrNull<InvokerViewedDb>(postgres.App));
         Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task A_view_is_judged_by_what_it_reads_down_to_the_tables()
+    {
+        // An owner that is neither a superuser nor bypasses row-level security: the shape production should have.
+        await using (var owner = new NpgsqlConnection(postgres.Owner))
+        {
+            await owner.OpenAsync(Ct);
+            await using var create = new NpgsqlCommand("""
+                create role reader_owner nologin nosuperuser nobypassrls;
+                create table raw_rows (id uuid primary key, tenant text not null);
+                create table hidden_rows (id uuid primary key, tenant text not null);
+                create table held_rows (id uuid primary key, tenant text not null);
+                create table loose_rows (id uuid primary key, tenant text not null);
+                alter table loose_rows enable row level security;
+                create view over_hidden with (security_invoker = true) as select * from hidden_rows;
+                create view over_held with (security_invoker = on) as select * from held_rows;
+                create materialized view frozen_rows as select * from held_rows;
+                create view over_loose as select * from loose_rows;
+                alter table loose_rows owner to reader_owner;
+                alter view over_loose owner to reader_owner;
+                grant select on raw_rows, hidden_rows, held_rows, loose_rows, over_hidden, over_held, frozen_rows, over_loose to app;
+                """ + LeveeSchema.Isolation("held_rows", "tenant"), owner);
+            await create.ExecuteNonQueryAsync(Ct);
+        }
+
+        Assert.Contains("raw_rows: no forced row-level security", await Refusal<ReadsRawRows>(postgres.App), StringComparison.Ordinal);
+        Assert.Contains("hidden_rows: no forced row-level security", await Refusal<ReadsOverHidden>(postgres.App), StringComparison.Ordinal);
+        Assert.Null(await RefusalOrNull<ReadsOverHeld>(postgres.App));
+        Assert.Contains("frozen_rows: a materialized view", await Refusal<ReadsFrozen>(postgres.App), StringComparison.Ordinal);
+        Assert.Contains("loose_rows: no forced row-level security", await Refusal<ReadsOverLoose>(postgres.App), StringComparison.Ordinal);
+    }
+
+    private abstract class ReadsDb(DbContextOptions options, string view) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToView(view);
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    private sealed class ReadsRawRows(DbContextOptions<ReadsRawRows> options) : ReadsDb(options, "raw_rows");
+
+    private sealed class ReadsOverHidden(DbContextOptions<ReadsOverHidden> options) : ReadsDb(options, "over_hidden");
+
+    private sealed class ReadsOverHeld(DbContextOptions<ReadsOverHeld> options) : ReadsDb(options, "over_held");
+
+    private sealed class ReadsFrozen(DbContextOptions<ReadsFrozen> options) : ReadsDb(options, "frozen_rows");
+
+    private sealed class ReadsOverLoose(DbContextOptions<ReadsOverLoose> options) : ReadsDb(options, "over_loose");
 
     private async Task<string> Refusal<TContext>(string connection) where TContext : DbContext =>
         await RefusalOrNull<TContext>(connection) ?? throw new InvalidOperationException($"{typeof(TContext).Name} passed.");

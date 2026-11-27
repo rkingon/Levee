@@ -222,56 +222,61 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     private static int _isolated;
 
     /// <summary>
-    /// Every table the context maps is held by row-level security, forced, with a policy: a migration that forgot one would
-    /// otherwise open the table to every tenant, since the runtime role is granted every table.
+    /// Row-level security holds everything the context reads and writes: a migration that forgot a policy, or a view that reads
+    /// around one, would otherwise open its rows to every tenant, since the runtime role is granted every table.
     /// </summary>
     private async Task VerifyIsolationAsync(CancellationToken ct)
     {
-        // Every table EF writes to, however it's mapped (split, beside a view), resolved as Postgres will: through the
-        // search path when EF names no schema. One that doesn't resolve can't be checked, so it fails too.
+        // Every relation the model reads or writes, however it's mapped (split, as a view, through the search path), and every
+        // relation a view among them reads, down to the tables. Each is judged by what it is, not by how EF maps it:
+        // - a table: forced row-level security and a policy;
+        // - a view: security_invoker, or an owner row-level security holds (neither a superuser nor bypassing it);
+        // - a materialized view or a foreign table: refused, since row-level security can't hold either.
+        // One that doesn't resolve can't be judged, so it fails too.
         static string Quote(string name) => $"\"{name.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
-        var tables = db.Model.GetRelationalModel().Tables
-            .Select(t => t.Schema is { } schema ? $"{Quote(schema)}.{Quote(t.Name)}" : Quote(t.Name))
+        var model = db.Model.GetRelationalModel();
+        var names = model.Tables.Select(t => (t.Schema, t.Name)).Concat(model.Views.Select(v => (v.Schema, v.Name)))
+            .Select(r => r.Schema is { } schema ? $"{Quote(schema)}.{Quote(r.Name)}" : Quote(r.Name))
             .Distinct()
             .ToArray();
         var open = await db.Database.SqlQuery<string>($"""
-            select t as "Value"
-            from unnest({tables}) t
-            left join pg_catalog.pg_class c on c.oid = to_regclass(t)
-            where c.oid is null
-              or not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid))
+            with recursive mapped as (
+              select n, to_regclass(n)::oid as oid from unnest({names}) n
+            ), reached(oid) as (
+              select oid from mapped where oid is not null
+              union
+              select d.refobjid
+              from reached
+              join pg_catalog.pg_rewrite w on w.ev_class = reached.oid
+              join pg_catalog.pg_depend d on d.classid = 'pg_catalog.pg_rewrite'::regclass and d.objid = w.oid
+                and d.refclassid = 'pg_catalog.pg_class'::regclass and d.refobjid <> reached.oid
+            )
+            select n || ': doesn''t exist yet' as "Value" from mapped where oid is null
+            union all
+            select c.oid::regclass::text || case c.relkind
+                when 'v' then ': a view that reads with its owner''s rights, and its owner is a superuser or bypasses row-level security'
+                when 'm' then ': a materialized view, which row-level security can''t hold'
+                when 'f' then ': a foreign table, which row-level security can''t hold'
+                else ': no forced row-level security with a policy' end
+            from reached
+            join pg_catalog.pg_class c on c.oid = reached.oid
+            left join pg_catalog.pg_roles r on r.oid = c.relowner
+            where (c.relkind in ('r', 'p')
+                and not (c.relrowsecurity and c.relforcerowsecurity and exists (select 1 from pg_catalog.pg_policy p where p.polrelid = c.oid)))
+              or (c.relkind = 'v'
+                and not exists (select 1 from pg_catalog.pg_options_to_table(c.reloptions) o
+                                where o.option_name = 'security_invoker' and lower(o.option_value) in ('on', 'true', '1', 'yes'))
+                and (r.rolsuper or r.rolbypassrls))
+              or c.relkind in ('m', 'f')
             """).ToListAsync(ct);
         if (open.Count > 0)
         {
             throw new InvalidOperationException(
-                $"{string.Join(", ", open.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))} has no row-level security policy (or doesn't exist yet), so every "
-                + "tenant's operations would see and change all of its rows. Fix: in the migration that creates it, EnableScopeIsolation(table, column) for a "
-                + "table of one scope's rows, or ShareAcrossScopes(table) for one every scope reads and only platform operations write.");
-        }
-        // A view reads with its owner's rights unless it's security_invoker: owned by a superuser or a role that bypasses
-        // row-level security, it hands every scope every row.
-        var views = db.Model.GetRelationalModel().Views
-            .Select(v => v.Schema is { } schema ? $"{Quote(schema)}.{Quote(v.Name)}" : Quote(v.Name))
-            .Distinct()
-            .ToArray();
-        if (views.Length == 0)
-        {
-            return;
-        }
-        var around = await db.Database.SqlQuery<string>($"""
-            select v as "Value"
-            from unnest({views}) v
-            left join pg_catalog.pg_class c on c.oid = to_regclass(v)
-            left join pg_catalog.pg_roles r on r.oid = c.relowner
-            where c.oid is null
-              or not (coalesce(c.reloptions @> array['security_invoker=true'], false) or (not r.rolsuper and not r.rolbypassrls))
-            """).ToListAsync(ct);
-        if (around.Count > 0)
-        {
-            throw new InvalidOperationException(
-                $"{string.Join(", ", around.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))} reads around "
-                + "row-level security (or doesn't exist yet): a view reads with its owner's rights, and its owner is a superuser or bypasses "
-                + "it. Fix: create the view with (security_invoker = true), or have it owned by a role that is neither.");
+                $"Row-level security doesn't hold what the context reads and writes, so every tenant's operations would see all of it: "
+                + $"{string.Join("; ", open.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))}. Fix: in the migration "
+                + "that creates a table, EnableScopeIsolation(table, column) for one scope's rows, or ShareAcrossScopes(table) for rows every "
+                + "scope reads and only platform operations write; create a view with (security_invoker = true); read a materialized view's "
+                + "data through a table instead.");
         }
     }
 
@@ -301,7 +306,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                             Error.Conflict(LeveeErrors.ConstraintViolation, $"The database refused it ({pg.ConstraintName ?? pg.MessageText})."),
                         // A value its column's type refuses, such as a scope key that isn't the policy's uuid. The rest of class 22
                         // (division by zero, a bad regex) is the SQL's own bug.
-                        "22P02" or "22003" or "22001" or "22007" or "22008" or "22021" =>
+                        "22P02" or "22003" or "22001" or "22007" or "22008" or "22021" or "22P05" =>
                             Error.Validation(LeveeErrors.InvalidValue, $"The database refused a value: {pg.MessageText}."),
                         PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected =>
                             Error.Unavailable(LeveeErrors.Contention, "It collided with another change; try again."),
