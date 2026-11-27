@@ -65,7 +65,8 @@
   made. A table without one is unreachable, whatever names it: no blanket grant, no default privileges. Run Levee's
   grants first, then the app's own.
 - Before the first operation, what the role can reach beyond Levee's grants (by table or column, in any schema it can use) is
-  checked as what the context maps is. The tables Levee.Oxbow installs are left to it by name, not by prefix.
+  checked as what the context maps is, and so is the role itself: a superuser, a role that bypasses row-level security,
+  or one that owns a table row-level security holds fails before the first operation. The tables Levee.Oxbow installs are left to it by name, not by prefix.
 - `LeveeSchema.Grants` resets the role to its allow-list: it revokes exactly what the role holds, wherever it is (by
   table or column) and the default privileges (per schema and database-wide) that would grant it more, then fails naming
   anything another role granted that it couldn't take back. It grants only this installation's tables: a second Levee

@@ -356,6 +356,24 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             .Select(r => r.Schema is { } schema ? $"{Quote(schema)}.{Quote(r.Name)}" : Quote(r.Name))
             .Distinct()
             .ToArray();
+        // Row-level security binds neither a superuser nor a role that bypasses it, and a table's owner can switch it off: the
+        // app's role is none of these, or every policy below holds nothing.
+        var unbound = await db.Database.SqlQuery<string>($"""
+            select current_user || case when r.rolsuper then ' is a superuser' else ' bypasses row-level security' end as "Value"
+            from pg_catalog.pg_roles r where r.rolname = current_user and (r.rolsuper or r.rolbypassrls)
+            union all
+            select current_user || ' owns ' || c.oid::regclass::text
+            from pg_catalog.pg_class c join pg_catalog.pg_namespace s on s.oid = c.relnamespace
+            where c.relrowsecurity and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%'
+              and pg_catalog.pg_has_role(c.relowner, 'member')
+            """).ToListAsync(ct);
+        if (unbound.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Row-level security doesn't bind the role the app connects as: {string.Join("; ", unbound.Order(StringComparer.Ordinal))}, so every tenant's "
+                + "operations could see every row. Fix: connect as a role that is no superuser, doesn't bypass row-level security and owns nothing, "
+                + "granted only LeveeSchema.Grants(role); the owner (or a superuser) runs migrations and grants, never the app.");
+        }
         var theirs = owned.SelectMany(o => o.Names).ToArray();
         var open = await db.Database.SqlQuery<string>($"""
             with recursive mapped as (

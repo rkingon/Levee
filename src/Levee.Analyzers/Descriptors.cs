@@ -34,7 +34,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor HelperClock = Rule(
         "LEVEE003", "Time comes from TimeProvider",
-        "{0} holds a {1} in Application, where only a process keeps a clock: every handler that takes {0} reads the wall clock through it, not its operation's one time. Fix: hand it the time instead, context.Now from the handler as an argument (deadlines.Due(context.Now)); a process takes its TimeProvider itself, and an adapter's clock is the adapter's");
+        "{0} holds a {1} in Application, where only a process keeps a clock: every handler that takes {0} reads the wall clock through it, not its operation's one time. Fix: hand it the time instead, context.Now from the handler as an argument (a static helper: Deadlines.Due(context.Now)); a process takes its TimeProvider itself, and an adapter's clock is the adapter's");
 
     public static readonly DiagnosticDescriptor Transaction = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",

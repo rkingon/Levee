@@ -993,6 +993,24 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_role_row_level_security_doesnt_bind_is_refused()
+    {
+        // The fixture's owner is a superuser, as a container's default user is.
+        Assert.Contains("is a superuser", await Refusal<MapsNothingDb>(postgres.Owner), StringComparison.Ordinal);
+
+        await postgres.ExecuteAsync("create table owned_rows (id uuid primary key, tenant text not null);" + LeveeSchema.Isolation("owned_rows", "tenant")
+            + "alter table owned_rows owner to app;");
+        try
+        {
+            Assert.Contains("owns owned_rows", await Refusal<MapsNothingDb>(postgres.App), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("drop table owned_rows;");
+        }
+    }
+
+    [Fact]
     public async Task A_table_named_like_oxbows_is_checked_as_the_apps()
     {
         await postgres.ExecuteAsync("create table oxbow_notes (id uuid primary key, tenant text not null); grant select on oxbow_notes to app;");

@@ -69,7 +69,7 @@ constructor's parameter, a field or a property is refused, wrapped or not. So is
 or a delegate answering a date or time at once without being handed one: `ITime.Current()`, `Func<DateTime>`,
 `IBusinessCalendar.Today(timeZone)`): whatever it wraps, it's the wall clock in production. A time worked out from
 another is handed it (`calendar.NextBusinessDay(context.Now)`); a vendor's is awaited. In Application only a process
-holds a clock: a helper class the handlers share (`Deadlines`) takes the time as an argument, `deadlines.Due(context.Now)`. An operation's handler reads
+holds a clock: a helper the handlers share takes the time as an argument, `Deadlines.Due(context.Now)`. An operation's handler reads
 `OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,

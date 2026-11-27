@@ -26,7 +26,8 @@ table gets the policy. `dotnet levee db isolate` and `share` qualify it for you.
 ## The runtime role
 
 The app connects as a role that is not a superuser, owns nothing and doesn't bypass row-level security, granted only
-what `LeveeSchema.Grants(role)` prints. The owner also revokes what every role gets by default, as the tested setup does:
+what `LeveeSchema.Grants(role)` prints. Before the first operation Levee checks the role it connected as and fails on
+one that row-level security doesn't bind (a container's default `postgres` user is a superuser). The owner also revokes what every role gets by default, as the tested setup does:
 `revoke create on schema public from public` and `revoke temporary on database <db> from public`. The grants are an
 allow-list, not a blanket:
 
