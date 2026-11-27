@@ -45,6 +45,8 @@
   before the app's own narrowing, which a blanket grant would undo.
 
 ### Generator and analyzers
+- The generated registration finds Application's own classes its handlers and processes take, at any depth (a store, a
+  calculation over ports), and registers them scoped; a class that takes a value is configuration, Composition's.
 - **Breaking:** a LEVEE suppression builds only while the app declares it's migrating,
   `<LeveeAllowSuppressions>true</LeveeAllowSuppressions>`; elsewhere LEVEE006 refuses it. `check` stays red either way.
 - LEVEE006 leaves .NET's own source generators' output alone (`[GeneratedRegex]` emits a bare `#pragma warning disable`),

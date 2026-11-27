@@ -77,7 +77,9 @@ Every project in the app declares a role: one without Levee that a Levee project
 
 Kernel, Contracts, Domain and Application reference nothing else but the BCL, `Microsoft.Extensions.*.Abstractions` and
 `Levee` (LEVEE008). Configuration isn't theirs: the Composition project binds settings into plain records, and Application
-takes the record. A package that is pure (no I/O, no framework) can be allowed by name or prefix:
+takes the record. What Application's handlers share (a store holding several repositories, a calculation over ports) is
+an internal class of its own that they take in their constructors: the generated registration finds and registers it,
+scoped, so nothing registers Application's classes by hand. A package that is pure (no I/O, no framework) can be allowed by name or prefix:
 
 ```xml
 <LeveeAllowedReferences>NodaTime;Vogen*</LeveeAllowedReferences>

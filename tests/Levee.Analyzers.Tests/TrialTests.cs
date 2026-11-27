@@ -140,4 +140,29 @@ public sealed class TrialTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
     }
+
+    [Fact]
+    public async Task Application_registers_the_classes_its_handlers_take_and_not_its_settings()
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Application"), """
+            using Levee;
+            namespace App;
+            [Port] public interface IPrices;
+            public sealed record Limits(int Max);
+            internal sealed class Pricing(IPrices prices);
+            internal sealed class Store(Pricing pricing, Dispatcher dispatcher);
+            [Operation("quotes.make", "member", Internal = true, Platform = true)] public sealed record MakeQuote : IOperation<int>;
+            internal sealed class MakeQuoteHandler(Store store, Limits limits) : IOperationHandler<MakeQuote, int>
+            {
+                public System.Threading.Tasks.Task<Result<int>> HandleAsync(MakeQuote operation, OperationContext context, System.Threading.CancellationToken ct) =>
+                    System.Threading.Tasks.Task.FromResult<Result<int>>(1);
+            }
+            """, "App.Application", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+        var registration = output.Generated("Levee.Assembly.g.cs");
+
+        Assert.Empty(output.Errors);
+        Assert.Contains("TryAddScoped<global::App.Store>(services);", registration, StringComparison.Ordinal);
+        Assert.Contains("TryAddScoped<global::App.Pricing>(services);", registration, StringComparison.Ordinal);
+        Assert.DoesNotContain("global::App.Limits>", registration, StringComparison.Ordinal);
+    }
 }

@@ -37,6 +37,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var operations = own.Select(t => Operation(t, context)).Where(o => o is not null).Select(o => o!).ToList();
         var handlers = own.SelectMany(Handled).ToList();
         var processes = role is Role.Application or Role.Test ? own.SelectMany(Processed).ToList() : [];
+        var helpers = role is Role.Application or Role.Test
+            ? Helpers(handlers.Select(h => h.Handler).Concat(processes.Select(p => p.Process)), compilation.Assembly)
+            : [];
         // A contract is Contracts'; the platform's own (internal) operations may sit with the application; a test declares its own.
         if (role is not (Role.Contracts or Role.Application or Role.Test or Role.TestSupport))
         {
@@ -60,7 +63,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             _ => [],
         };
         var registration = "LeveeRegistration_" + Identifier(compilation.AssemblyName ?? "App");
-        var registers = handlers.Count > 0 || adapters.Count > 0 || processes.Count > 0;
+        var registers = handlers.Count > 0 || adapters.Count > 0 || processes.Count > 0 || helpers.Count > 0;
         var refusals = Refusals(own, context);
 
         var source = new StringBuilder()
@@ -101,6 +104,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 var contract = h.Streams ? "ISubscriptionHandler" : "IOperationHandler";
                 source.AppendLine("            global::Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped<"
                     + $"global::Levee.{contract}<{h.Operation.ToDisplayString(Global)}, {h.Result.ToDisplayString(Argument)}>, {h.Handler.ToDisplayString(Global)}>(services);");
+            }
+            foreach (var helper in helpers)
+            {
+                source.AppendLine("            global::Microsoft.Extensions.DependencyInjection.Extensions.ServiceCollectionDescriptorExtensions.TryAddScoped<"
+                    + $"{helper.ToDisplayString(Global)}>(services);");
             }
             foreach (var (process, input) in processes)
             {
@@ -873,6 +881,41 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
     }
+
+    /// <summary>
+    /// Application's own classes its handlers and processes take, at any depth: the internal services they share (a store
+    /// holding several repositories, a calculation over ports), registered as they are, scoped. A class that takes a value
+    /// (a string, a number, a settings record's fields) isn't one: that's configuration, which Composition binds.
+    /// </summary>
+    private static List<INamedTypeSymbol> Helpers(IEnumerable<INamedTypeSymbol> roots, IAssemblySymbol assembly)
+    {
+        var found = new List<INamedTypeSymbol>();
+        var seen = new HashSet<INamedTypeSymbol>(roots, SymbolEqualityComparer.Default);
+        var pending = new Queue<INamedTypeSymbol>(seen);
+        while (pending.Count > 0)
+        {
+            var constructor = pending.Dequeue().InstanceConstructors
+                .Where(c => c.DeclaredAccessibility is not Accessibility.Private)
+                .OrderByDescending(c => c.Parameters.Length)
+                .FirstOrDefault();
+            foreach (var parameter in constructor?.Parameters ?? [])
+            {
+                if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false, IsGenericType: false } helper
+                    && SymbolEqualityComparer.Default.Equals(helper.ContainingAssembly, assembly)
+                    && Injectable(helper) && seen.Add(helper))
+                {
+                    found.Add(helper);
+                    pending.Enqueue(helper);
+                }
+            }
+        }
+        return [.. found.OrderBy(t => t.ToDisplayString(), StringComparer.Ordinal)];
+    }
+
+    /// <summary>A class whose widest constructor takes only services (interfaces and classes), never a value.</summary>
+    private static bool Injectable(INamedTypeSymbol type) =>
+        type.InstanceConstructors.Where(c => c.DeclaredAccessibility is not Accessibility.Private).OrderByDescending(c => c.Parameters.Length).FirstOrDefault() is { } constructor
+        && constructor.Parameters.All(p => p.Type.TypeKind is TypeKind.Interface or TypeKind.Class && p.Type.SpecialType != SpecialType.System_String);
 
     private static IEnumerable<(INamedTypeSymbol Process, ITypeSymbol Input)> Processed(INamedTypeSymbol type) =>
         type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsGenericType || type.DeclaredAccessibility == Accessibility.Private
