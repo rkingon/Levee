@@ -42,7 +42,9 @@ analyzed alone), so one project's errors never hide another's, except that a pro
 asks of it. A suppressed rule is listed with its reason and still fails the check: a migration may build with one, but
 it's green only once none is left. A suppression builds at all only while the app declares it's migrating
 (`<LeveeAllowSuppressions>true</LeveeAllowSuppressions>`). Partway through a migration, projects that don't compile yet are named and the
-rest still checked.
+rest still checked. A project whose analyzed build fails on anything but a LEVEE rule (a CA rule its `.editorconfig` makes an
+error) is named with its errors and its analysis is incomplete: the check isn't green until it builds. `--json` lists each
+such project beside the findings, as an entry with `"incomplete": true` and no rule.
 
 `generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write) and what the
 scaffolded app's tests check (a summary),

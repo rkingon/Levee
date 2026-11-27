@@ -14,6 +14,12 @@ internal static partial class Check
     /// <param name="Suppressed">The reason it was silenced, when it was: debt a migration may carry, never a green check.</param>
     public sealed record Finding(string Rule, string Project, string? File, int? Line, string Message, string? Suppressed = null);
 
+    /// <summary>
+    /// An entry of <c>--json</c>: a finding, or a project whose findings aren't all known (<c>Incomplete</c>, its rule null),
+    /// so a reader counting entries never takes an unfinished check for a green one.
+    /// </summary>
+    internal sealed record Entry(string? Rule, string Project, string? File, int? Line, string Message, string? Suppressed, bool Incomplete);
+
     public static List<string> ProjectsOf(string solution)
     {
         var dir = Path.GetDirectoryName(solution)!;
@@ -33,7 +39,7 @@ internal static partial class Check
 
     public static async Task<int> RunAsync(Args args, string workingDirectory, TextWriter output)
     {
-        var root = args.Count > 0 ? Path.GetFullPath(args.Positional(0, "the app"), workingDirectory) : Files.AppRoot(workingDirectory);
+        var root = RealPath(args.Count > 0 ? Path.GetFullPath(args.Positional(0, "the app"), workingDirectory) : Files.AppRoot(workingDirectory));
         var solution = Directory.EnumerateFiles(root, "*.slnx").Concat(Directory.EnumerateFiles(root, "*.sln")).FirstOrDefault()
             ?? throw new CliException($"No solution in {root}.");
 
@@ -55,14 +61,19 @@ internal static partial class Check
         var projects = ProjectsOf(solution);
         // The compiler's error log is the one record of what a suppression silenced: the build output omits it.
         var logs = Directory.CreateTempSubdirectory("levee-check-");
+        var unfinished = new ConcurrentDictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         try
         {
             await Parallel.ForEachAsync(projects, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) }, async (project, _) =>
             {
-                var (_, text) = await DotnetAsync("build", project, "--no-dependencies", "--no-restore", "-nologo", "-v:q", $"-p:LeveeCheckLogs={logs.FullName}");
+                var (analyzed, text) = await DotnetAsync("build", project, "--no-dependencies", "--no-restore", "-nologo", "-v:q", $"-p:LeveeCheckLogs={logs.FullName}");
                 foreach (var finding in Parse(text))
                 {
                     findings.Add(finding);
+                }
+                if (Unfinished(analyzed, text) is { } errors)
+                {
+                    unfinished[Path.GetFileNameWithoutExtension(project)] = errors;
                 }
             });
             foreach (var errorLog in logs.EnumerateFiles("*.sarif"))
@@ -80,44 +91,105 @@ internal static partial class Check
 
         var distinct = findings.Distinct().OrderBy(f => f.Rule, StringComparer.Ordinal).ThenBy(f => f.Project, StringComparer.Ordinal)
             .ThenBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.Line).ToList();
+        // A project that doesn't compile fails its analyzed build too: it's named once, as broken.
+        var incomplete = unfinished.Where(p => !broken.Contains(p.Key)).OrderBy(p => p.Key, StringComparer.Ordinal).ToList();
         if (args.Flag("json"))
         {
-            await output.WriteLineAsync(JsonSerializer.Serialize(distinct, LeveeJson.Options));
-            return distinct.Count == 0 && broken.Count == 0 ? 0 : 1;
+            List<Entry> entries = [
+                .. distinct.Select(f => new Entry(f.Rule, f.Project, f.File, f.Line, f.Message, f.Suppressed, Incomplete: false)),
+                .. broken.Select(p => new Entry(null, p, null, null, "Doesn't compile, analyzers aside, so its findings and those of the projects that reference it aren't all here.", null, Incomplete: true)),
+                .. incomplete.Select(p => new Entry(null, p.Key, null, null, Unanalyzed(p.Value), null, Incomplete: true)),
+            ];
+            await output.WriteLineAsync(JsonSerializer.Serialize(entries, LeveeJson.Options));
+            return entries.Count == 0 ? 0 : 1;
         }
         if (broken.Count > 0)
         {
             await output.WriteLineAsync($"{broken.Count} of {projects.Count} projects don't compile, analyzers aside, so their findings and those of projects that reference them aren't all here: "
                 + string.Join(", ", broken));
         }
-        if (distinct.Count == 0 && broken.Count == 0)
+        if (incomplete.Count > 0)
+        {
+            await output.WriteLineAsync($"{incomplete.Count} of {projects.Count} projects' analyzed builds failed on more than Levee's rules, so their analysis is incomplete "
+                + "and their findings aren't all here. Fix: clear every error but Levee's (dotnet build the project lists them), then check again.");
+            foreach (var (project, errors) in incomplete)
+            {
+                await output.WriteLineAsync($"  {project}");
+                foreach (var error in errors.Take(5))
+                {
+                    await output.WriteLineAsync($"      {error.Replace(root + Path.DirectorySeparatorChar, "", StringComparison.Ordinal)}");
+                }
+                if (errors.Count is 0 or > 5)
+                {
+                    await output.WriteLineAsync(errors.Count == 0 ? "      (its build failed with no error in its output)" : $"      and {errors.Count - 5} more");
+                }
+            }
+        }
+        if (distinct.Count == 0 && broken.Count == 0 && incomplete.Count == 0)
         {
             await output.WriteLineAsync($"No LEVEE findings in {projects.Count} projects.");
             return 0;
         }
         if (distinct.Count == 0)
         {
-            await output.WriteLineAsync($"No LEVEE findings in the {projects.Count - broken.Count} projects that compile.");
-            await output.WriteLineAsync($"Not on Levee yet: {broken.Count} project{(broken.Count == 1 ? " doesn't" : "s don't")} compile. The app is on Levee when this check is green.");
-            return 1;
+            await output.WriteLineAsync($"No LEVEE findings in the {projects.Count - broken.Count - incomplete.Count} projects analyzed in full.");
         }
-        var open = distinct.Where(f => f.Suppressed is null).ToList();
-        var debt = distinct.Where(f => f.Suppressed is not null).ToList();
-        await WriteAsync(open, root, output);
-        if (debt.Count > 0)
+        else
         {
-            await output.WriteLineAsync($"Suppressed ({debt.Count}): each still breaks its rule. Fix: change the code to follow it; "
-                + "where Levee has no way to express what the code needs, that's a gap in Levee to report, not a suppression to keep.");
-            await WriteAsync(debt, root, output);
+            var open = distinct.Where(f => f.Suppressed is null).ToList();
+            var debt = distinct.Where(f => f.Suppressed is not null).ToList();
+            await WriteAsync(open, root, output);
+            if (debt.Count > 0)
+            {
+                await output.WriteLineAsync($"Suppressed ({debt.Count}): each still breaks its rule. Fix: change the code to follow it; "
+                    + "where Levee has no way to express what the code needs, that's a gap in Levee to report, not a suppression to keep.");
+                await WriteAsync(debt, root, output);
+            }
+            await output.WriteLineAsync($"{open.Count} findings and {debt.Count} suppressed in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
         }
-        await output.WriteLineAsync($"{open.Count} findings and {debt.Count} suppressed in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
-        // An agent reads the last line as the verdict: a suppression is a rule still broken, so it's never "done".
-        await output.WriteLineAsync($"Not on Levee yet: {open.Count + debt.Count} rule{(open.Count + debt.Count == 1 ? " is" : "s are")} still broken. The app is on Levee when this check is green.");
         if (!compiled && broken.Count == 0)
         {
             await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");
         }
+        // An agent reads the last line as the verdict: a suppression is a rule still broken, so it's never "done".
+        List<string> why = [];
+        if (distinct.Count > 0)
+        {
+            why.Add($"{distinct.Count} rule{(distinct.Count == 1 ? " is" : "s are")} still broken");
+        }
+        if (broken.Count > 0)
+        {
+            why.Add($"{broken.Count} project{(broken.Count == 1 ? " doesn't" : "s don't")} compile");
+        }
+        if (incomplete.Count > 0)
+        {
+            why.Add($"analysis of {string.Join(", ", incomplete.Select(p => p.Key))} is incomplete");
+        }
+        await output.WriteLineAsync($"Not on Levee yet: {string.Join("; ", why)}. The app is on Levee when this check is green.");
         return 1;
+    }
+
+    private static string Unanalyzed(IReadOnlyList<string> errors) =>
+        "Its analyzed build failed on more than Levee's rules, so its findings aren't all here: "
+        + (errors.Count == 0 ? "its build failed with no error in its output." : string.Join(Environment.NewLine, errors));
+
+    /// <summary>
+    /// The directory with every link on its way resolved: the compiler applies an .editorconfig's sections by the sources' real
+    /// paths, so a build reached through a link (macOS's /tmp and /var) runs without them and passes what fails in the shell.
+    /// </summary>
+    internal static string RealPath(string directory)
+    {
+        var full = Path.GetFullPath(directory);
+        var real = Path.GetPathRoot(full)!;
+        foreach (var part in full[real.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            real = Path.Combine(real, part);
+            if (new DirectoryInfo(real).ResolveLinkTarget(returnFinalTarget: true) is { } target)
+            {
+                real = RealPath(target.FullName);
+            }
+        }
+        return real;
     }
 
     private static async Task WriteAsync(List<Finding> findings, string root, TextWriter output)
@@ -219,11 +291,39 @@ internal static partial class Check
             .Distinct()
             .OrderBy(p => p, StringComparer.Ordinal)];
 
-    [GeneratedRegex(@"\berror (?!LEVEE)[A-Z]+\d+:.*\[(?<project>[^\]]+\.csproj)\]$")]
+    /// <summary>
+    /// Why a project's analyzed build failed, when it wasn't only Levee's rules: its other errors, each once however many of its
+    /// target frameworks report it. Null when every rule ran: a build that failed on LEVEE errors alone is a complete analysis.
+    /// </summary>
+    internal static IReadOnlyList<string>? Unfinished(bool succeeded, string buildOutput)
+    {
+        if (succeeded)
+        {
+            return null;
+        }
+        List<string> errors = [.. buildOutput.Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => AnyError().IsMatch(line) && !Diagnostic().IsMatch(line))
+            .Select(line => ProjectSuffix().Replace(line, ""))
+            .Distinct()];
+        return errors.Count > 0 || !Parse(buildOutput).Any() ? errors : null;
+    }
+
+    // A multi-target project's diagnostics name it with the target they came from: [App.csproj::TargetFramework=net10.0].
+    private const string Project = @"\s*\[(?<project>[^\]]+?\.csproj)(?:::[^\]]*)?\]$";
+
+    [GeneratedRegex(@"\berror (?!LEVEE)[A-Z]+\d+:.*?" + Project)]
     private static partial Regex OtherError();
 
-    [GeneratedRegex(@"^(?:(?<file>[^:(]+(?::[^:(]+)?)(?:\((?<line>\d+),\d+\))?\s*:\s*)?error (?<rule>LEVEE\d+): (?<message>.*?)\s*\[(?<project>[^\]]+\.csproj)\]$")]
+    [GeneratedRegex(@"^(?:(?<file>[^:(]+(?::[^:(]+)?)(?:\((?<line>\d+),\d+\))?\s*:\s*)?error (?<rule>LEVEE\d+): (?<message>.*?)" + Project)]
     private static partial Regex Diagnostic();
+
+    // MSBuild's canonical error, with or without a code: "file(1,2): error CA1822:", "CSC : error CS0006:", "error MSB1009:".
+    [GeneratedRegex(@"(?:^|\)\s*:\s*|\s:\s)error(?:\s+[A-Za-z]+\d+)?\s*:")]
+    private static partial Regex AnyError();
+
+    [GeneratedRegex(Project)]
+    private static partial Regex ProjectSuffix();
 
     private static Task<(bool Ok, string Output)> DotnetAsync(params string[] arguments) =>
         DotnetAsync(new Dictionary<string, string>(), arguments);
