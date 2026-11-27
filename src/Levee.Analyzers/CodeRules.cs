@@ -47,6 +47,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.TypeOf, OperationKind.DynamicInvocation);
             start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
             start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnSeparateContextHeld(c)), OperationKind.VariableDeclarator, OperationKind.AnonymousFunction,
@@ -503,9 +504,35 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "DeclaredMembers", "DeclaredMethods", "DeclaredProperties", "DeclaredFields", "DeclaredConstructors", "DeclaredEvents", "DeclaredNestedTypes",
         "TypeInitializer");
 
+    /// <summary>
+    /// The other ways to a by-name surface: the catalog's names read off [Operation] by reflection, and an operation of a type
+    /// known only at run time handed to the Dispatcher through dynamic.
+    /// </summary>
+    private static void OnByName(OperationAnalysisContext context)
+    {
+        switch (context.Operation)
+        {
+            // In an attribute's argument, typeof names the attribute; anywhere else it's the lookup's key.
+            case ITypeOfOperation { TypeOperand: INamedTypeSymbol operand } when IsLevee(operand, "OperationAttribute")
+                && !context.Operation.Syntax.Ancestors().Any(a => a is Microsoft.CodeAnalysis.CSharp.Syntax.AttributeSyntax):
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), "[Operation] is read by reflection"));
+                break;
+            case IDynamicInvocationOperation { Operation: IDynamicMemberReferenceOperation { Instance.Type: INamedTypeSymbol receiver } member }
+                when IsLevee(receiver, "Dispatcher"):
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"Dispatcher.{member.MemberName} is called through dynamic"));
+                break;
+        }
+    }
+
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
+        if (invocation.TargetMethod.Name is "GetCustomAttribute" or "GetCustomAttributes" or "IsDefined"
+            && invocation.TargetMethod.TypeArguments.Any(t => IsLevee(t as INamedTypeSymbol, "OperationAttribute")))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, invocation.Syntax.GetLocation(), "[Operation] is read by reflection"));
+            return;
+        }
         if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && OnReflected(context, role, invocation.TargetMethod.Name, Reflected(invocation)))
         {
             return;

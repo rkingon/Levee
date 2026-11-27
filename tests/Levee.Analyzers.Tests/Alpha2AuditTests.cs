@@ -217,4 +217,28 @@ public sealed class Alpha2AuditTests
         Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
         Assert.Equal(refused, output.Ids.Contains("LEVEE005"));
     }
+
+    [Theory]
+    [InlineData("System.Linq.Enumerable.ToList(System.Linq.Enumerable.Select(typeof(Program).Assembly.GetTypes(), t => System.Reflection.CustomAttributeExtensions.GetCustomAttribute<OperationAttribute>(t)))", true)]
+    [InlineData("System.Attribute.GetCustomAttribute(typeof(Program), typeof(OperationAttribute))", true)]
+    [InlineData("d.SendAsync((dynamic)op, p, System.Threading.CancellationToken.None)", true)]
+    [InlineData("d.SendAsync((IOperation<int>)op, p, default)", false)]
+    [InlineData("System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.ObsoleteAttribute>(typeof(Program))", false)]
+    [InlineData("Tagged.Kind", false)]
+    public async Task Operations_are_found_by_name_only_by_Levees_projections(string expression, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true), $$"""
+            using Levee;
+            [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class KindAttribute(System.Type kind) : System.Attribute { public System.Type Kind { get; } = kind; }
+            [Kind(typeof(OperationAttribute))] public static class Tagged { public static System.Type Kind => typeof(int); }
+            public static class Program
+            {
+                public static void Main() { }
+                public static object? Find(Dispatcher d, object op, Principal p) => {{expression}};
+            }
+            """, "App.Host", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
+    }
 }
