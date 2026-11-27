@@ -283,10 +283,17 @@ public sealed class CliTests : IDisposable
         // Oxbow's tables stay in public whatever the app's schema is.
         Assert.Contains("on public.oxbow_migration from app;", (await Run(_dir, "db", "grants", "app", "--jobs", "--schema", "elsewhere")).Output, StringComparison.Ordinal);
         Assert.Contains("create policy levee_shared_read on public.plans for select using (true);", (await Run(_dir, "db", "share", "plans")).Output, StringComparison.Ordinal);
+        // A table in a schema of its own, its policy calling Levee's functions where they are.
+        var billing = (await Run(_dir, "db", "isolate", "billing.invoices", "tenant_id", "--schema", "levee")).Output;
+        Assert.Contains("on billing.invoices", billing, StringComparison.Ordinal);
+        Assert.Contains("levee.levee_scope()", billing, StringComparison.Ordinal);
+        Assert.Contains("on billing.plans for select", (await Run(_dir, "db", "share", "billing.plans")).Output, StringComparison.Ordinal);
     }
 
     [Theory]
     [InlineData("db", "isolate", "notes; drop table x", "tenant")]
+    [InlineData("db", "isolate", "a.b.c", "tenant")]
+    [InlineData("db", "share", "Billing.plans")]
     [InlineData("db", "grants", "App")]
     [InlineData("db", "nope")]
     [InlineData("nope")]

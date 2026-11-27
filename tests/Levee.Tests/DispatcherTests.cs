@@ -42,6 +42,15 @@ public sealed class DispatcherTests
     }
 
     [Fact]
+    public async Task An_input_built_with_null_where_its_type_forbids_it_is_refused_as_invalid()
+    {
+        var result = await Build().SendAsync(new Remember("acme", null!, "1234"), Ada, CancellationToken.None);
+
+        Assert.Equal((ErrorKind.Validation, LeveeErrors.InvalidInput), (result.Error!.Kind, result.Error.Code));
+        Assert.Empty(_store.Begun);
+    }
+
+    [Fact]
     public async Task A_read_runs_read_only_at_platform_scope_and_isnt_audited()
     {
         var result = await Build().SendAsync(new Echo("hi"), Ada, CancellationToken.None);

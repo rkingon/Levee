@@ -277,15 +277,32 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
         var scoped = ScopeOf(descriptor, operation, principal, pinned);
+        // Redacted once, for the audit and the outcome both. An input built in-process can hold what its own type refuses
+        // (null where it's non-nullable): refused here, as the wire would, before any transaction opens.
+        string? input = null;
+        Result<object?>? refused = null;
+        try
+        {
+            input = Redact(operation);
+        }
+        catch (JsonException e)
+        {
+            LogInputRefused(log, e, descriptor.Name);
+            refused = Error.InvalidInput(e, descriptor.Name);
+        }
+        catch (Exception)
+        {
+            // Unredactable for another reason (a getter that throws): a bug, which the audit's own redaction fails on.
+        }
         Result<object?> result;
         try
         {
-            result = scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, principal, scoped.Value, answer, ct) : scoped.Error;
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, ct) : scoped.Error);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             // The caller stopped waiting: it still ended, rolled back, and the outcome is told so before the cancel goes on.
-            await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, input ?? SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
                 Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was cancelled by its caller.")), CancellationToken.None);
             throw;
         }
@@ -295,7 +312,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             result = Unexpected(e, descriptor);
         }
         // After the commit, the caller's cancel can't undo the operation, so it doesn't stop it being told either.
-        await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+        await RecordOutcomeAsync(new OperationOutcome(descriptor, input ?? SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
             result.IsSuccess ? null : result.Error), CancellationToken.None);
         activity?.SetTag("levee.outcome", result.IsSuccess ? "ok" : result.Error.Code);
         if (!result.IsSuccess)
@@ -456,7 +473,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             _ => Error.Forbidden(LeveeErrors.ScopeUndeclared, $"{descriptor.Name} must declare one scope: its input's, its caller's, or the platform's."),
         };
 
-    private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, WorkScope scope,
+    private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
         Func<object?, object?>? answer, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
@@ -506,7 +523,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             }
             if (descriptor.Audited)
             {
-                await unit.AuditAsync(new AuditEntry(context.Now, scope.Key, principal.Subject, descriptor.Name, Redact(operation)), ct);
+                await unit.AuditAsync(new AuditEntry(context.Now, scope.Key, principal.Subject, descriptor.Name, input ?? Redact(operation)), ct);
             }
             // Once COMMIT is sent, a cancelled wait would leave the caller not knowing whether it happened.
             await unit.CommitAsync(CancellationToken.None);

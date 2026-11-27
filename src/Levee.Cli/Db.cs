@@ -26,13 +26,13 @@ internal static partial class Db
                 return;
             case "isolate":
                 output.WriteLine(LeveeSchema.Isolation(
-                    $"{schema}.{Identifier(args.Positional(1, "the table"), "table")}",
+                    Table(args.Positional(1, "the table"), schema),
                     Identifier(args.Positional(2, "the scope column"), "column"),
                     Identifier(args.Option("type") ?? "text", "type"),
                     schema));
                 return;
             case "share":
-                output.WriteLine(LeveeSchema.Shared($"{schema}.{Identifier(args.Positional(1, "the table"), "table")}", schema));
+                output.WriteLine(LeveeSchema.Shared(Table(args.Positional(1, "the table"), schema), schema));
                 return;
             case "grants":
                 var role = Identifier(args.Positional(1, "the app's role"), "role");
@@ -48,6 +48,14 @@ internal static partial class Db
                 throw new CliException($"There's no db command {other}: schema, isolate, share or grants.");
         }
     }
+
+    /// <summary>The table qualified: by its own schema when it names one (billing.invoices), else by Levee's.</summary>
+    private static string Table(string value, string schema) => value.Split('.') switch
+    {
+        [var table] => $"{schema}.{Identifier(table, "table")}",
+        [var own, var table] => $"{Identifier(own, "schema")}.{Identifier(table, "table")}",
+        _ => throw new CliException($"'{value}' isn't a table name: table, or schema.table."),
+    };
 
     private static string Identifier(string value, string what) =>
         SqlName().IsMatch(value) ? value : throw new CliException($"'{value}' isn't a {what} name: lowercase letters, digits and underscores.");

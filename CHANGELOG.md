@@ -6,6 +6,9 @@
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
   startup, the guard on the context, the audit, classified failures). `AddLeveePostgres<TContext>()` is the unit of work.
+- An input built in-process with null where its type forbids it is refused as `input.invalid` before any transaction
+  opens, as the wire refuses it, not failed as `internal` by the audit's redaction. Each call's input is redacted once,
+  for the audit and the outcome both.
 - **Breaking:** internal by default, public only what an app writes against. Internal now: the dispatcher's by-name and
   JSON entry points (`SendJsonAsync`, `SendFromClientAsync`, `SubscribeJsonAsync`, `SubscribeFromClientAsync`,
   `AuthorizeAsync`, `AuthorizeFromClientAsync`), which Levee's projections use for an app; `CurrentOperation`; and
@@ -23,6 +26,7 @@
 - LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.
 
 ### Levee.Cli
+- `dotnet levee db isolate` and `share` take a table in a schema of its own (`billing.invoices`), as the docs say.
 - `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
   a migration build, never makes it green.
 - `dotnet levee check` takes stock partway through a migration: projects that don't compile are named, and the rest are
