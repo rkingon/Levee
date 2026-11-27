@@ -52,13 +52,11 @@
   grants first, then the app's own.
 - Before the first operation, what the role can reach beyond Levee's grants (by table or column, on the search path) is
   checked as what the context maps is.
-- `[SeparateContext("OpenIddict")]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the
-  app's, used by the library it names outside every operation. The host's start refuses one that maps an entity that
-  isn't that library's (an assembly built with Levee is the app's, whatever the attribute names), or a table or view the
-  app's context maps (every one an entity is split across), opening it as
-  it's registered and refusing one it can't open; LEVEE018 refuses the app's own code holding it.
-
-### Generator and analyzers
+- `[SeparateContext("OpenIddict")]` and `AddLeveeSeparateContext<T>`: a separate bounded context's store (identity:
+  OpenIddict's) beside the app's, used by the library it names outside every operation, kept apart by the database: it
+  connects as a role of its own, and the app's role reaches only the tables Levee's policies hold. The host's start
+  refuses it registered any other way, connecting as the app's role, or mapping an entity that isn't the library's (an
+  assembly built with Levee is the app's); LEVEE018 refuses the app's own code holding it.
 - LEVEE021 (new): a principal is made only where the app composes (Composition, a Host, a Tool), and a process sends
   through its `ProcessContext`, never a `Dispatcher` it holds.
 - LEVEE112 (new): one process per input across the composed app, or a queued run would go to whichever DI resolves.

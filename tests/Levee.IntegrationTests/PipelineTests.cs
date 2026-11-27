@@ -689,29 +689,46 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     private sealed class SideDbContext(DbContextOptions<SideDbContext> options) : DbContext(options);
 
     [Theory]
-    [InlineData("identity", "clients", false, null)]
-    [InlineData("public", "notes", false, "IdentityDb is a separate bounded context's, but maps public.notes")]
-    [InlineData("identity", "clients", true, "ForeignDb is OpenIddict's store ([SeparateContext]), but maps Ledger, which isn't OpenIddict's")]
-    [InlineData("identity", "clients", null, "OwnNamedDb is Levee.IntegrationTests's store ([SeparateContext]), but maps Ledger, which isn't Levee.IntegrationTests's")]
-    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_its_librarys_tables_alone(string schema, string table, bool? foreign, string? refusal)
+    [InlineData("own role", null)]
+    [InlineData("app role", "IdentityDb connects as app, the app's own role")]
+    [InlineData("app entity", "maps Ledger, the app's own (its assembly is built with Levee)")]
+    [InlineData("foreign entity", "maps ClientRow, which isn't OpenIddict's")]
+    [InlineData("plain AddDbContext", "IdentityDb is a DbContext besides SampleDbContext")]
+    [InlineData("interface", "IdentityDb is a DbContext besides SampleDbContext")]
+    [InlineData("keyed", "IdentityDb is a DbContext besides SampleDbContext")]
+    public async Task A_separate_store_is_registered_one_way_and_connects_as_a_role_of_its_own(string how, string? refusal)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = "none";
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
-        if (foreign is null)
+        // The fixture's owner stands in for the identity store's own role.
+        switch (how)
         {
-            builder.Services.AddDbContext<OwnNamedDb>(o => o.UseNpgsql(postgres.Owner));
+            case "own role":
+                builder.Services.AddLeveeSeparateContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+            case "app role":
+                builder.Services.AddLeveeSeparateContext<IdentityDb>(o => o.UseNpgsql(postgres.App));
+                break;
+            case "app entity":
+                builder.Services.AddLeveeSeparateContext<OwnNamedDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+            case "foreign entity":
+                builder.Services.AddLeveeSeparateContext<ForeignDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+            case "plain AddDbContext":
+                builder.Services.AddDbContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner));
+                break;
+            case "interface":
+                builder.Services.AddLeveeSeparateContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner));
+                builder.Services.AddScoped<IIdentityStore, IdentityDb>();
+                break;
+            default:
+                builder.Services.AddLeveeSeparateContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner));
+                builder.Services.AddKeyedScoped<IdentityDb>("other");
+                break;
         }
-        else if (foreign == true)
-        {
-            builder.Services.AddDbContext<ForeignDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
-        }
-        else
-        {
-            builder.Services.AddDbContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
-        }
-        builder.Services.AddSingleton(new IdentityTable(schema, table));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
         using var host = builder.Build();
@@ -728,68 +745,14 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
     }
 
-    private sealed record IdentityTable(string Schema, string Table);
-
-    [Theory]
-    [InlineData("interface")]
-    [InlineData("factory")]
-    [InlineData("split")]
-    public async Task A_separate_store_is_checked_however_it_is_registered_and_mapped(string how)
-    {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Configuration["Sample:BannedWords"] = "none";
-        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
-        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
-        switch (how)
-        {
-            case "interface":
-                // Behind an interface alone: resolved the way the library gets it.
-                builder.Services.AddSingleton(new DbContextOptionsBuilder<AppTablesDb>().UseNpgsql(postgres.Owner).Options);
-                builder.Services.AddScoped<IIdentityStore, AppTablesDb>();
-                break;
-            case "factory":
-                builder.Services.AddDbContextFactory<AppTablesDb>(o => o.UseNpgsql(postgres.Owner));
-                break;
-            default:
-                builder.Services.AddDbContext<SplitSeparateDb>(o => o.UseNpgsql(postgres.Owner));
-                break;
-        }
-        builder.Services.AddLeveeOperations(builder.Configuration);
-        builder.Services.AddLeveePostgres<SampleDbContext>();
-        using var host = builder.Build();
-
-        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
-
-        Assert.Contains("but maps public.notes", refused.Message, StringComparison.Ordinal);
-    }
-
     private interface IIdentityStore;
-
-    [SeparateContext("Levee.IdentityStandIn")]
-    private sealed class AppTablesDb(DbContextOptions<AppTablesDb> options) : DbContext(options), IIdentityStore
-    {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable("notes"));
-    }
-
-    // Its own table first, then split onto the app's: every table it maps is compared, not the first.
-    [SeparateContext("Levee.IdentityStandIn")]
-    private sealed class SplitSeparateDb(DbContextOptions<SplitSeparateDb> options) : DbContext(options)
-    {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e =>
-            {
-                e.ToTable("clients", "identity").SplitToTable("notes", "public", t => t.Property(r => r.Tenant));
-            });
-    }
 
     // Levee.IdentityStandIn stands in for a library built without Levee, as OpenIddict is.
     [SeparateContext("Levee.IdentityStandIn")]
-    private sealed class IdentityDb(DbContextOptions<IdentityDb> options, IdentityTable table) : DbContext(options)
+    private sealed class IdentityDb(DbContextOptions<IdentityDb> options) : DbContext(options), IIdentityStore
     {
-        public IdentityTable Table => table;
-
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable(table.Table, table.Schema));
+            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable("clients", "identity"));
     }
 
     // The app's own assembly named as the library: an assembly built with Levee is the app's, whatever the attribute says.
@@ -799,17 +762,12 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Ledger>(e => e.ToTable("clients", "identity"));
     }
 
+    // Another library's entity: not OpenIddict's, and not the app's either.
     [SeparateContext("OpenIddict")]
     private sealed class ForeignDb(DbContextOptions<ForeignDb> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-            modelBuilder.Entity<Ledger>(e => e.ToTable("clients", "identity"));
-    }
-
-    // The two cases map different tables with one context type: each its own model.
-    private sealed class PerTable : Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory
-    {
-        public object Create(DbContext context, bool designTime) => (context.GetType(), (context as IdentityDb)?.Table, designTime);
+            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable("clients", "identity"));
     }
 
     [Fact]

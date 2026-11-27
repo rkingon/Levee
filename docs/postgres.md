@@ -86,16 +86,15 @@ The guard is on the context `AddLeveePostgres` names, so another context registe
 in the one context. The guard reaches the context through `DbContextOptions<TContext>`, so a context that configures
 itself in `OnConfiguring` instead fails the host's start too (outside a host, its first transaction), with the fix.
 
-One context is exempt: a separate bounded context's, marked `[SeparateContext("OpenIddict")]` with the library it serves. A generic subdomain the app doesn't model
-(identity: OpenIddict's applications, authorizations and tokens) keeps its own store, used by the library it serves
-outside every operation, since it's not the product's data and not a tenant's. Its tables are its own (its own schema,
-written by its own role or the owner): the host's start refuses it if it maps an entity that isn't the library's (nor
-the app's subclass of one; an assembly built with Levee is the app's, whatever the attribute names), or a table or view
-the app's context maps (every one an entity is split across), so the
-app's own data can't hide in it. It's opened the way it's registered (itself, behind an interface, through its
-factory), and one that can't be opened is refused, not trusted; and the
-build refuses the app's own code holding it (LEVEE018), so only the library's registration in Composition or the Host
-names it.
+One context is exempt: a separate bounded context's, marked `[SeparateContext("OpenIddict")]` with the library it
+serves. A generic subdomain the app doesn't model (identity: OpenIddict's applications, authorizations and tokens) keeps
+its own store, used by the library outside every operation, since it's not the product's data and not a tenant's. The
+database keeps it apart, not an inspection of what it maps: it connects as a role of its own, granted only its schema,
+while the app's role is granted only the tables Levee's policies hold. So it's registered one way,
+`AddLeveeSeparateContext<T>`, and the host's start refuses it registered any other way (keyed, behind an interface,
+through a factory), connecting as the app's own role, or mapping an entity that isn't the library's (an assembly built
+with Levee is the app's, whatever the attribute names). The build refuses the app's own code holding it (LEVEE018), so
+only the library's registration names it.
 
 ```csharp
 [SeparateContext("OpenIddict")]
@@ -104,8 +103,8 @@ public sealed class IdentityDb(DbContextOptions<IdentityDb> options) : DbContext
     protected override void OnModelCreating(ModelBuilder model) { model.HasDefaultSchema("identity"); model.UseOpenIddict(); }
 }
 
-// Composition
-services.AddDbContext<IdentityDb>(o => o.UseNpgsql(identityConnectionString));
+// Composition: its own connection string, as its own role
+services.AddLeveeSeparateContext<IdentityDb>(o => o.UseNpgsql(identityConnectionString));
 services.AddOpenIddict().AddCore(o => o.UseEntityFrameworkCore().UseDbContext<IdentityDb>());
 ```
 
