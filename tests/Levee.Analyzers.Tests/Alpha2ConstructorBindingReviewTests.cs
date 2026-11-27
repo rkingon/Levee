@@ -9,10 +9,11 @@ public sealed class Alpha2ConstructorBindingReviewTests
         }
         """;
 
+    // Through Overloads' protected constructor, refused however it's bound: a base call binds the base's positional constructor.
     [Theory]
     [InlineData(Overloads, "Counts(Ordered, Delivered)", true)]
-    [InlineData(Overloads, "Counts(Delivered, Ordered)", false)]
-    [InlineData(Overloads, "Counts(Ordered: Ordered, Delivered: Delivered)", false)]
+    [InlineData(Overloads, "Counts(Delivered, Ordered)", true)]
+    [InlineData(Overloads, "Counts(Ordered: Ordered, Delivered: Delivered)", true)]
     [InlineData("public record Counts(int Ordered, int Delivered);", "Counts(Ordered: Ordered, Delivered)", false)]
     [InlineData("public record Counts(int Ordered, int Delivered); public record Line(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Line(Ordered, Delivered)", true)]
     [InlineData("public record Counts(int Ordered, int Delivered); public record Line(int Ordered, int Delivered) : Counts(Ordered, Delivered);", "Line(Ordered, Delivered)", false)]
@@ -32,6 +33,8 @@ public sealed class Alpha2ConstructorBindingReviewTests
     [Theory]
     [InlineData("public")]
     [InlineData("private")]
+    // A constructor of its own, annotated or not, decides where values land: the contract language builds an object only by its
+    // positional constructor or a parameterless one, so this is refused where it's declared, and never dropped where it's composed.
     public async Task An_annotated_constructor_supported_by_the_wire_composes(string access)
     {
         var contracts = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""
@@ -45,7 +48,7 @@ public sealed class Alpha2ConstructorBindingReviewTests
             [Operation("review.price", "member", Platform = true)]
             public sealed record Quote(Price Price) : IOperation<int>;
             """, "Shop.Contracts", GeneratorTests.Levee);
-        Assert.DoesNotContain("LEVEE104", contracts.Ids);
+        Assert.Contains("LEVEE104", contracts.Ids);
         var composition = await Probe.CompileAsync(new Probe.Settings("Composition"), "internal static class Wiring;",
             "Shop.Composition", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference());
         Assert.DoesNotContain("LEVEE104", composition.Ids);

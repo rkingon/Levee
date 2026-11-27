@@ -701,13 +701,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
                     {
                         continue;
                     }
-                    var value = bound.Value;
-                    while (value is Microsoft.CodeAnalysis.Operations.IConversionOperation conversion)
+                    // The base's own positional constructor: another of its constructors may route values on through this(...).
+                    if (parameter.ContainingSymbol.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax { ParameterList: not null })
                     {
-                        value = conversion.Operand;
+                        return $"{t.Name} calls a constructor of its base's own, not its positional one, which may send a value on to another member";
                     }
-                    if (!(value is Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation source
-                        && string.Equals(source.Parameter.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)))
+                    // The parameter itself, unconverted: a cast (a narrowing one loses the caller's value) is a value of another.
+                    if (!(bound.Value is Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation source
+                        && string.Equals(source.Parameter.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)
+                        && SymbolEqualityComparer.Default.Equals(source.Parameter.Type, parameter.Type)))
                     {
                         return $"{t.Name} passes {argument.Expression} to its base's {parameter.Name}";
                     }
@@ -820,6 +822,17 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"is an interface, which the wire writes but can't read back. {Language}");
         }
+        // Judged from its source, so it's the contract's own: a record of another assembly (Kernel's) is seen here only as
+        // metadata, which hides how its constructors route values.
+        // Levee's own (ChangeSignal) are judged by Levee's tests.
+        if (named.ContainingAssembly.Name == "Levee")
+        {
+            return null;
+        }
+        if (!SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly))
+        {
+            return (here, $"is {named.ContainingAssembly.Name}'s, not this contract's own, so how it's built can't be judged here. Fix: declare the contract's own record beside the operation (mapping from {named.Name} in the handler), or carry the value as a value object or an enum");
+        }
         if (named.TypeKind is not (TypeKind.Class or TypeKind.Struct))
         {
             return (here, $"is a {named.TypeKind.ToString().ToLowerInvariant()} of the app's, which isn't in the contract language: a value is a value object, an object a record. {Language}");
@@ -859,12 +872,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, "has more than one public constructor and none the wire picks, so it writes it but can't read it back. Fix: a positional record, its one constructor");
         }
-        // A constructor body of the app's own decides which member each of its values lands in, where no schema shows it; a
-        // record's positional constructor can't, nor can one taking a single value.
+        // A constructor of the app's own (its body, a this(...) it chains to) decides which member each value lands in, where no
+        // schema shows it: the wire builds a contract's object only by its positional constructor, or a parameterless one.
         var positional = constructor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax { ParameterList: not null };
-        if (constructor.Parameters.Length > 1 && !positional && constructor.DeclaringSyntaxReferences.Length > 0)
+        if (constructor.Parameters.Length > 0 && !positional)
         {
-            return (here, "is read through a constructor of its own, which decides which member each value lands in where no schema shows it. Fix: a positional record, whose constructor sets each member from the parameter of its name");
+            return (here, "is read through a constructor of its own, which decides which member each value lands in where no schema shows it. Fix: a positional record, whose constructor sets each member from the parameter of its name (checking a value in its member's initializer), or a value object for a single checked value");
         }
         // Every member the wire writes, the type's own and inherited, most derived first.
         var wired = new List<(ISymbol Member, ITypeSymbol Type)>();
@@ -894,6 +907,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         // A positional record forwards to its base by name: an argument read from another parameter lands a value in another member.
+        if (named.BaseType is { } baseOf && baseOf.SpecialType is not (SpecialType.System_Object or SpecialType.System_ValueType) && baseOf.ContainingAssembly.Name != "Levee"
+            && !SymbolEqualityComparer.Default.Equals(baseOf.ContainingAssembly, compilation.Assembly))
+        {
+            return (here, $"derives from {baseOf.Name}, {baseOf.ContainingAssembly.Name}'s, so how its values reach their members can't be judged here. Fix: declare the contract's own record, with no base from another assembly");
+        }
         if (Misrouted(named, compilation) is { } misrouted)
         {
             return (here, $"{misrouted}, so a value can land in another member. Fix: forward each base parameter as the parameter of its own name: : Base(Ordered, Delivered)");

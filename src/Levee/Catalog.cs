@@ -149,8 +149,8 @@ public sealed class OperationCatalog
         }
         // Every contract proven against the wire where the catalog is made (a host's start, the generated catalog test), not
         // when a caller first meets it: one the wire refuses would otherwise fail its calls, and every listing of the catalog.
-        Prove(list.Select(o => (o.Name, o.InputType)));
-        Prove(list.Select(o => (o.Name, o.ResultType)), inputs: false);
+        Prove(list.Select(o => (o.Name, o.InputType, true, o.InputType.Assembly))
+            .Concat(list.Select(o => (o.Name, o.ResultType, false, o.InputType.Assembly))));
         _byName = list.ToFrozenDictionary(o => o.Name, StringComparer.Ordinal);
         _byType = list.ToFrozenDictionary(o => o.InputType);
         All = list;
@@ -158,9 +158,13 @@ public sealed class OperationCatalog
 
     /// <param name="contracts">Each contract type, by the operation it belongs to.</param>
     /// <param name="inputs">Read from callers, so also proven to keep every value read; a result is only proven readable.</param>
-    internal static void Prove(IEnumerable<(string Operation, Type Contract)> contracts, bool inputs = true)
+    internal static void Prove(IEnumerable<(string Operation, Type Contract)> contracts, bool inputs = true) =>
+        Prove(contracts.Select(c => (c.Operation, c.Contract, inputs, c.Contract.Assembly)));
+
+    /// <param name="contracts">Each contract type by its operation, whether it's read from callers, and the assembly whose own records it may carry: the operation's.</param>
+    private static void Prove(IEnumerable<(string Operation, Type Contract, bool Input, System.Reflection.Assembly Owner)> contracts)
     {
-        var refused = contracts.Select(c => (c.Operation, c.Contract, Problem: Unwired(c.Contract, inputs))).Where(c => c.Problem is not null).ToList();
+        var refused = contracts.Select(c => (c.Operation, c.Contract, Problem: Unwired(c.Contract, c.Input, c.Owner))).Where(c => c.Problem is not null).ToList();
         if (refused.Count > 0)
         {
             throw new InvalidOperationException(string.Join(Environment.NewLine,
@@ -168,12 +172,12 @@ public sealed class OperationCatalog
         }
     }
 
-    private static string? Unwired(Type type, bool input)
+    private static string? Unwired(Type type, bool input, System.Reflection.Assembly owner)
     {
         try
         {
             LeveeJson.Schema(type);
-            return Outside(type, input);
+            return Outside(type, input, owner);
         }
         catch (InvalidOperationException e)
         {
@@ -189,7 +193,7 @@ public sealed class OperationCatalog
     /// published: scalars, enums, value objects, the collections above, objects the wire constructs (an input's every member
     /// read, not only written), and abstract types whose every subtype has a discriminator.
     /// </summary>
-    private static string? Outside(Type root, bool input)
+    private static string? Outside(Type root, bool input, System.Reflection.Assembly owner)
     {
         var seen = new HashSet<Type>();
         var next = new Stack<Type>([root]);
@@ -232,6 +236,20 @@ public sealed class OperationCatalog
             if (type.IsInterface)
             {
                 return $"{type.Name} is an interface, which the wire writes but can't read back." + language;
+            }
+            // Levee's own (ChangeSignal) are judged by Levee's tests.
+            for (var baseOf = type.BaseType; baseOf is not null && baseOf != typeof(object) && baseOf != typeof(ValueType); baseOf = baseOf.BaseType)
+            {
+                if (baseOf.Assembly != owner && baseOf.Assembly != typeof(OperationCatalog).Assembly)
+                {
+                    return $"{type.Name} derives from {baseOf.Name}, {baseOf.Assembly.GetName().Name}'s, so how its values reach their members can't be judged "
+                        + "where the contract is. Fix: declare the contract's own record, with no base from another assembly (LEVEE104).";
+                }
+            }
+            if (type.Assembly != owner && type.Assembly != typeof(OperationCatalog).Assembly)
+            {
+                return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own, so how it's built can't be judged where the contract is. "
+                    + "Fix: declare the contract's own record beside the operation, or carry the value as a value object or an enum (LEVEE104).";
             }
             var info = LeveeJson.Options.GetTypeInfo(type);
             if (info.Kind != System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object)

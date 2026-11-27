@@ -575,8 +575,10 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
 - **Contracts are written in the contract language**: what the wire reads back as it writes it, and nothing else. Scalars
   (strings, numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays,
   `List<T>`, `IReadOnlyList<T>` and their kin (one dimension; not `IReadOnlySet<T>`, which the wire can't build), and
-  dictionaries keyed by a scalar or enum; positional records (or records whose every member sets on its own, `[JsonInclude]`
-  counting) that forward to a base parameter by its own name, and records whose every declared subtype has a discriminator
+  dictionaries keyed by a scalar or enum; the contract's own records (declared beside its operations, where the build reads
+  them), built only by their positional constructor or a parameterless one (`[JsonInclude]` setters counting), each value
+  forwarded unchanged to the base's positional constructor by its own name; and records whose every declared subtype has a
+  discriminator. A Kernel type crosses into a contract as a value object or an enum, never as a record
   (`[JsonDerivedType(typeof(Card), "card")]`). Not an interface (written, never read back), a collection of the app's own,
   or a constructor of two or more values written by hand, which decides where each value lands where no schema shows
   it. An input's every member is one it reads: a computed member, or `ScopeKey` implemented publicly, is a caller's

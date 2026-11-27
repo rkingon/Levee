@@ -668,11 +668,9 @@ public sealed class MarksTests
 
 public sealed class ValueObjectValidationException(string message) : Exception(message);
 
-public sealed record Email
+public sealed record Email(string Value)
 {
-    public Email(string value) => Value = value.Contains('@', StringComparison.Ordinal) ? value : throw new ValueObjectValidationException("Not an email.");
-
-    public string Value { get; }
+    public string Value { get; } = Value.Contains('@', StringComparison.Ordinal) ? Value : throw new ValueObjectValidationException("Not an email.");
 }
 
 [Operation("probe.validated", "member", Platform = true)]
@@ -749,11 +747,9 @@ public sealed class SixthAuditFixTests
     }
 }
 
-public sealed record Leaky
+public sealed record Leaky(string Value)
 {
-    public Leaky(string value) => Value = value.Length > 0 ? value : throw new InvalidOperationException("connection=Host=db;Password=hunter2");
-
-    public string Value { get; }
+    public string Value { get; } = Value.Length > 0 ? Value : throw new InvalidOperationException("connection=Host=db;Password=hunter2");
 }
 
 [Operation("probe.leaky", "member", Platform = true)]
