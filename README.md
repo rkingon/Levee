@@ -271,7 +271,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 |---|---|
 | LEVEE001 | A project that references Levee declares its `LeveeRole`. |
 | LEVEE002 | A role references only the roles it may (table above). |
-| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `Guid.CreateVersion7()` with no time; `TimeProvider.System` only where the app composes (Composition, Host, Tool). |
+| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `Guid.CreateVersion7()` with no time; `TimeProvider.System` only where the app composes (Composition, Host, Tool); no `TimeProvider` or `IClock` held by a handler, whose time is `OperationContext.Now`. |
 | LEVEE004 | No `SaveChanges`, transaction control, `Commit`/`Rollback`, or opening or committing Levee's unit of work outside tests: the dispatcher commits. |
 | LEVEE005 | No service location (`GetService`, keyed services, `ActivatorUtilities`) outside where the app composes (Composition, Host, Tool) or tests. |
 | LEVEE006 | A Levee rule is suppressed only beside the code with a reason: `Justification`, or a `// reason` on the pragma. Never project-wide: an assembly attribute, `NoWarn`, a ruleset, or an `.editorconfig` or global config severity fails the build. Not configurable itself. |

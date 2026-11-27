@@ -138,4 +138,40 @@ public sealed class FalseNegativeTests
             Assert.DoesNotContain("handed to", message, StringComparison.Ordinal);
         }
     }
+
+    private const string Clocks = """
+        using Levee;
+        using System;
+        using System.Collections.Generic;
+        using System.Threading;
+        using System.Threading.Tasks;
+        namespace NodaTime
+        {
+            public readonly struct Instant;
+            public interface IClock { Instant GetCurrentInstant(); }
+        }
+        [Operation("notes.annotate", "member", Platform = true)] public sealed record Annotate : IOperation<string>;
+        [Operation("notes.ticks", "member", Platform = true)] public sealed record Ticks : ISubscription<string>;
+        public sealed record LeaseInput(string Key);
+
+        """;
+
+    [Theory]
+    [InlineData("Application", "internal sealed class AnnotateHandler(TimeProvider time) : IOperationHandler<Annotate, string> { public Task<Result<string>> HandleAsync(Annotate o, OperationContext c, CancellationToken ct) => Task.FromResult<Result<string>>($\"{time.GetUtcNow():O}\"); }", true)]
+    [InlineData("Application", "internal sealed class AnnotateHandler(Lazy<NodaTime.IClock> clock) : IOperationHandler<Annotate, string> { public Task<Result<string>> HandleAsync(Annotate o, OperationContext c, CancellationToken ct) => Task.FromResult<Result<string>>($\"{clock.Value.GetCurrentInstant()}\"); }", true)]
+    [InlineData("Application", "internal sealed class TicksHandler : ISubscriptionHandler<Ticks, string> { public required TimeProvider Time { get; init; } public async IAsyncEnumerable<string> SubscribeAsync(Ticks s, SubscriptionContext c, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct) { await Task.Yield(); yield return Time.GetUtcNow().ToString(\"O\"); } }", true)]
+    [InlineData("Application", "internal sealed class AnnotateHandler : IOperationHandler<Annotate, string> { public Task<Result<string>> HandleAsync(Annotate o, OperationContext c, CancellationToken ct) => Task.FromResult<Result<string>>($\"{c.Now:O} {c.NewId()}\"); }", false)]
+    [InlineData("Application", "internal sealed class LeaseProcess(TimeProvider time) : IProcess<LeaseInput> { public Task RunAsync(LeaseInput input, ProcessContext context, CancellationToken ct) => Task.Delay(TimeSpan.FromSeconds(1), time, ct); }", false)]
+    [InlineData("Adapter", "internal sealed class Lease(TimeProvider time, NodaTime.IClock clock) { public object Now => (time.GetUtcNow(), clock.GetCurrentInstant()); }", false)]
+    public async Task A_handlers_time_is_its_operations(string role, string code, bool refused)
+    {
+        var output = await Compile(role, Clocks + code);
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
+        if (refused)
+        {
+            Assert.Contains("never a handler", Message(output, "LEVEE003"), StringComparison.Ordinal);
+        }
+    }
 }

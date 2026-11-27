@@ -54,12 +54,19 @@ Reading the wall clock makes code untestable and gives one operation several "no
 // Wrong
 var due = DateTimeOffset.UtcNow.AddDays(30);
 
+// Wrong: a handler with a clock of its own, the wall clock in production
+internal sealed class AnnotateHandler(TimeProvider time) : IOperationHandler<Annotate, Annotated> { ... time.GetUtcNow() ... }
+
 // Right, in a handler: the operation's one time, at Postgres's precision
 var due = context.Now.AddDays(30);
 
-// Right, elsewhere
-internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetUtcNow(); }
+// Right, in an adapter or a process
+internal sealed class Lease(TimeProvider time) : ILease { DateTimeOffset Now => time.GetUtcNow(); }
 ```
+
+A handler (`IOperationHandler`, `ISubscriptionHandler`) holds no clock: a `TimeProvider` or NodaTime `IClock` as its
+constructor's parameter, a field or a property is refused, wrapped or not. An operation's handler reads
+`OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,
 and later than every id the operation made before it, which `Guid.CreateVersion7(context.Now)` isn't (every id in one

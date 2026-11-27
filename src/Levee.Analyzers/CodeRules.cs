@@ -28,7 +28,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "CreateAsyncScope", "CreateInstance", "GetServiceOrCreateInstance", "CreateFactory");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
+        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection, Descriptors.HandlerClock,
             Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade, Descriptors.PrincipalHeld,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
@@ -52,6 +52,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.DynamicInvocation);
             start.RegisterSyntaxNodeAction(OnOperationAttributeNamed, SyntaxKind.IdentifierName);
             start.RegisterSymbolAction(OnProcess, SymbolKind.NamedType);
+            start.RegisterSymbolAction(OnHandlerClock, SymbolKind.NamedType);
             if (role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application or Role.Adapter)
             {
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnPrincipalMade(c, role)), OperationKind.ObjectCreation, OperationKind.With);
@@ -561,6 +562,40 @@ public sealed class CodeRules : DiagnosticAnalyzer
             }
         }
     }
+
+    /// <summary>
+    /// A handler holding a clock reads a time that isn't its operation's: injected, it's TimeProvider.System in production,
+    /// the wall clock by another name. An adapter's or a process's clock, taken the same way, is theirs to hold.
+    /// </summary>
+    private static void OnHandlerClock(SymbolAnalysisContext context)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        if (!type.AllInterfaces.Any(i => Known.Is(i, "IOperationHandler", 2) || Known.Is(i, "ISubscriptionHandler", 2)))
+        {
+            return;
+        }
+        var held = type.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (Clock(heldType) is { } clock && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.HandlerClock, location, type.Name, clock.Name));
+                return;
+            }
+        }
+    }
+
+    /// <summary>TimeProvider or NodaTime's IClock (or what implements it), or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static INamedTypeSymbol? Clock(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named.OriginalDefinition, "System.TimeProvider")
+            || named.OriginalDefinition.AllInterfaces.Prepend(named.OriginalDefinition).Any(i => i.ToDisplayString() == "NodaTime.IClock") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(Clock).FirstOrDefault(c => c is not null),
+        IArrayTypeSymbol array => Clock(array.ElementType),
+        _ => null,
+    };
 
     /// <summary>Levee's <paramref name="name"/>, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
     private static bool Holds(ITypeSymbol type, string name) => type switch
