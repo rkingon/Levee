@@ -211,7 +211,8 @@ a vendor or a framework into it.
 
 Wrong: Application references `Microsoft.Extensions.Caching.Memory`, an HTTP client SDK, or `Microsoft.Extensions.Hosting`.
 Right: Application declares a port for what it needs (`IPlanCache`, `IPayments`), an Adapter implements it with the
-package, and a hosted service or loop lives in Composition or an Adapter, sending operations through the `Dispatcher`.
+package, and a hosted service or loop lives in Composition or the Host, sending operations through the `Dispatcher` as a
+principal it makes there (an adapter can neither make nor hold one: LEVEE021).
 
 Configuration isn't the core's either: Composition binds settings into a plain record, and Application takes the record.
 
@@ -346,13 +347,15 @@ unit of work or audit.
 // Wrong: Application
 internal sealed class JobBroker : IWorkDesk { public Task<Job?> NextAsync(...) { ... } }
 
-// Right: the logic is a handler; Composition implements the shared interface by dispatching
+// Right: the logic is a handler; Composition implements the shared interface by dispatching, as a principal it makes
 [Operation("work.next", "runtime", Internal = true, Platform = true, ...)]
 public sealed record NextJob(...) : IOperation<Job?>;
 
 internal sealed class DispatchedDesk(Dispatcher dispatcher) : IWorkDesk
 {
-    public async Task<Job?> NextAsync(...) => (await dispatcher.SendAsync(new NextJob(...), principal, ct)).Value;
+    private static readonly SystemPrincipal Runtime = new("runtime");
+
+    public async Task<Job?> NextAsync(...) => (await dispatcher.SendAsync(new NextJob(...), Runtime, ct)).Value;
 }
 ```
 
@@ -399,7 +402,8 @@ internal sealed class Ledger(AppDbContext db, IAmbientTransaction ambient) : ILe
 Holding the operation's own connection, from `IAmbientTransaction`, in a field or a record is fine: it's the
 transaction's. Hearing what changed (Postgres `LISTEN`) is Levee's own connection's: raise with `IChangeSignals.RaiseAsync`
 in the operation, and watch with `IChangeSignals.WatchAsync` in a subscription. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
-dispatched as the system: a principal only Composition (or a Host) makes, handed to what sends as it (LEVEE021). Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
+sent as the system by Composition's or the Host's own code, which makes the principal there and hands it to nothing
+(LEVEE021): the adapter takes a shared interface that Composition implements by dispatching, as LEVEE016 shows. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
 to configure the context with.
 
 A separate bounded context's context (`[SeparateContext]`: identity's, for the library that serves it) is outside every
@@ -485,8 +489,25 @@ internal sealed class RecountProcess : IProcess<RecountInput>
 ```
 
 A principal is made only in Composition, a Host or a Tool (and tests): constructing one (or a `with` of one) in Kernel,
-Contracts, Domain, Application or an Adapter fails the build. Work that must run as the system (a record that outlives
-the operation's rollback) is sent with the principal Composition makes and hands to what sends as it.
+Contracts, Domain, Application or an Adapter fails the build. Nor is one held there: a constructor's parameter, a field
+or a property of a principal type (`SystemPrincipal`, `Principal`, the app's own, or one wrapped in `Lazy<T>`, `Func<T>`
+or an array) is refused, because what holds one sends as it, and so does whatever holds the holder:
+
+```csharp
+// Wrong: the Host registers a SystemPrincipal; a class of Application's takes it, and the process takes the class
+internal sealed class Escalator(Dispatcher dispatcher, SystemPrincipal system)
+{
+    public Task<Result<int>> TallyAsync(CancellationToken ct) => dispatcher.SendAsync(new TallyAllNotes(), system, ct);
+}
+internal sealed class RecountProcess(Escalator escalator) : IProcess<RecountInput> { ... }
+```
+
+Code in those roles acts as its caller, the one the context it's given names: a handler's `OperationContext.Principal`, a
+subscription's `SubscriptionContext.Principal`, a process's `ProcessContext.SendAsync`. A helper that sends takes the
+principal as a method's argument. Work that must run as the system (a record that outlives the operation's rollback, a
+nightly sweep) is the Host's or Composition's own code: a hosted service, a scheduled trigger, or a Composition class
+implementing a shared interface (LEVEE016's example), which makes the principal and sends through the `Dispatcher`
+there, and hands it to nothing.
 
 ## LEVEE101: Every operation has a handler
 

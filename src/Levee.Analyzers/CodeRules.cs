@@ -29,7 +29,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade, Descriptors.PrincipalHeld,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -55,6 +55,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             if (role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application or Role.Adapter)
             {
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnPrincipalMade(c, role)), OperationKind.ObjectCreation, OperationKind.With);
+                start.RegisterSymbolAction(c => OnPrincipalHeld(c, role), SymbolKind.NamedType);
             }
             start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
             start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
@@ -578,6 +579,35 @@ public sealed class CodeRules : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.PrincipalMade, context.Operation.Syntax.GetLocation(), type.Name, role));
         }
     }
+
+    /// <summary>
+    /// A principal held in the core or an adapter, handed over by the container or whoever made it: what holds one sends as
+    /// it, not as the caller its context names, and the process or handler that holds the holder escapes its starter's scope.
+    /// </summary>
+    private static void OnPrincipalHeld(SymbolAnalysisContext context, Role role)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        var held = type.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (HeldPrincipal(heldType) is { } principal && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.PrincipalHeld, location, $"{type.Name}.{symbol.Name}", principal.Name, role));
+                return;
+            }
+        }
+    }
+
+    /// <summary>A principal type, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static INamedTypeSymbol? HeldPrincipal(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named.OriginalDefinition, "Levee.Principal") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(HeldPrincipal).FirstOrDefault(p => p is not null),
+        IArrayTypeSymbol array => HeldPrincipal(array.ElementType),
+        _ => null,
+    };
 
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {

@@ -289,7 +289,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |
 | LEVEE020 | Only generated code builds the catalog: no descriptor, catalog or catalog part by hand outside tests. |
-| LEVEE021 | A principal is made only where the app composes (Composition, Host, Tool), and a process sends through its `ProcessContext`, never the `Dispatcher`. |
+| LEVEE021 | A principal is made and held only where the app composes (Composition, Host, Tool): Kernel, Contracts, Domain, Application and adapters act as the caller their context names. A process sends through its `ProcessContext`, never the `Dispatcher`. |
 | LEVEE101–103 | Every operation has exactly one handler, and names are unique (checked where the catalog is built). |
 | LEVEE104 | An operation is a public top-level class with `[Operation(name, access)]` and `IOperation<T>`; names are lowercase and dotted. |
 | LEVEE105 | An operation with effects declares its idempotency. |

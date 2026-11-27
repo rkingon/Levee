@@ -89,7 +89,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ApplicationExposed = Rule(
         "LEVEE016", "Application is reached only through operations",
-        "{0} implements or derives from {1} from {2}, so whatever holds a {1} calls the application around the dispatcher. Fix: keep the logic in a handler, and implement {1} in Composition or an Adapter by sending operations through the Dispatcher");
+        "{0} implements or derives from {1} from {2}, so whatever holds a {1} calls the application around the dispatcher. Fix: keep the logic in a handler, and implement {1} in Composition by sending operations through the Dispatcher, as a principal it makes there");
 
     public static readonly DiagnosticDescriptor ToolProcess = Rule(
         "LEVEE017", "A Tool is a process",
@@ -98,7 +98,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor SideConnection = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system, a principal only Composition (or a Host) makes and hands to what sends as it (LEVEE021); to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
+        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation sent as the system by code of Composition's or the Host's own, which makes the principal there and never hands it on (LEVEE021); to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
 
     public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
@@ -130,7 +130,11 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor PrincipalMade = Rule(
         "LEVEE021", "Who an operation runs as is decided where the app composes",
-        "{0} makes a principal in a {1} project, deciding there who an operation runs as and so what it may reach. Fix: act as the caller (OperationContext.Principal, or a process's ProcessContext.SendAsync); a principal of the app's own (the system's, for a write that must outlive the operation) is made in Composition, a Host or a Tool, and handed to what sends as it");
+        "{0} makes a principal in a {1} project, deciding there who an operation runs as and so what it may reach. Fix: act as the caller, the one the context you're given names: a handler's OperationContext.Principal, a subscription's SubscriptionContext.Principal, a process's ProcessContext.SendAsync. Acting as the system is the Host's or Composition's own code (a hosted service, a scheduled trigger, a Composition class implementing a shared interface), which makes the principal and sends through the Dispatcher there, never handing it to Application or an adapter");
+
+    public static readonly DiagnosticDescriptor PrincipalHeld = Rule(
+        "LEVEE021", "Who an operation runs as is decided where the app composes",
+        "{0} holds a {1} in a {2} project, so what it sends runs as that principal, in any scope, not as its caller in theirs; whatever holds it (a process, a handler) escapes the caller too. Fix: act as the caller, the one the context you're given names: a handler's OperationContext.Principal, a subscription's SubscriptionContext.Principal, a process's ProcessContext.SendAsync; a helper that sends takes the principal as a method's argument, never holds it. Acting as the system is the Host's or Composition's own code (a hosted service, a scheduled trigger, a Composition class implementing a shared interface), which makes the principal and sends through the Dispatcher there");
 
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",

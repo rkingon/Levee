@@ -90,4 +90,52 @@ public sealed class FalseNegativeTests
         Assert.Equal(refused ? ["LEVEE020"] : [], output.Ids.Distinct());
         Assert.Equal(refused ? 1 : 0, output.Errors.Length);
     }
+
+    private const string Tally = """
+        using Levee;
+        using System.Threading;
+        using System.Threading.Tasks;
+        public sealed record RecountInput(string Tenant);
+        [Operation("notes.tally", "system", Platform = true)] public sealed record TallyAllNotes : IOperation<int>;
+
+        """;
+
+    [Theory]
+    [InlineData("Application", """
+        internal sealed class Escalator(Dispatcher dispatcher, SystemPrincipal system)
+        {
+            public Task<Result<int>> TallyAsync(CancellationToken ct) => dispatcher.SendAsync(new TallyAllNotes(), system, ct);
+        }
+        internal sealed class RecountProcess(Escalator escalator) : IProcess<RecountInput>
+        {
+            public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) => escalator.TallyAsync(ct);
+        }
+        """, true)]
+    [InlineData("Application", "internal sealed class Holder(System.Lazy<SystemPrincipal> system) { public object As => system.Value; }", true)]
+    [InlineData("Application", "internal sealed class Holder { private Principal? _as; public void Set(Principal p) => _as = p; public object? As => _as; }", true)]
+    [InlineData("Application", "internal sealed record Acting(Principal As);", true)]
+    [InlineData("Adapter", "internal sealed class Holder { public Principal[] As { get; init; } = []; }", true)]
+    [InlineData("Domain", "public sealed class Holder(System.Func<Principal> who) { public string Name => who().Subject; }", true)]
+    [InlineData("Contracts", "public sealed record Envelope(string Text, Principal From);", true)]
+    [InlineData("Application", """
+        internal sealed class Escalator(Dispatcher dispatcher)
+        {
+            public Task<Result<int>> TallyAsync(Principal caller, CancellationToken ct) => dispatcher.SendAsync(new TallyAllNotes(), caller, ct);
+        }
+        """, false)]
+    [InlineData("Kernel", "public sealed record Member(string Subject, string Tenant) : Principal(Subject);", false)]
+    [InlineData("Composition", "internal sealed class Runtime(Dispatcher dispatcher, SystemPrincipal system) { public object Hold => (dispatcher, system); }", false)]
+    public async Task Only_where_the_app_composes_is_a_principal_held(string role, string code, bool refused)
+    {
+        var output = await Compile(role, Tally + code);
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE021"));
+        if (refused)
+        {
+            var message = Message(output, "LEVEE021");
+            Assert.Contains("OperationContext.Principal", message, StringComparison.Ordinal);
+            Assert.DoesNotContain("handed to", message, StringComparison.Ordinal);
+        }
+    }
 }

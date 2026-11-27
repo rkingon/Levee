@@ -76,7 +76,7 @@ public sealed class RoleAnalyzer : DiagnosticAnalyzer
             if (inner && assembly.Name.StartsWith("Microsoft.Extensions.Hosting", StringComparison.Ordinal))
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.PackageReference, Location.None, role, assembly.Name,
-                    "hosting is composition's. Fix: move the hosted service or loop into Composition or an Adapter, and have it send operations through the Dispatcher"));
+                    "hosting is composition's. Fix: move the hosted service or loop into Composition or the Host, and have it send operations through the Dispatcher, as a principal it makes there"));
             }
             else if (inner && !IsBaseLibrary(assembly.Name) && !allowed.Any(a => Matches(a, assembly.Name)))
             {
