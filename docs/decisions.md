@@ -130,11 +130,16 @@ Where the apps disagreed before Levee, and what it chose.
 | Every wall inside Levee | The alpha.1 migrations reached for a suppression or a replaced hook wherever Levee had no shape for the code: owner and bootstrap work in an adapter, a readiness probe, a write that must survive its operation's rollback (a paid call's ledger), an identity server's own stores, hosts serving their old routes beside the dispatcher, a custom unit of work over Postgres. Each gets a shape that lives within the rules, or a refusal that names it as a gap; none is left to a suppression. A suppression is migration debt `check` reports and fails on. |
 | Port and adapter scaffolding | "Add a data provider" as one command: `dotnet levee generate adapter AcmePrices --port IHomePrices --transport http` reads the port's real signatures and the projects' roles, writes the adapter where Levee's conventions put it, wires its selection, and scaffolds a test over a fake transport. Over the provider client above, the adapter inherits its timeout, retries, logging and telemetry. It previews the diff, never overwrites an edit on a rerun, names an ambiguous destination before writing, and leaves a buildable scaffold whose behaviour test stays red until the mapping is written. Extracted from a provider integration already running. The test of the design: every edit left over needs product or vendor knowledge (auth, the vendor's mapping, what its responses mean). |
 
+## Planned: 0.0.1-alpha.3
+
+| Feature | Shape |
+|---|---|
+| Durable process steps | `ProcessContext.StepAsync(name, run)` over Oxbow's `job.StepAsync` (0.2.0-alpha.5): a step's result is recorded under its name and a later run (after a failed attempt, a snooze, a rescue) gets it back instead of running it again, so a process written from the top resumes where it was, as Inngest's and Temporal's do. At least once: a step that acted but died before its result was recorded runs again, so a provider call takes an idempotency key. Results travel as `LeveeJson.Options` writes them, `[Secret]` sealed as a sealed process's input is. Each operation a process sends locks its attempt (`job.LockAttemptAsync`) in the unit of work's own transaction, first, so a superseded run can't commit. Needs Oxbow's schema version 3 and its grants. |
+
 ## Open
 
 | Question | From | Where it stands |
 |---|---|---|
-| Can a process reuse a named step's result after a retry or snooze? | the maintainer | Proposed `ProcessContext.StepAsync` depends on durable steps in Oxbow. Oxbow would save the result in Postgres by job ID and step name, so a restarted process could reuse it without calling the provider again. If the worker crashes after the provider acts but before it saves the result, the call can repeat. |
 | A process that works no queue still checks Oxbow's schema at startup, so it can't start with the database down | B | Oxbow's to offer (a client-only mode); until then, readiness waits on the database. |
 | A transaction opened lazily, for operations that never touch the database | B | Deferred: [benchmarks.md](benchmarks.md) measures what an operation costs today. |
 | The current operation inside `HttpClient` handlers | B | Deferred: B's admission-based workaround holds. |
