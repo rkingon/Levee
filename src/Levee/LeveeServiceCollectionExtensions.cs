@@ -15,8 +15,6 @@ public static class LeveeServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(catalog);
         var options = new LeveeOptions();
         configure?.Invoke(options);
-        // As the app composes, before any host starts: a schema that says nothing would be served to every client.
-        LeveeJson.RefuseShapeless(catalog.All, options.Json);
         services.AddSingleton(new OperationCatalogPart(catalog.All, catalog.Refusals));
         // The generated catalog, whatever was registered before: a catalog built by hand claims flags no rule checked.
         services.RemoveAll<OperationCatalog>();

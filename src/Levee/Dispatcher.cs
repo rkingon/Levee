@@ -660,7 +660,16 @@ public sealed class OperationFailedException(Error error, Exception inner) : Exc
 
 public sealed class LeveeOptions
 {
-    public JsonSerializerOptions Json { get; set; } = LeveeJson.Options;
+    private JsonSerializerOptions _json = LeveeJson.Options;
+
+    /// <summary>The contract wire: Levee's own options, or ones <see cref="LeveeJson.Create"/> made.</summary>
+    public JsonSerializerOptions Json
+    {
+        get => _json;
+        set => _json = value is not null && LeveeJson.IsLevees(value)
+            ? value
+            : throw new ArgumentException("Contract JSON is Levee's: set options LeveeJson.Create made, so every schema says what the wire carries.", nameof(value));
+    }
 
     /// <summary>
     /// A handler failing with a code its operation doesn't declare is a bug, answered <c>internal</c>, rather than only

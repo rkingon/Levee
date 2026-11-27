@@ -59,17 +59,14 @@ public sealed class OptionsConverterTests
     }
 
     [Fact]
-    public void A_converter_in_the_serializers_options_that_nothing_describes_is_refused_as_the_app_composes()
+    public void The_contract_wire_takes_no_converter_but_a_value_objects_own()
     {
-        var services = new ServiceCollection();
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection([new("Probe:Greeter", "en")]).Build();
+        var refused = Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(j => j.Converters.Add(new Loud())));
 
-        var refused = Assert.Throws<InvalidOperationException>(() =>
-            Generated.LeveeComposition.AddLeveeOperations(services, configuration, o => o.Json = LeveeJson.Create(j => j.Converters.Add(new Loud()))));
-
-        Assert.Contains("probe.echo's input", refused.Message, StringComparison.Ordinal);
-        // A .NET type can't take an attribute: the fix is to leave its JSON alone, or wrap it.
-        Assert.Contains("remove it so the type is written as System.Text.Json writes it", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("put the converter on the value's own type", refused.Message, StringComparison.Ordinal);
+        Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(j => j.TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()));
+        Assert.Throws<ArgumentException>(() => new LeveeOptions { Json = new JsonSerializerOptions(JsonSerializerDefaults.Web) });
+        Assert.Same(LeveeJson.Options, new LeveeOptions().Json);
     }
 }
 

@@ -539,11 +539,10 @@ public sealed record FindHomes([property: Description("The area's five-digit zip
 ```
 
   A member's `[Description]` (System.ComponentModel's) is its description in every schema: the catalog's and each MCP
-  tool's. A converter registered in the serializer's options (`LeveeJson.Create`) is out of the build's sight, so
-  `AddLeveeOperations` checks the same as the app composes, under the app's own options, and refuses it there: an
-  app's type declares `[ValueObject]`, and a .NET type keeps the JSON System.Text.Json gives it (or is wrapped in a value
-  object of the app's). On the way in, a value object's converter is handed only the JSON its `[ValueObject]` says it
-  writes, so a converter that would take anything can't make its schema a lie.
+  tool's. The contract wire is Levee's: `LeveeJson.Create` takes no converter or type resolver, and `LeveeOptions.Json`
+  only options it made, so a value's JSON is its value object's own (on the type, where the build sees it) and a .NET
+  type's is System.Text.Json's. On the way in, a value object's converter is handed only the JSON its `[ValueObject]`
+  says it writes, so a converter that would take anything can't make its schema a lie.
 
 ## LEVEE105: Operations with effects declare their idempotency
 
