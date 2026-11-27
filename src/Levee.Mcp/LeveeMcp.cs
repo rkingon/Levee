@@ -140,8 +140,8 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
             {
                 ReadOnlyHint = d.ReadOnly,
                 IdempotentHint = d.Idempotency is Idempotency.Safe or Idempotency.Idempotent,
-                // A create refused on a repeat (Conflicts) only adds; anything else that writes may overwrite or remove.
-            DestructiveHint = !d.ReadOnly && d.Idempotency != Idempotency.Conflicts,
+                // Nothing in the contract says a write only adds: refused on a repeat or not, its first call may remove.
+                DestructiveHint = !d.ReadOnly,
                 OpenWorldHint = d.Effects.HasFlag(Effects.External),
             },
         };

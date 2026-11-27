@@ -98,9 +98,11 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
                 $"{descriptor.Name} can't run as a job: its input {secret} is a secret, and job inputs are stored. Pass a reference to it, "
                 + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
         }
-        if (await dispatcher.AuthorizeAsync(operation, caller, ct) is { } denied)
+        // The scope it's authorized in is the one stored: the caller's credentials read once, not again after.
+        var authorized = await dispatcher.AuthorizeScopeAsync(operation, caller, ct);
+        if (!authorized.IsSuccess)
         {
-            return denied;
+            return authorized.Error;
         }
 
         var (subject, system) = caller switch
@@ -110,7 +112,8 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             _ => (caller.Subject, false),
         };
         // A caller-scoped job runs where its caller could: the scope its credentials carried at enqueue.
-        var scope = caller is IScopedPrincipal scoped && !string.IsNullOrWhiteSpace(scoped.ScopeKey) ? scoped.ScopeKey : null;
+        var scope = descriptor.CallerScoped ? authorized.Value.Key
+            : caller is IScopedPrincipal scoped && !string.IsNullOrWhiteSpace(scoped.ScopeKey) ? scoped.ScopeKey : null;
         var input = JsonSerializer.SerializeToElement(operation, operation.GetType(), levee.Json);
         var insert = new InsertOptions
         {
@@ -157,11 +160,8 @@ internal static class Run
         {
             throw new JobCancelException($"Restored as {principal.Subject}, not {subject}, who enqueued it.");
         }
-        if (scope is not null && principal is IScopedPrincipal restored && restored.ScopeKey != scope)
-        {
-            throw new JobCancelException($"Its caller's scope is now {restored.ScopeKey}, not {scope}, where it was enqueued.");
-        }
-        var result = await dispatcher.SendJsonAsync(operation, input, principal, ct);
+        // The dispatcher compares the scope it reads, once, with the one stored, and refuses a caller-scoped job moved elsewhere.
+        var result = await dispatcher.SendJsonAsync(operation, input, principal, scope, ct);
         if (result.IsSuccess)
         {
             return;

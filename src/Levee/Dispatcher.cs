@@ -34,11 +34,15 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 
     /// <summary>An operation by name, its input and result as JSON, in-process: internal operations included (jobs run them).</summary>
     public Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: false), input, principal, ct);
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, ct);
 
-    /// <summary>As <see cref="SendJsonAsync"/>, for a client: what a projection sends. Internal operations aren't there.</summary>
+    /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for work asked for earlier, in the caller's scope as it was then.</summary>
+    internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, string? pinned, CancellationToken ct) =>
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, ct);
+
+    /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for a client: what a projection sends. Internal operations aren't there.</summary>
     public Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: true), input, principal, ct);
+        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, ct);
 
     public async Task<Result<IAsyncEnumerable<TItem>>> SubscribeAsync<TItem>(ISubscription<TItem> subscription, Principal principal, CancellationToken ct)
     {
@@ -58,6 +62,66 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// <summary>As <see cref="SubscribeJsonAsync"/>, for a client. Internal subscriptions aren't there.</summary>
     public Task<Result<IAsyncEnumerable<JsonElement>>> SubscribeFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
         SubscribeFoundAsync(Find(name, fromClient: true), input, principal, ct);
+
+    /// <summary>
+    /// As <see cref="SubscribeFromClientAsync"/>, remembering who it opened for and in which scope, so a projection's recheck
+    /// (<see cref="RecheckAsync"/>) asks about that same stream, not about where its caller is now.
+    /// </summary>
+    internal async Task<Result<OpenedSubscription>> OpenFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(principal);
+        var found = Find(name, fromClient: true);
+        if (!found.IsSuccess)
+        {
+            return found.Error;
+        }
+        var descriptor = found.Value;
+        if (!descriptor.Streams)
+        {
+            return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
+        }
+        var subscription = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
+        if (!subscription.IsSuccess)
+        {
+            return subscription.Error;
+        }
+        var subject = principal.Subject;
+        var scoped = ScopeOf(descriptor, subscription.Value, principal);
+        var opened = await OpenAsync(descriptor, subscription.Value, principal, scoped, ct);
+        return opened.IsSuccess
+            ? new OpenedSubscription(Json(opened.Value, descriptor, CancellationToken.None), descriptor, subscription.Value, subject, scoped.Value)
+            : opened.Error;
+    }
+
+    /// <summary>
+    /// Whether the stream may go on: <paramref name="now"/> is the same subject, in the scope it opened in, and the access
+    /// policy and admissions still allow that scope.
+    /// </summary>
+    internal async Task<Error?> RecheckAsync(OpenedSubscription opened, Principal? now, CancellationToken ct)
+    {
+        if (now is null)
+        {
+            return Error.Unauthenticated("The caller's credentials no longer hold.");
+        }
+        if (now.Subject != opened.Subject)
+        {
+            return Error.Unauthenticated("The stream's caller changed: open it again.");
+        }
+        var scope = ScopeOf(opened.Descriptor, opened.Subscription, now, opened.Scope.Key);
+        if (!scope.IsSuccess)
+        {
+            return scope.Error;
+        }
+        try
+        {
+            return await AuthorizeAsync(opened.Descriptor, opened.Subscription, now, opened.Scope, ct)
+                ?? await AdmitAsync(opened.Descriptor, opened.Subscription, now, opened.Scope, ct);
+        }
+        catch (Exception e) when (!(e is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            return Unexpected(e, opened.Descriptor);
+        }
+    }
 
     private Result<OperationDescriptor> Find(string name, bool fromClient) =>
         catalog.Find(name) is { } found && !(fromClient && found.Internal)
@@ -116,10 +180,13 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>Scoped and authorized now; its items come from a DI scope of its own that lives as long as they're read.</summary>
+    private Task<Result<IAsyncEnumerable<object?>>> OpenAsync(OperationDescriptor descriptor, IOperation subscription, Principal principal,
+        CancellationToken ct) =>
+        OpenAsync(descriptor, subscription, principal, ScopeOf(descriptor, subscription, principal), ct);
+
     private async Task<Result<IAsyncEnumerable<object?>>> OpenAsync(OperationDescriptor descriptor, IOperation subscription, Principal principal,
-        CancellationToken ct)
+        Result<WorkScope> scoped, CancellationToken ct)
     {
-        var scoped = ScopeOf(descriptor, subscription, principal);
         Error? denied;
         try
         {
@@ -177,7 +244,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         return Error.Internal(trace);
     }
 
-    private async Task<Result<JsonElement>> SendFoundAsync(Result<OperationDescriptor> found, JsonElement input, Principal principal, CancellationToken ct)
+    private async Task<Result<JsonElement>> SendFoundAsync(Result<OperationDescriptor> found, JsonElement input, Principal principal, string? pinned,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(principal);
         if (!found.IsSuccess)
@@ -196,19 +264,19 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
         // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
         var result = await RunAsync(descriptor, operation.Value, principal,
-            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, options.Json), ct);
+            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, options.Json), pinned, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
-        await RunAsync(descriptor, operation, principal, answer: null, ct);
+        await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, CancellationToken ct)
+        Func<object?, object?>? answer, string? pinned, CancellationToken ct)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
-        var scoped = ScopeOf(descriptor, operation, principal);
+        var scoped = ScopeOf(descriptor, operation, principal, pinned);
         Result<object?> result;
         try
         {
@@ -252,6 +320,21 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
         var scope = ScopeOf(descriptor, operation, principal);
         return scope.IsSuccess ? await AuthorizeAsync(descriptor, operation, principal, scope.Value, ct) : scope.Error;
+    }
+
+    /// <summary>As <see cref="AuthorizeAsync(IOperation, Principal, CancellationToken)"/>, with the scope it authorized: what a job stores to run in.</summary>
+    internal async Task<Result<WorkScope>> AuthorizeScopeAsync(IOperation operation, Principal principal, CancellationToken ct)
+    {
+        if (catalog.Find(operation.GetType()) is not { } descriptor)
+        {
+            return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
+        }
+        var scope = ScopeOf(descriptor, operation, principal);
+        if (!scope.IsSuccess)
+        {
+            return scope.Error;
+        }
+        return await AuthorizeAsync(descriptor, operation, principal, scope.Value, ct) is { } denied ? denied : scope.Value;
     }
 
     /// <summary>As <see cref="AuthorizeAsync(IOperation, Principal, CancellationToken)"/>, by name and JSON, for a client.</summary>
@@ -341,11 +424,19 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// and lacks is a refusal, never the platform's by default.
     /// </summary>
     /// <summary>A scope key the app computes (a getter that parses an id) may throw: a bug, answered as one.</summary>
-    private Result<WorkScope> ScopeOf(OperationDescriptor descriptor, IOperation operation, Principal principal)
+    // pinned: the caller's scope as it was when the work was asked for (a job's enqueue, a stream's opening). A caller-scoped
+    // operation whose caller is now scoped elsewhere is refused, not moved there.
+    private Result<WorkScope> ScopeOf(OperationDescriptor descriptor, IOperation operation, Principal principal, string? pinned = null)
     {
         try
         {
-            return Scoping(descriptor, operation, principal);
+            // Read once: every decision in the call is about the same scope, however the principal computes it.
+            var caller = (principal as IScopedPrincipal)?.ScopeKey;
+            if (pinned is not null && descriptor.CallerScoped && caller != pinned)
+            {
+                return Error.Forbidden(LeveeErrors.ScopeViolation, $"{descriptor.Name}'s caller is now scoped elsewhere than when it was asked for.");
+            }
+            return Scoping(descriptor, operation, caller);
         }
         catch (Exception e)
         {
@@ -353,11 +444,11 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
     }
 
-    private static Result<WorkScope> Scoping(OperationDescriptor descriptor, IOperation operation, Principal principal) =>
+    private static Result<WorkScope> Scoping(OperationDescriptor descriptor, IOperation operation, string? caller) =>
         (descriptor.Platform, descriptor.CallerScoped, operation) switch
         {
             (true, false, not IScopedOperation) => new WorkScope(null, descriptor.ReadOnly),
-            (false, true, not IScopedOperation) => principal is IScopedPrincipal { ScopeKey: { } key } && !string.IsNullOrWhiteSpace(key)
+            (false, true, not IScopedOperation) => caller is { } key && !string.IsNullOrWhiteSpace(key)
                 ? new WorkScope(key, descriptor.ReadOnly)
                 : Error.Forbidden(LeveeErrors.CallerUnscoped, $"{descriptor.Name} runs in its caller's scope, and this caller has none."),
             (false, false, IScopedOperation { ScopeKey: { } key }) when !string.IsNullOrWhiteSpace(key) => new WorkScope(key, descriptor.ReadOnly),
@@ -552,3 +643,7 @@ public sealed class LeveeOptions
     /// </summary>
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }
+
+/// <summary>A stream a projection opened: its items, and who it was opened for, where, for its rechecks.</summary>
+internal sealed record OpenedSubscription(IAsyncEnumerable<JsonElement> Items, OperationDescriptor Descriptor, IOperation Subscription, string Subject,
+    WorkScope Scope);

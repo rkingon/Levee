@@ -198,8 +198,8 @@ must be recorded, a declined application) is part of the result type.
   unreachable database are `Unavailable`. `Error.Unavailable(code, message, retryAfter)` carries a vendor's wait.
 - **Fields.** `Error.Validation(code, message, fields)` says what's wrong with each field by its path; malformed input
   names the field it broke on.
-- **Over HTTP**, every failure is `application/problem+json` (RFC 9457), a bug in a policy, an admission or an input's own
-  validation included: `title`, `status`, `detail`, `code`, `kind`,
+- **Over HTTP**, every failure is `application/problem+json` (RFC 9457), a bug in a policy, an admission, an input's own
+  validation or the host's own identity lookup included: `title`, `status`, `detail`, `code`, `kind`,
   `transient`, `trace` and, for validation, `errors` by field. `Unavailable` with a wait sets `Retry-After`.
 
 ## MCP

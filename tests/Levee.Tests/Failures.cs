@@ -839,3 +839,43 @@ internal sealed class WatchMineHandler : ISubscriptionHandler<WatchMine, Tick>
         await Task.Delay(Timeout.Infinite, ct);
     }
 }
+
+public interface IHolder
+{
+    [Personal, System.Text.Json.Serialization.JsonPropertyName("holder_email")] string Email { get; }
+}
+
+public sealed record Holder(string Email, string Plan) : IHolder;
+
+public interface IPayer
+{
+    string Card { get; }
+}
+
+public sealed record Payer([property: Secret] string Card) : IPayer;
+
+public sealed record Account(IHolder Holder, IPayer Payer);
+
+public sealed class TwelfthAuditFixTests
+{
+    [Fact]
+    public void A_member_written_through_an_interface_is_redacted_by_the_interfaces_wire_name_and_either_mark()
+    {
+        var audited = LeveeJson.Redact(new Account(new Holder("ada@example.com", "gold"), new Payer("4242424242424242")), typeof(Account));
+
+        Assert.DoesNotContain("example.com", audited, StringComparison.Ordinal);
+        Assert.DoesNotContain("4242", audited, StringComparison.Ordinal);
+        Assert.Contains("\"holder_email\":\"[personal]\"", audited, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_member_never_written_holds_no_secret()
+    {
+        Assert.Null(LeveeJson.FindSecret(typeof(Unwritten)));
+    }
+
+    public sealed record Unwritten(string Name)
+    {
+        [Secret, System.Text.Json.Serialization.JsonIgnore] public string? Kept { get; init; }
+    }
+}

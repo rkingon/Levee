@@ -31,14 +31,28 @@ public static class LeveeEndpointRouteBuilderExtensions
         ArgumentNullException.ThrowIfNull(endpoints);
         ArgumentNullException.ThrowIfNull(principal);
         var group = endpoints.MapGroup(prefix);
-        group.MapGet("", async (HttpContext http, Dispatcher dispatcher, LeveeOptions options) => await principal(http) is null
-            ? Fail(Error.Unauthenticated("Sign in first."), http, options)
+        // The host's own lookup failing (an identity store timing out) is answered as a problem, like every failure.
+        async Task<(Principal? Caller, Error? Failure)> Identify(HttpContext http)
+        {
+            try
+            {
+                return await principal(http) is { } caller ? (caller, null) : (null, Error.Unauthenticated("Sign in first."));
+            }
+            catch (Exception e) when (!http.RequestAborted.IsCancellationRequested)
+            {
+                RecheckFailed(http.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("Levee.AspNetCore"), e, http.Request.Path);
+                return (null, Error.Unavailable(LeveeErrors.CallerUnconfirmed, "The caller couldn't be confirmed: try again."));
+            }
+        }
+        group.MapGet("", async (HttpContext http, Dispatcher dispatcher, LeveeOptions options) => await Identify(http) is { Failure: { } failure }
+            ? Fail(failure, http, options)
             : Results.Json(dispatcher.Catalog.All.Where(d => !d.Internal).Select(d => View(d, dispatcher.Catalog.Refusals, options.Json)), options.Json));
         group.MapPost("{name}", async (string name, HttpContext http, Dispatcher dispatcher, LeveeOptions options) =>
         {
-            if (await principal(http) is not { } caller)
+            var identified = await Identify(http);
+            if (identified.Caller is not { } caller)
             {
-                return Fail(Error.Unauthenticated("Sign in first."), http, options);
+                return Fail(identified.Failure!, http, options);
             }
             // Buffered, so an empty body is no input however it was sent (no Content-Length, chunked).
             using var body = new MemoryStream();
@@ -61,9 +75,10 @@ public static class LeveeEndpointRouteBuilderExtensions
         });
         group.MapGet("{name}/events", async (string name, string? input, HttpContext http, Dispatcher dispatcher, LeveeOptions options) =>
         {
-            if (await principal(http) is not { } caller)
+            var identified = await Identify(http);
+            if (identified.Caller is not { } caller)
             {
-                return Fail(Error.Unauthenticated("Sign in first."), http, options);
+                return Fail(identified.Failure!, http, options);
             }
             JsonElement parsed = default;
             if (!string.IsNullOrEmpty(input))
@@ -77,16 +92,12 @@ public static class LeveeEndpointRouteBuilderExtensions
                     return Fail(Error.InvalidInput(e), http, options);
                 }
             }
-            var opened = await dispatcher.SubscribeFromClientAsync(name, parsed, caller, http.RequestAborted);
+            var opened = await dispatcher.OpenFromClientAsync(name, parsed, caller, http.RequestAborted);
             if (!opened.IsSuccess)
             {
                 return Fail(opened.Error, http, options);
             }
-            // The stream runs as the caller who opened it, in that caller's scope: a recheck that finds another subject, or the same
-            // one now scoped elsewhere (a session switched to another tenant), ends it rather than authorizing what isn't running.
-            // Read once, as it opened: a principal backed by a live session would answer the new values to both reads.
-            var openedBy = caller.Subject;
-            var openedIn = (caller as IScopedPrincipal)?.ScopeKey;
+            // The dispatcher remembers who the stream opened for and where; each recheck asks about that same stream.
             async Task<Error?> StillAllowed(CancellationToken ct)
             {
                 Principal? now;
@@ -100,17 +111,9 @@ public static class LeveeEndpointRouteBuilderExtensions
                     RecheckFailed(http.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("Levee.AspNetCore"), e, name);
                     return Error.Unavailable(LeveeErrors.CallerUnconfirmed, "The caller couldn't be confirmed: open the stream again.");
                 }
-                return await Recheck(now, ct);
+                return await dispatcher.RecheckAsync(opened.Value, now, ct);
             }
-            async Task<Error?> Recheck(Principal? current, CancellationToken ct) => current switch
-            {
-                null => Error.Unauthenticated("The caller's credentials no longer hold."),
-                { } now when now.Subject != openedBy => Error.Unauthenticated("The stream's caller changed: open it again."),
-                { } now when (now as IScopedPrincipal)?.ScopeKey != openedIn =>
-                    Error.Forbidden(LeveeErrors.ScopeViolation, "The caller's scope changed: open the stream again in the new one."),
-                { } now => await dispatcher.AuthorizeFromClientAsync(name, parsed, now, ct),
-            };
-            return TypedResults.ServerSentEvents(Events(opened.Value, http, options, StillAllowed, http.RequestAborted));
+            return TypedResults.ServerSentEvents(Events(opened.Value.Items, http, options, StillAllowed, http.RequestAborted));
         });
         return group;
     }

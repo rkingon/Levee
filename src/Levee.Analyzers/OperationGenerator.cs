@@ -669,6 +669,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
         return null;
     }
 
+    private static bool IsSecret(AttributeData attribute) => attribute.AttributeClass?.ToDisplayString() == "Levee.SecretAttribute";
+
     /// <summary>The path to the first [Secret] member of an input, at any depth, or null.</summary>
     private static string? SecretIn(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
     {
@@ -694,16 +696,33 @@ public sealed class OperationGenerator : IIncrementalGenerator
         // The BCL's own types hold no [Secret]; their type arguments, above, may.
         for (var t = named; t is not null && t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true; t = t.BaseType)
         {
-            // What the wire carries: an ignored member never reaches the URL.
-            foreach (var property in t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && !p.GetAttributes().Any(a =>
-                a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute" && a.NamedArguments.All(n => n.Key != "Condition"))))
+            // What the wire carries: public members and any [JsonInclude] adds, less any always ignored.
+            foreach (var member in t.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && m is IPropertySymbol { IsIndexer: false } or IFieldSymbol))
             {
-                var at = path.Length == 0 ? property.Name : $"{path}.{property.Name}";
-                if (property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.SecretAttribute"))
+                var attributes = member.GetAttributes();
+                var included = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+                var ignored = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
+                    && a.NamedArguments.All(n => n.Key != "Condition" || n.Value.Value is 1));
+                var memberType = member switch
+                {
+                    IPropertySymbol p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
+                    IFieldSymbol f when included => f.Type,
+                    _ => null,
+                };
+                if (memberType is null || ignored)
+                {
+                    continue;
+                }
+                var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
+                // Marked on the member, or on the interface member it implements.
+                var marked = attributes.Any(IsSecret) || (member is IPropertySymbol property && named.AllInterfaces
+                    .SelectMany(i => i.GetMembers().OfType<IPropertySymbol>())
+                    .Any(i => i.GetAttributes().Any(IsSecret) && SymbolEqualityComparer.Default.Equals(named.FindImplementationForInterfaceMember(i), property)));
+                if (marked)
                 {
                     return at;
                 }
-                if (SecretIn(property.Type, seen, at) is { } nested)
+                if (SecretIn(memberType, seen, at) is { } nested)
                 {
                     return nested;
                 }

@@ -49,15 +49,15 @@ public static class LeveeJson
 
     /// <summary>
     /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>
-    /// value replaced, at any depth (in nested records and collections, by each value's own type, so a derived type's
-    /// members are seen too), under the name the wire gives it.
+    /// value replaced, at any depth (in nested records and collections, through interfaces and declared derived types), by
+    /// the same contract the serializer wrote it with, so under the name the wire gives it.
     /// </summary>
     public static string Redact(object value, Type type, JsonSerializerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(value);
         var json = options ?? Options;
         var node = JsonSerializer.SerializeToNode(value, type, json);
-        Redact(node, value, json);
+        Redact(node, value, json.GetTypeInfo(type), json);
         return node?.ToJsonString(json) ?? "null";
     }
 
@@ -93,6 +93,19 @@ public static class LeveeJson
         {
             return false;
         }
+        // Written through an interface: the member the value's own type implements it with may carry the mark.
+        if (property.DeclaringType is { IsInterface: true } through && through.IsAssignableFrom(owner))
+        {
+            var map = owner.GetInterfaceMap(through);
+            var at = Array.FindIndex(map.InterfaceMethods, m => m.MetadataToken == getter.MetadataToken && m.Module == getter.Module);
+            if (at >= 0 && map.TargetMethods[at] is var target
+                && owner.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                    .FirstOrDefault(p => p.GetMethod is { } g && g.MetadataToken == target.MetadataToken && g.Module == target.Module) is { } implementation
+                && Attribute.IsDefined(implementation, mark, inherit: true))
+            {
+                return true;
+            }
+        }
         foreach (var contract in owner.GetInterfaces())
         {
             var map = owner.GetInterfaceMap(contract);
@@ -109,14 +122,17 @@ public static class LeveeJson
         return false;
     }
 
-    /// <summary>Walks the value and its JSON together, so each member is judged by the type it actually has.</summary>
-    private static void Redact(JsonNode? node, object? value, JsonSerializerOptions json)
+    /// <summary>
+    /// Walks the value and its JSON together by the contract the serializer used: the declared type's (an interface's
+    /// members, under its names), except where it writes the value's own (<c>object</c>, a declared polymorphic base).
+    /// </summary>
+    private static void Redact(JsonNode? node, object? value, System.Text.Json.Serialization.Metadata.JsonTypeInfo declared, JsonSerializerOptions json)
     {
         if (node is null || value is null)
         {
             return;
         }
-        var info = json.GetTypeInfo(value.GetType());
+        var info = declared.Type == typeof(object) || declared.PolymorphismOptions is not null ? json.GetTypeInfo(value.GetType()) : declared;
         switch (node)
         {
             case JsonObject obj when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
@@ -132,17 +148,18 @@ public static class LeveeJson
                     }
                     else if (child is not null && property.Get is { } get)
                     {
-                        Redact(child, get(value), json);
+                        Redact(child, get(value), json.GetTypeInfo(property.PropertyType), json);
                     }
                 }
                 break;
             case JsonArray items when value is System.Collections.IEnumerable values && value is not string:
+                var element = json.GetTypeInfo(info.ElementType ?? typeof(object));
                 var index = 0;
                 foreach (var item in values)
                 {
                     if (index < items.Count)
                     {
-                        Redact(items[index], item, json);
+                        Redact(items[index], item, element, json);
                     }
                     index++;
                 }
@@ -150,18 +167,24 @@ public static class LeveeJson
             // Entries are written in the order they enumerate, so each is matched to its JSON by position: a key's own spelling
             // (a date, an enum, a converter's) never has to be reproduced.
             case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && value is System.Collections.IEnumerable entries:
+                var entryInfo = json.GetTypeInfo(info.ElementType ?? typeof(object));
                 var at = 0;
                 foreach (var entry in entries)
                 {
                     if (at < map.Count)
                     {
-                        Redact(map[at], ValueOf(entry), json);
+                        Redact(map[at], ValueOf(entry), entryInfo, json);
                     }
                     at++;
                 }
                 break;
         }
     }
+
+    /// <summary>Never written: a bare <c>[JsonIgnore]</c>, or one whose condition is <c>Always</c>.</summary>
+    private static bool Ignored(System.Text.Json.Serialization.Metadata.JsonPropertyInfo property) =>
+        property.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: false).OfType<JsonIgnoreAttribute>()
+            .Any(a => a.Condition == JsonIgnoreCondition.Always) == true;
 
     private static object? ValueOf(object? entry) => entry switch
     {
@@ -188,7 +211,7 @@ public static class LeveeJson
                 return inDerived;
             }
         }
-        foreach (var property in info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : [])
+        foreach (var property in (info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object ? info.Properties : []).Where(p => !Ignored(p)))
         {
             if (Marked(property.AttributeProvider, info.Type, typeof(SecretAttribute)))
             {

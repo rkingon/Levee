@@ -17,8 +17,8 @@ services.AddMcpServer()
   an underscore (`notes.create` is `notes_create`); two operations that would share a name, or one over 64 characters,
   fail at startup.
 - **From the contract:** the description is the operation's summary, the input schema is its input's (`[Secret]` members
-  write-only), and the hints say whether it only reads, is safe to repeat, may overwrite or remove (anything that writes
-  but a create refused on a repeat), and reaches outside the platform.
+  write-only), and the hints say whether it only reads, is safe to repeat, may overwrite or remove (anything that writes:
+  the contract doesn't say a write only adds), and reaches outside the platform.
 - **Through the dispatcher's client path,** as the principal `Principal` resolves: authorized, scoped, audited, and never
   an internal operation. A failure answers as a tool error holding the same problem body HTTP sends.
 

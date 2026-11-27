@@ -6,6 +6,11 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Levee's own projections ask the dispatcher what a client mustn't: a scope pinned from earlier, a stream's opening. -->
+    <InternalsVisibleTo Include="Levee.AspNetCore" />
+    <InternalsVisibleTo Include="Levee.Oxbow" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />

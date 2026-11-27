@@ -58,8 +58,9 @@ what `LeveeSchema.Grants(role)` prints:
 5. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 
 Postgres's refusals come back classified: a write in a read-only transaction is `effects.undeclared`, a row inserted or
-moved outside the scope is `scope.violation`, an update or delete that finds no row to change (another write changed it
-first, or row-level security hides it from this scope) is `store.stale`, a duplicate is `conflict`, any other constraint
+moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write
+changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
+set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count, a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 
