@@ -33,6 +33,9 @@
     </ItemGroup>
     <Error Code="LEVEE006" Condition="'$(LeveeRole)' == 'Test' and ('$(IsTestProject)' != 'true' or '@(_LeveeTestFramework)' == '')"
            Text="This project's role is Test, which the code rules don't hold, but it isn't a test project. Fix: give it the role it is; a test project sets IsTestProject and references a test framework (Microsoft.NET.Test.Sdk, xunit.v3, MSTest, NUnit, TUnit) (dotnet levee explain LEVEE006)" />
+    <!-- Only tests may reference TestSupport, which keeps it out of what ships; nothing references a process, so one is held by no rule at all. -->
+    <Error Code="LEVEE006" Condition="'$(LeveeRole)' == 'TestSupport' and ('$(OutputType)' == 'Exe' or '$(OutputType)' == 'WinExe' or '$(IsTestProject)' == 'true')"
+           Text="This project's role is TestSupport, which the code rules don't hold, but it's a test project or an executable. Fix: TestSupport is a library the test projects share (fixtures, fakes, a harness): build it as a library, without IsTestProject or a test runner's package (reference xunit.v3.extensibility.core, not xunit.v3); tests themselves are Test, and anything that runs is the role it is (dotnet levee explain LEVEE006)" />
     <Error Code="LEVEE006" Condition="'$(RunAnalyzers)' == 'false' or '$(RunAnalyzersDuringBuild)' == 'false'"
            Text="This project turns its analyzers off (RunAnalyzers or RunAnalyzersDuringBuild), and every Levee rule with them. Fix: remove the property; suppress one rule beside the code, with a reason (dotnet levee explain LEVEE006)" />
     <Error Code="LEVEE006" Condition="'@(_LeveeConfigOverride)' != ''"

@@ -72,6 +72,9 @@ public sealed class CliTests : IDisposable
         Write("Labelled", "Test", "<IsTestProject>true</IsTestProject><OutputType>Exe</OutputType>");
         Write("SelfIssued", "Adapter", "<LeveeCheck>x</LeveeCheck><LEVEE_CHECK_TOKEN>x</LEVEE_CHECK_TOKEN><RunAnalyzers>false</RunAnalyzers>");
         Write("Reconfigured", "Adapter", "");
+        Write("Runner", "TestSupport", "<OutputType>Exe</OutputType>");
+        Write("Harness", "TestSupport", "<IsTestProject>true</IsTestProject>");
+        Write("Fixtures", "TestSupport", "");
         // A global config is found from the project's sources, so the stand-in has one.
         File.WriteAllText(Path.Combine(_dir, "Reconfigured", "Code.cs"), "internal static class Code { }");
         File.WriteAllText(Path.Combine(_dir, "Reconfigured", ".globalconfig"), "is_global = true\nglobal_level = 1000\nbuild_property.LeveeRole = Test\n");
@@ -105,6 +108,9 @@ public sealed class CliTests : IDisposable
         Assert.Contains("error LEVEE006: This project's role is Test", (await Build(Path.Combine(_dir, "Labelled", "Labelled.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "SelfIssued", "SelfIssued.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: An analyzer config file sets what Levee's analyzers read", (await Build(Path.Combine(_dir, "Reconfigured", "Reconfigured.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project's role is TestSupport", (await Build(Path.Combine(_dir, "Runner", "Runner.csproj"))).Output, StringComparison.Ordinal);
+        Assert.Contains("error LEVEE006: This project's role is TestSupport", (await Build(Path.Combine(_dir, "Harness", "Harness.csproj"))).Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("role is TestSupport", (await Build(Path.Combine(_dir, "Fixtures", "Fixtures.csproj"))).Output, StringComparison.Ordinal);
     }
 
     [Fact]
