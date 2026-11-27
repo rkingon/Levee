@@ -27,7 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -47,10 +47,16 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
-            if (!Roles.Composes(role))
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.TypeOf, OperationKind.DynamicInvocation);
+            start.RegisterSymbolAction(OnProcess, SymbolKind.NamedType);
+            if (role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application or Role.Adapter)
             {
-                start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnPrincipalMade(c, role)), OperationKind.ObjectCreation, OperationKind.With);
             }
+            start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+            start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnSeparateContextHeld(c)), OperationKind.VariableDeclarator, OperationKind.AnonymousFunction,
+                OperationKind.LocalFunction);
             if (role != Role.Tool)
             {
                 start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Property);
@@ -75,12 +81,19 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             ("System.DateTime", "Now" or "UtcNow" or "Today") => true,
             ("System.DateTimeOffset", "Now" or "UtcNow") => true,
+            // NodaTime's TimeProvider.System: registered as the IClock where the app composes, taken through the constructor elsewhere.
+            ("NodaTime.SystemClock", "Instance") => !Roles.Composes(role),
+            ("Microsoft.VisualBasic.DateAndTime", "Now" or "Today" or "TimeOfDay" or "Timer" or "DateString" or "TimeString") => true,
             ("System.TimeProvider", "System") => !Roles.Composes(role),
             _ => false,
         };
         if (clock)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.WallClock, context.Operation.Syntax.GetLocation(), $"{property.ContainingType!.Name}.{property.Name}"));
+        }
+        else if (ReflectionProperties.Contains(property.Name) && owner is "System.Type" or "System.Reflection.TypeInfo")
+        {
+            OnReflected(context, role, property.Name, Denoted(((IPropertyReferenceOperation)context.Operation).Instance, 0));
         }
         // An operation's type, read from its descriptor, is what turns a name into an input to send.
         else if (owner == "Levee.OperationDescriptor" && property.Name is "InputType" or "ResultType")
@@ -149,16 +162,17 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
         var operation = context.Operation;
-        // A migration runs as the owner, at migrate, never inside an operation: its SQL may backfill the audit.
-        if (InMigration(context.ContainingSymbol))
-        {
-            return;
-        }
         // The whole string once, at its outermost piece.
         if (operation.Parent is IInterpolatedStringTextOperation or IInterpolationOperation or IInterpolatedStringOperation
             || operation.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, Type.SpecialType: SpecialType.System_String }
             || operation.Parent?.ConstantValue is { HasValue: true, Value: string }
             || Flatten(operation) is not { } text)
+        {
+            return;
+        }
+        // A migration's SQL, handed to EF's builder, runs as the owner at migrate, never inside an operation: it may backfill
+        // the audit. The rest of a migration class (a helper, a constant, a string it keeps) is held like any other code.
+        if (InMigration(context.ContainingSymbol) && ToMigrationBuilder(operation))
         {
             return;
         }
@@ -170,6 +184,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (refused)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.ScopeSetting, operation.Syntax.GetLocation()));
+        }
+        // Levee's channel delivers by the scope its payload names: a NOTIFY on it from the app's SQL names any scope it likes.
+        else if (flat.Contains("levee_signals"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SignalByHand, operation.Syntax.GetLocation()));
         }
     }
 
@@ -183,6 +202,18 @@ public sealed class CodeRules : DiagnosticAnalyzer
             }
         }
         return false;
+    }
+
+    /// <summary>The string is an argument, as written, to one of EF's <c>MigrationBuilder</c> methods (<c>Sql</c>, a column's <c>defaultValueSql</c>).</summary>
+    private static bool ToMigrationBuilder(IOperation text)
+    {
+        var at = text.Parent;
+        while (at is IConversionOperation)
+        {
+            at = at.Parent;
+        }
+        return at is IArgumentOperation { Parent: IInvocationOperation call }
+            && Derives(call.TargetMethod.ContainingType, "Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder");
     }
 
     private const char Hole = '\u0001';
@@ -291,8 +322,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
         // A context of its own is a connection of its own; EF's design-time factory (dotnet ef) is the one exception.
-        else if (role != Role.Tool && Derives(type, "Microsoft.EntityFrameworkCore.DbContext")
-            && context.ContainingSymbol.ContainingType?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") != true)
+        else if (role != Role.Tool && Derives(type, "Microsoft.EntityFrameworkCore.DbContext") && !DesignTime(context.ContainingSymbol.ContainingType))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
@@ -359,11 +389,15 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 || receiver.AllInterfaces.Any(i => i.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"));
     }
 
-    /// <summary>A separate bounded context's DbContext held by the app's own code: only the library it serves, registered where the app composes, uses it.</summary>
+    /// <summary>
+    /// A separate bounded context's DbContext held by the app's own code, in any role: only the library it serves uses it. Where
+    /// the app composes, it's named as a registration's type argument (<c>AddDbContext&lt;T&gt;</c>, <c>UseDbContext&lt;T&gt;</c>,
+    /// <c>typeof(T)</c>), never held.
+    /// </summary>
     private static void OnSeparateContext(SymbolAnalysisContext context)
     {
         var symbol = context.Symbol;
-        if (symbol.IsImplicitlyDeclared || symbol.ContainingType is not { } owner || Separate(owner) is not null
+        if (symbol.IsImplicitlyDeclared || symbol.ContainingType is not { } owner || Separate(owner) is not null || DesignTime(owner)
             || symbol.Locations.FirstOrDefault() is not { IsInSource: true } location || Known.IsLeveeGenerated(location.SourceTree))
         {
             return;
@@ -381,6 +415,22 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
+    /// <summary>A local, or a lambda's or local function's parameter or return, holding a separate bounded context's DbContext.</summary>
+    private static void OnSeparateContextHeld(OperationAnalysisContext context)
+    {
+        var (name, types) = context.Operation switch
+        {
+            IVariableDeclaratorOperation local => (local.Symbol.Name, new[] { local.Symbol.Type }),
+            IAnonymousFunctionOperation lambda => ("a lambda", lambda.Symbol.Parameters.Select(p => p.Type).Append(lambda.Symbol.ReturnType).ToArray()),
+            ILocalFunctionOperation function => (function.Symbol.Name, function.Symbol.Parameters.Select(p => p.Type).Append(function.Symbol.ReturnType).ToArray()),
+            _ => ("", []),
+        };
+        if (context.ContainingSymbol.ContainingType is { } owner && Separate(owner) is null && !DesignTime(owner) && types.Select(Separate).FirstOrDefault(t => t is not null) is { } separate)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SeparateContextReach, context.Operation.Syntax.GetLocation(), $"{owner.Name}: {name}", separate.Name));
+        }
+    }
+
     /// <summary>A DbContext marked as a separate bounded context's, or one wrapped (Task&lt;T&gt;, Lazy&lt;T&gt;, IDbContextFactory&lt;T&gt;).</summary>
     private static INamedTypeSymbol? Separate(ITypeSymbol? type) => type switch
     {
@@ -390,6 +440,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         IArrayTypeSymbol array => Separate(array.ElementType),
         _ => null,
     };
+
+    /// <summary>EF's design-time factory: dotnet ef's to call, by reflection, to make a context for its tooling.</summary>
+    private static bool DesignTime(INamedTypeSymbol? type) => type?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") == true;
 
     private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is
         "FromServicesAttribute" or "FromKeyedServicesAttribute" or "InjectAttribute");
@@ -443,37 +496,216 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static readonly ImmutableHashSet<string> DataSourceMembers = ImmutableHashSet.Create(
         "CreateConnection", "OpenConnection", "OpenConnectionAsync", "CreateCommand", "CreateBatch");
 
+    // Type's lookups (and System.Reflection.TypeExtensions' of the same names), RuntimeReflectionExtensions', TypeInfo's, and
+    // what makes an instance from a Type.
     private static readonly ImmutableHashSet<string> ReflectionMembers = ImmutableHashSet.Create(
-        "GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetMember", "GetMembers",
-        "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "InvokeMember", "GetRuntimeMethod", "GetRuntimeMethods");
+        "GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetMember", "GetMembers", "GetEvent", "GetEvents",
+        "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "GetInterface", "GetInterfaces", "GetDefaultMembers", "FindMembers",
+        "InvokeMember", "GetRuntimeMethod", "GetRuntimeMethods", "GetRuntimeProperty", "GetRuntimeProperties", "GetRuntimeField", "GetRuntimeFields",
+        "GetRuntimeEvent", "GetRuntimeEvents", "GetDeclaredMethod", "GetDeclaredMethods", "GetDeclaredProperty", "GetDeclaredField", "GetDeclaredEvent",
+        "GetDeclaredNestedType", "CreateInstance", "GetUninitializedObject");
+
+    private static readonly ImmutableHashSet<string> ReflectionProperties = ImmutableHashSet.Create(
+        "DeclaredMembers", "DeclaredMethods", "DeclaredProperties", "DeclaredFields", "DeclaredConstructors", "DeclaredEvents", "DeclaredNestedTypes",
+        "TypeInitializer");
+
+    /// <summary>
+    /// The other ways to a by-name surface: the catalog's names read off [Operation] by reflection, and an operation of a type
+    /// known only at run time handed to the Dispatcher through dynamic.
+    /// </summary>
+    private static void OnByName(OperationAnalysisContext context)
+    {
+        switch (context.Operation)
+        {
+            // In an attribute's argument, typeof names the attribute; anywhere else it's the lookup's key.
+            case ITypeOfOperation { TypeOperand: INamedTypeSymbol operand } when IsLevee(operand, "OperationAttribute")
+                && !context.Operation.Syntax.Ancestors().Any(a => a is Microsoft.CodeAnalysis.CSharp.Syntax.AttributeSyntax):
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), "[Operation] is read by reflection"));
+                break;
+            case IDynamicInvocationOperation { Operation: IDynamicMemberReferenceOperation { Instance.Type: INamedTypeSymbol receiver } member }
+                when IsLevee(receiver, "Dispatcher"):
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"Dispatcher.{member.MemberName} is called through dynamic"));
+                break;
+        }
+    }
+
+    /// <summary>A process holding the Dispatcher: whatever it sends steps out of its starter's identity and scope.</summary>
+    private static void OnProcess(SymbolAnalysisContext context)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        if (!type.AllInterfaces.Any(i => Known.Is(i, "IProcess", 1)))
+        {
+            return;
+        }
+        var held = type.InstanceConstructors.SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (Holds(heldType, "Dispatcher") && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ProcessSends, location, type.Name));
+                return;
+            }
+        }
+    }
+
+    /// <summary>Levee's <paramref name="name"/>, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static bool Holds(ITypeSymbol type, string name) => type switch
+    {
+        INamedTypeSymbol named when IsLevee(named, name) => true,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Any(t => Holds(t, name)),
+        IArrayTypeSymbol array => Holds(array.ElementType, name),
+        _ => false,
+    };
+
+    /// <summary>A principal made in the app's core or an adapter: who an operation runs as is decided where the app composes.</summary>
+    private static void OnPrincipalMade(OperationAnalysisContext context, Role role)
+    {
+        if (context.Operation.Type is INamedTypeSymbol type && Derives(type, "Levee.Principal"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.PrincipalMade, context.Operation.Syntax.GetLocation(), type.Name, role));
+        }
+    }
 
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
-        if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && Reflected(invocation) is { } levee)
+        if (invocation.TargetMethod.Name is "GetCustomAttribute" or "GetCustomAttributes" or "IsDefined"
+            && invocation.TargetMethod.TypeArguments.Any(t => IsLevee(t as INamedTypeSymbol, "OperationAttribute")))
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, invocation.Syntax.GetLocation(), invocation.TargetMethod.Name, levee.Name));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, invocation.Syntax.GetLocation(), "[Operation] is read by reflection"));
+            return;
+        }
+        if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && OnReflected(context, role, invocation.TargetMethod.Name, Reflected(invocation)))
+        {
             return;
         }
         OnCall(context, role, invocation.TargetMethod);
     }
 
-    /// <summary>The Levee type a reflection lookup is made on: typeof(T), or x.GetType() of one, directly or as an extension's receiver.</summary>
-    private static INamedTypeSymbol? Reflected(IInvocationOperation invocation)
+    // What LEVEE005 guards as service location, by the types that do it.
+    private static readonly ImmutableHashSet<string> LocatorTypes = ImmutableHashSet.Create(
+        "System.IServiceProvider", "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory", "Microsoft.Extensions.DependencyInjection.IServiceScope",
+        "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider", "Microsoft.Extensions.DependencyInjection.ISupportRequiredService",
+        "Microsoft.Extensions.DependencyInjection.ActivatorUtilities", "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+        "Microsoft.Extensions.DependencyInjection.ServiceProviderKeyedServiceExtensions", "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions");
+
+    /// <summary>
+    /// Reflection into one of Levee's types, anywhere (LEVEE020), or into what locates services, outside where the app composes
+    /// (LEVEE005): the same lookup by another route. True when it reported.
+    /// </summary>
+    private static bool OnReflected(OperationAnalysisContext context, Role role, string member, Denotation? into)
     {
-        var receiver = invocation.Instance ?? (invocation.TargetMethod.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null);
-        while (receiver is IConversionOperation conversion)
+        if (into is { Levee: true } levee)
         {
-            receiver = conversion.Operand;
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, context.Operation.Syntax.GetLocation(), member, levee.Name));
+            return true;
         }
-        var type = receiver switch
+        if (into is { } locator && LocatorTypes.Contains(locator.Full) && !Roles.Composes(role))
         {
-            ITypeOfOperation typeOf => typeOf.TypeOperand,
-            IInvocationOperation { TargetMethod.Name: "GetType", Instance: { } instance } => instance.Type,
-            _ => null,
-        };
-        return type is INamedTypeSymbol named && named.ContainingAssembly?.Name is { } assembly
-            && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)) ? named : null;
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ServiceLocation, context.Operation.Syntax.GetLocation(), $"{member} on {locator.Name}, by reflection,"));
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Of what a variable may hold, the one that tells most: Levee's, then a locator, then any.</summary>
+    private static Denotation? Telling(List<Denotation?> held) =>
+        held.FirstOrDefault(d => d?.Levee == true) ?? held.FirstOrDefault(d => d is { } t && LocatorTypes.Contains(t.Full)) ?? held.FirstOrDefault(d => d is not null);
+
+    /// <summary>A type an expression statically names: its full name, its short one, and whether it's one of Levee's.</summary>
+    private readonly record struct Denotation(string Full, string Name, bool Levee);
+
+    private static Denotation? Of(ITypeSymbol? type) =>
+        type is INamedTypeSymbol named
+            ? new Denotation(named.OriginalDefinition.ToDisplayString(), named.Name,
+                named.ContainingAssembly?.Name is { } assembly && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)))
+            : null;
+
+    /// <summary>A type named by its assembly-qualified or full name, as Type.GetType and [UnsafeAccessorType] take it.</summary>
+    private static Denotation? Of(string? name) =>
+        name?.Split(',')[0].Trim() is { Length: > 0 } full
+            ? new Denotation(full, full.Substring(full.LastIndexOfAny(['.', '+']) + 1), full.StartsWith("Levee.", StringComparison.Ordinal))
+            : null;
+
+    /// <summary>The type a reflection lookup is made on, or an instance made from: its receiver, an extension's, or the Type an activator takes.</summary>
+    private static Denotation? Reflected(IInvocationOperation invocation)
+    {
+        var method = invocation.TargetMethod;
+        if (method.ContainingType.ToDisplayString() is "System.Activator" or "System.Runtime.CompilerServices.RuntimeHelpers")
+        {
+            return method.TypeArguments.Select(Of).FirstOrDefault(t => t is not null)
+                ?? Denoted(invocation.Arguments.FirstOrDefault(a => a.Value.Type?.ToDisplayString() == "System.Type")?.Value, 0);
+        }
+        return Denoted(invocation.Instance ?? (method.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null), 0);
+    }
+
+    /// <summary>
+    /// The type a Type-valued expression statically names: typeof(T); x.GetType() of one; Type.GetType("..."); its
+    /// GetTypeInfo(); or a local, or a field initialized in the same file, that holds one. What it can't follow (a parameter, a
+    /// field set elsewhere, a name built at run time) is the trust model's.
+    /// </summary>
+    private static Denotation? Denoted(IOperation? value, int depth)
+    {
+        while (value is IConversionOperation conversion)
+        {
+            value = conversion.Operand;
+        }
+        switch (value)
+        {
+            case ITypeOfOperation typeOf:
+                return Of(typeOf.TypeOperand);
+            case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: false }, Instance: { } instance, Arguments.Length: 0 }:
+                return Of(instance.Type);
+            case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: true } named } byName when named.ContainingType.ToDisplayString() == "System.Type":
+                return Of(byName.Arguments.FirstOrDefault()?.Value.ConstantValue.Value as string);
+            case IInvocationOperation { TargetMethod.Name: "GetTypeInfo" or "AsType" } info:
+                return Denoted(info.Instance ?? info.Arguments.FirstOrDefault()?.Value, depth);
+            case ILocalReferenceOperation local when depth < 4:
+                var root = value;
+                while (root.Parent is not null)
+                {
+                    root = root.Parent;
+                }
+                return Telling([.. root.Descendants()
+                    .Select(o => o switch
+                    {
+                        IVariableDeclaratorOperation d when SymbolEqualityComparer.Default.Equals(d.Symbol, local.Local) => d.Initializer?.Value,
+                        ISimpleAssignmentOperation { Target: ILocalReferenceOperation target } a when SymbolEqualityComparer.Default.Equals(target.Local, local.Local) => a.Value,
+                        _ => null,
+                    })
+                    .Select(v => v is null ? null : Denoted(v, depth + 1))]);
+            case IFieldReferenceOperation field when depth < 4 && value.SemanticModel is { } model:
+                return Telling([.. field.Field.DeclaringSyntaxReferences
+                    .Where(r => r.SyntaxTree == model.SyntaxTree)
+                    .Select(r => (r.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax)?.Initializer?.Value)
+                    .Select(v => v is null ? null : Denoted(model.GetOperation(v), depth + 1))]);
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>An [UnsafeAccessor] onto one of Levee's types: a call into what it keeps internal, with no lookup to see.</summary>
+    private static void OnUnsafeAccessor(SymbolAnalysisContext context)
+    {
+        var method = (IMethodSymbol)context.Symbol;
+        if (method.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorAttribute")
+            is not { } accessor)
+        {
+            return;
+        }
+        static Denotation? Named(ImmutableArray<AttributeData> attributes) =>
+            Of(attributes.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorTypeAttribute")?
+                .ConstructorArguments.FirstOrDefault().Value as string);
+        // Its target is the type it constructs (UnsafeAccessorKind.Constructor, 0), or else its first parameter's.
+        var target = accessor.ConstructorArguments.FirstOrDefault().Value is 0
+            ? Named(method.GetReturnTypeAttributes()) ?? Of(method.ReturnType)
+            : method.Parameters.FirstOrDefault() is { } first ? Named(first.GetAttributes()) ?? Of(first.Type) : null;
+        if (target is { Levee: true } levee && method.Locations.FirstOrDefault() is { IsInSource: true } location)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, location, $"[UnsafeAccessor] {method.Name}", levee.Name));
+        }
     }
 
     private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
@@ -499,6 +731,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (role != Role.Tool && method.Name == "Run" && method.ContainingType.ToDisplayString() == "Levee.EntityFrameworkCore.LeveeOwner")
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.OwnerRun, context.Operation.Syntax.GetLocation()));
+            return;
+        }
+        // Resolving it is holding it, wherever the app composes too.
+        if (LocatorMembers.Contains(method.Name) && IsLocator(method)
+            && (method.TypeArguments.Select(Separate).FirstOrDefault(c => c is not null)
+                ?? (context.Operation as IInvocationOperation)?.Arguments.Select(a => (a.Value as ITypeOfOperation)?.TypeOperand).Select(Separate).FirstOrDefault(c => c is not null)) is { } resolved)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SeparateContextReach, context.Operation.Syntax.GetLocation(), $"{method.Name}<{resolved.Name}>", resolved.Name));
             return;
         }
         var made = method.TypeArguments.FirstOrDefault() as INamedTypeSymbol;

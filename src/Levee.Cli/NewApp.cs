@@ -257,15 +257,19 @@ internal static partial class NewApp
                     public static readonly Anonymous Instance = new();
                 }
 
-                /// <summary>The app's authorization. Refuses every access it doesn't know, so a new one is closed until it's written here.</summary>
+                /// <summary>
+                /// The app's authorization: who may act, and in which scope. Refuses every access it doesn't know, so a new one is
+                /// closed until it's written here. A tenant's operation grants a caller whose own tenant is request.Scope.Key.
+                /// </summary>
                 [Refuses("access.unconfigured")]
                 internal sealed class AccessPolicy : IAccessPolicy
                 {
                     public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) =>
                         ValueTask.FromResult(request.Operation.Access switch
                         {
-                            "anyone" => null,
-                            var access => Error.Forbidden("access.unconfigured", $"Nothing grants '{access}' yet: write it in AccessPolicy."),
+                            // Anyone reads only what's every tenant's; no caller here belongs to a tenant yet.
+                            "anyone" when request.Scope.Platform => null,
+                            var access => Error.Forbidden("access.unconfigured", $"Nothing grants '{access}' here yet: write it in AccessPolicy."),
                         });
                 }
 

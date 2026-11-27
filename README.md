@@ -38,7 +38,7 @@ dotnet levee db grants app_role --jobs            # what the runtime role needs
 
 `dotnet levee check` runs every rule over an app, project by project (compiled once without analyzers, then each
 analyzed alone), so one project's errors never hide another's, except that a project failing the generator's rules
-(LEVEE101-111) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
+(LEVEE101-112) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
 asks of it. A suppressed rule is listed with its reason and still fails the check: a migration may build with one, but
 it's green only once none is left. A suppression builds at all only while the app declares it's migrating
 (`<LeveeAllowSuppressions>true</LeveeAllowSuppressions>`). Partway through a migration, projects that don't compile yet are named and the
@@ -289,6 +289,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |
 | LEVEE020 | Only generated code builds the catalog: no descriptor, catalog or catalog part by hand outside tests. |
+| LEVEE021 | A principal is made only where the app composes (Composition, Host, Tool), and a process sends through its `ProcessContext`, never the `Dispatcher`. |
 | LEVEE101–103 | Every operation has exactly one handler, and names are unique (checked where the catalog is built). |
 | LEVEE104 | An operation is a public top-level class with `[Operation(name, access)]` and `IOperation<T>`; names are lowercase and dotted. |
 | LEVEE105 | An operation with effects declares its idempotency. |
@@ -298,6 +299,8 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE109 | An `[Adapter]` adapts a port. |
 | LEVEE110 | A handler fails only with the codes its operation declares (or Levee's own). |
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
+| LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
+| LEVEE113 | An access policy reads the scope it authorizes (`AccessRequest.Scope`): it decides who may act in which scope. |
 
 ## Decisions
 

@@ -99,20 +99,31 @@ internal static class Known
     public static bool IsLeveeGenerated(SyntaxTree? tree) =>
         tree?.FilePath.Replace('\\', '/').Contains("Levee.Analyzers.OperationGenerator/") == true;
 
-    // .NET's own source generators, by the assembly whose name heads a generated file's path. Their output silences
-    // warnings wholesale (the regex generator's is a bare #pragma warning disable) and holds none of the app's code.
-    private static readonly string[] FrameworkGenerators =
-    [
-        "System.Text.RegularExpressions.Generator", "System.Text.Json.SourceGeneration", "Microsoft.Extensions.Logging.Generators",
-        "Microsoft.Extensions.Options.SourceGeneration", "Microsoft.Extensions.Configuration.Binder.SourceGeneration",
-        "Microsoft.Interop.LibraryImportGenerator", "Microsoft.Interop.ComInterfaceGenerator", "Microsoft.AspNetCore.Http.RequestDelegateGenerator",
-    ];
+    // .NET's own source generators, each assembly with its generator types. Their output silences warnings wholesale (the
+    // regex generator's is a bare #pragma warning disable) and holds none of the app's code.
+    private static readonly Dictionary<string, string[]> FrameworkGenerators = new()
+    {
+        ["System.Text.RegularExpressions.Generator"] = ["System.Text.RegularExpressions.Generator.RegexGenerator"],
+        ["System.Text.Json.SourceGeneration"] = ["System.Text.Json.SourceGeneration.JsonSourceGenerator"],
+        ["Microsoft.Extensions.Logging.Generators"] = ["Microsoft.Extensions.Logging.Generators.LoggerMessageGenerator"],
+        ["Microsoft.Extensions.Options.SourceGeneration"] = ["Microsoft.Extensions.Options.Generators.OptionsValidatorGenerator"],
+        ["Microsoft.Extensions.Configuration.Binder.SourceGeneration"] = ["Microsoft.Extensions.Configuration.Binder.SourceGeneration.ConfigurationBindingGenerator"],
+        ["Microsoft.Interop.LibraryImportGenerator"] = ["Microsoft.Interop.LibraryImportGenerator"],
+        ["Microsoft.Interop.ComInterfaceGenerator"] = ["Microsoft.Interop.ComInterfaceGenerator", "Microsoft.Interop.ComClassGenerator", "Microsoft.Interop.VtableIndexStubGenerator"],
+        ["Microsoft.AspNetCore.Http.RequestDelegateGenerator"] = ["Microsoft.AspNetCore.Http.RequestDelegateGenerator.RequestDelegateGenerator"],
+    };
 
-    /// <summary>Output of one of .NET's own source generators.</summary>
+    /// <summary>
+    /// Output of one of .NET's own source generators, by the path the compiler gives it: &lt;base&gt;/&lt;generator
+    /// assembly&gt;/&lt;generator type&gt;/&lt;file&gt;, where the base is nothing in memory, the intermediate output directory in a
+    /// build (obj/Debug/net10.0/), or obj/.../generated/ when the files are emitted. The file sits directly in the type's
+    /// directory, so a directory of the app's own named like a generator matches nothing.
+    /// </summary>
     public static bool IsFrameworkGenerated(SyntaxTree? tree)
     {
-        var path = tree?.FilePath.Replace('\\', '/');
-        return path is not null && FrameworkGenerators.Any(g => path.StartsWith(g + "/", StringComparison.Ordinal) || path.Contains("/" + g + "/"));
+        var segments = tree?.FilePath.Replace('\\', '/').Split('/');
+        return segments is { Length: >= 3 } && FrameworkGenerators.TryGetValue(segments[segments.Length - 3], out var types)
+            && types.Contains(segments[segments.Length - 2]) && segments[segments.Length - 1].EndsWith(".cs", StringComparison.Ordinal);
     }
 
     /// <summary>Runs <paramref name="check"/> unless the operation is in Levee's own generated code.</summary>

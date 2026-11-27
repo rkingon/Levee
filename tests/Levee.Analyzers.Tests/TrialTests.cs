@@ -13,8 +13,13 @@ public sealed class TrialTests
     [Theory]
     [InlineData("System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/RegexGenerator.g.cs", false)]
     [InlineData("/app/obj/Debug/net10.0/generated/System.Text.Json.SourceGeneration/System.Text.Json.SourceGeneration.JsonSourceGenerator/Ctx.g.cs", false)]
+    [InlineData("/app/obj/Debug/net10.0/System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/RegexGenerator.g.cs", false)]
     [InlineData("App.Generators/App.Generators.Silencer/Silencer.g.cs", true)]
     [InlineData("App.Application.cs", true)]
+    [InlineData("/app/src/System.Text.Json.SourceGeneration/Patterns.cs", true)]
+    [InlineData("/app/src/System.Text.RegularExpressions.Generator/Patterns/Patterns.cs", true)]
+    [InlineData("/app/System.Text.RegularExpressions.Generator/System.Text.RegularExpressions.Generator.RegexGenerator/Mine/Patterns.cs", true)]
+    [InlineData("/app/Microsoft.Extensions.Logging.Generators/System.Text.RegularExpressions.Generator.RegexGenerator/Patterns.cs", true)]
     public async Task Only_NET_generators_may_silence_warnings_wholesale(string path, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Application", Path: path), Generated, "App.Application", GeneratorTests.Levee);
@@ -33,6 +38,8 @@ public sealed class TrialTests
     [Theory]
     [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select levee_audit_write(null, null, 'x', 'y', '{}')\"); }", false)]
     [InlineData("public static class Backfill { public static void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select levee_audit_write(null, null, 'x', 'y', '{}')\"); }", true)]
+    [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select 1\"); public static string Forge() => \"select levee_audit_write(null, null, 'x', 'y', '{}')\"; }", true)]
+    [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => Run(\"select set_config('levee.scope', 'acme', true)\"); private static void Run(string sql) { } }", true)]
     public async Task A_migrations_SQL_is_the_owners(string declaration, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Adapter"), Migrations + declaration, "App.Adapters", GeneratorTests.Levee);
@@ -51,49 +58,62 @@ public sealed class TrialTests
         Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
     }
 
-    private const string Zip = """
+    private const string ZipJson = """
         public sealed class ZipJson : System.Text.Json.Serialization.JsonConverter<Zip>
         {
             public override Zip Read(ref System.Text.Json.Utf8JsonReader reader, System.Type type, System.Text.Json.JsonSerializerOptions options) => new(reader.GetString()!);
             public override void Write(System.Text.Json.Utf8JsonWriter writer, Zip value, System.Text.Json.JsonSerializerOptions options) => writer.WriteStringValue(value.Value);
         }
+
         """;
 
     [Theory]
-    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] public readonly record struct Zip(string Value);", "Zip? Area", true)]
-    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(string), Pattern = \"^[0-9]{5}$\")] public readonly record struct Zip(string Value);", "Zip? Area", false)]
-    [InlineData("public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] Zip Area", true)]
-    [InlineData("public readonly record struct Zip(string Value);", "Zip Area", false)]
+    [InlineData(ZipJson + "[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] public readonly record struct Zip(string Value);", "Zip? Area", true)]
+    [InlineData(ZipJson + "[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(string), Pattern = \"^[0-9]{5}$\")] public readonly record struct Zip(string Value);", "Zip? Area", false)]
+    [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] Zip Area", true)]
+    [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "Zip Area", false)]
     [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<Zip>))] public enum Zip { North, South }", "Zip Area", false)]
     public async Task A_value_written_by_its_own_converter_says_what_it_writes(string zip, string member, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""
             using Levee;
-            {{Zip}}
             {{zip}}
             [Operation("homes.find", "member", Platform = true)] public sealed record FindHomes({{member}}) : IOperation<int>;
             """, "App.Contracts", GeneratorTests.Levee);
 
-        Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
+        Assert.Equal(refused ? ["LEVEE104"] : [], output.Ids.Distinct());
     }
 
     private const string Identity = """
         namespace Microsoft.EntityFrameworkCore { public class DbContextOptions { } public class DbContext { public DbContext(DbContextOptions o) { } } }
+        namespace Microsoft.EntityFrameworkCore.Design { public interface IDesignTimeDbContextFactory<T> { T CreateDbContext(string[] args); } }
         namespace Levee.EntityFrameworkCore { [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class SeparateContextAttribute(string library) : System.Attribute; }
         [Levee.EntityFrameworkCore.SeparateContext("OpenIddict")]
         public sealed class IdentityDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o) { public IdentityDb Self() => this; }
         public sealed class AppDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o);
+        public static class Ef { public static void AddDbContext<T>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { } }
+
         """;
 
     [Theory]
     [InlineData("Adapter", "public sealed class Clients(IdentityDb db) { public int Count => 0; }", true)]
     [InlineData("Adapter", "public sealed class Notes(AppDb db) { public int Count => 0; }", false)]
-    [InlineData("Composition", "public static class Wiring { public static System.Type Store(IdentityDb? db) => typeof(IdentityDb); }", false)]
-    [InlineData("Host", "public static class Program { public static void Main(IdentityDb? db) { } }", false)]
+    [InlineData("Composition", "internal static class Wiring { public static System.Type Store(Microsoft.Extensions.DependencyInjection.IServiceCollection s) { s.AddDbContext<IdentityDb>(); return typeof(IdentityDb); } }", false)]
+    [InlineData("Composition", "internal static class Wiring { public static System.Type Store(IdentityDb? db) => typeof(IdentityDb); }", true)]
+    [InlineData("Composition", "internal static class Wiring { public static object Seed(System.IServiceProvider sp) => Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IdentityDb>(sp); }", true)]
+    [InlineData("Composition", "internal static class Wiring { public static object? Seed(System.IServiceProvider sp) => sp.GetService(typeof(IdentityDb)); }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { } public static void Run(IdentityDb? db) { } }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { IdentityDb? db = null; } }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { System.Func<IdentityDb, int> count = db => 0; } }", true)]
+    [InlineData("Tool", "internal static class Migrate { public static void Run(IdentityDb db) { } }", true)]
+    [InlineData("Tool", "internal sealed class Design : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<IdentityDb> { public IdentityDb CreateDbContext(string[] args) => null!; }", false)]
     public async Task A_separate_bounded_contexts_store_is_left_to_the_library_it_serves(string role, string declaration, bool refused)
     {
-        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Host"), Identity + declaration, "App." + role, GeneratorTests.Levee);
+        var exe = role is "Host" or "Tool";
+        var program = exe && !declaration.Contains("Main(", StringComparison.Ordinal) ? "\npublic static class Program { public static void Main() { } }" : "";
+        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: exe), Identity + declaration + program, "App." + role, GeneratorTests.Levee);
 
+        Assert.Empty(output.Errors.Where(e => e.Id.StartsWith("CS", StringComparison.Ordinal)));
         Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
     }
 
@@ -133,10 +153,19 @@ public sealed class TrialTests
     [InlineData("typeof(Dispatcher).GetMethod(\"SendJsonAsync\", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)", true)]
     [InlineData("d.GetType().GetMethod(\"SendFromClientAsync\")", true)]
     [InlineData("typeof(Program).GetMethod(\"Main\")", false)]
+    [InlineData("System.Reflection.IntrospectionExtensions.GetTypeInfo(typeof(Dispatcher)).GetDeclaredMethod(\"SendJsonAsync\")", true)]
+    [InlineData("System.Reflection.RuntimeReflectionExtensions.GetRuntimeMethods(typeof(Dispatcher))", true)]
+    [InlineData("System.Type.GetType(\"Levee.Dispatcher, Levee\")!.GetMethods()", true)]
+    [InlineData("System.Activator.CreateInstance(typeof(OperationContext))", true)]
+    [InlineData("System.Reflection.IntrospectionExtensions.GetTypeInfo(typeof(Dispatcher)).DeclaredMethods", true)]
+    [InlineData("((System.Func<object>)(() => { var t = typeof(int); t = typeof(Dispatcher); return t.GetFields(); }))()", true)]
+    [InlineData("Held.GetMethods()", true)]
+    [InlineData("Mine.GetMethods()", false)]
     public async Task Levees_own_types_are_called_not_reflected_into(string lookup, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true),
-            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} public static object? Find(Dispatcher d) => {lookup}; }}",
+            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} public static object? Find(Dispatcher d) => {lookup}; "
+            + "static readonly System.Type Held = typeof(Dispatcher); static readonly System.Type Mine = typeof(Program); }",
             "App.Host", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));

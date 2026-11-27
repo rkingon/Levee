@@ -219,7 +219,7 @@ public sealed class SecondRoundTests
             }
             public sealed record ZipCodeOptions(string Key) { public static ZipCodeOptions Parse(string key) => new(key); }
             """, "App.Adapters");
-        var output = await Compile("Composition", $"using App.Adapters;\ninternal static class Wiring {{ public static object Go(Microsoft.Extensions.DependencyInjection.IServiceCollection services) => {expression}; }}",
+        var output = await Compile("Composition", $"using App.Adapters;\ninternal static class Wiring {{ public static void Go(Microsoft.Extensions.DependencyInjection.IServiceCollection services) => {expression}; }}",
             "App.Composition", adapters.Reference());
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE015"));

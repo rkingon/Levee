@@ -26,7 +26,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor WallClock = Rule(
         "LEVEE003", "Time comes from TimeProvider",
-        "{0} reads the wall clock. Fix: in a handler, use OperationContext.Now (the operation's one time), and OperationContext.NewId() for a new id; elsewhere, take a TimeProvider through the constructor. Only Composition, a Host or a Tool uses TimeProvider.System");
+        "{0} reads the wall clock. Fix: in a handler, use OperationContext.Now (the operation's one time), and OperationContext.NewId() for a new id; elsewhere, take a TimeProvider (or NodaTime's IClock) through the constructor. Only Composition, a Host or a Tool uses TimeProvider.System");
 
     public static readonly DiagnosticDescriptor Transaction = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",
@@ -35,6 +35,10 @@ internal static class Descriptors
     public static readonly DiagnosticDescriptor ScopeSetting = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",
         "This SQL sets the scope row-level security trusts (levee.scope, levee.platform) or writes the audit, both the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited by the dispatcher");
+
+    public static readonly DiagnosticDescriptor SignalByHand = Rule(
+        "LEVEE004", "Only the dispatcher saves and commits",
+        "This SQL names levee_signals, the channel IChangeSignals raises change signals on, whose watchers trust the scope its payload names: a pg_notify or NOTIFY of the app's own reaches any tenant's watchers. Fix: raise the signal with IChangeSignals.RaiseAsync in the operation, which sends it with the operation's transaction, in its scope");
 
     public static readonly DiagnosticDescriptor ServiceLocation = Rule(
         "LEVEE005", "No service location outside hosts",
@@ -94,11 +98,11 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor SideConnection = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
+        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system, a principal only Composition (or a Host) makes and hands to what sends as it (LEVEE021); to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
 
     public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} reaches {1}, a separate bounded context's store ([SeparateContext]), from the app's own code: its data is outside every operation, unscoped and unaudited. Fix: leave {1} to the library it serves (registered in Composition or the Host); what the app needs of that context is an operation of its own, or a port the context's adapter serves through the unit of work");
+        "{0} reaches {1}, a separate bounded context's store ([SeparateContext]), from the app's own code: its data is outside every operation, unscoped and unaudited. Fix: leave {1} to the library it serves, and name it only as a registration's type argument in Composition or the Host (AddDbContext<{1}>, UseDbContext<{1}>), never as a parameter, field, property or local, nor resolved from the container; what the app needs of that context is an operation of its own, or a port the context's adapter serves through the unit of work");
 
     public static readonly DiagnosticDescriptor OwnerRun = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
@@ -119,6 +123,14 @@ internal static class Descriptors
     public static readonly DiagnosticDescriptor Reflected = Rule(
         "LEVEE020", "The catalog is the generator's",
         "{0} reflects into {1}, one of Levee's own types: what Levee keeps internal is its own, and what it makes public is called, not looked up. Fix: call the public API; to send by name, MapLeveeOperations (HTTP) and WithLeveeOperations (MCP) are the surface, and in-process code sends the operation it holds through Dispatcher.SendAsync");
+
+    public static readonly DiagnosticDescriptor ProcessSends = Rule(
+        "LEVEE021", "Who an operation runs as is decided where the app composes",
+        "{0} is a process that holds the Dispatcher, so what it sends runs as whoever it names, in any scope, not as the caller that started it, in theirs. Fix: send each step through the ProcessContext RunAsync is given (context.SendAsync), which runs it as the process's starter, in their scope");
+
+    public static readonly DiagnosticDescriptor PrincipalMade = Rule(
+        "LEVEE021", "Who an operation runs as is decided where the app composes",
+        "{0} makes a principal in a {1} project, deciding there who an operation runs as and so what it may reach. Fix: act as the caller (OperationContext.Principal, or a process's ProcessContext.SendAsync); a principal of the app's own (the system's, for a write that must outlive the operation) is made in Composition, a Host or a Tool, and handed to what sends as it");
 
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",
@@ -162,11 +174,21 @@ internal static class Descriptors
         "LEVEE111", "Access policies and admissions refuse only with the codes they declare",
         "{0} refuses with '{1}', which it doesn't declare. Fix: add it to [Refuses(...)] on {0}, so the catalog lists it for every client");
 
+    public static readonly DiagnosticDescriptor DuplicateProcess = Rule(
+        "LEVEE112", "Every process input has one process",
+        "Process input {0} is run by {1} processes ({2}), and a queued job names only its input, so which one runs is the container's registration order. Fix: keep one IProcess<{0}>; if they do different things, give each an input type of its own");
+
+    public static readonly DiagnosticDescriptor ScopeUnread = Rule(
+        "LEVEE113", "An access policy decides by scope",
+        "{0} authorizes without reading the request's Scope, but an input-scoped operation runs in whatever scope its input names, so a caller it grants is granted every tenant's rows. Fix: decide who may act in which scope: compare request.Scope.Key with the caller's own (a member's tenant), and grant platform scope (request.Scope.Platform) only to the platform's operators");
+
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
+        "LEVEE021",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
+        "LEVEE112", "LEVEE113",
     ];
 }

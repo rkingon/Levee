@@ -168,10 +168,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if (role == Role.Composition || (role is Role.Host or Role.Tool or Role.Test && !composed && application))
         {
             Compose(context, compilation, role, operations, handlers, adapters, registers ? registration : null, refusals);
+            DuplicateProcesses(context, compilation, processes, ownOnly: false);
         }
         else if (role == Role.Test && composed && registers)
         {
             ComposeTestPart(context, compilation, operations, handlers, registration);
+            DuplicateProcesses(context, compilation, processes, ownOnly: true);
         }
         if (role == Role.Contracts && operations.Any(o => !o.Internal))
         {
@@ -333,6 +335,27 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         source.AppendLine("            return services;").AppendLine("        }").AppendLine("    }").AppendLine("}");
         context.AddSource("Levee.Composition.g.cs", source.ToString());
+    }
+
+    /// <summary>
+    /// A queued job names its input's type alone, and the worker resolves the one <c>IProcess&lt;TInput&gt;</c> for it, so two
+    /// for one input leave which runs to registration order. Across the root's own and every Application it references; a
+    /// test part reports only where its own process is one of them, as the app's root reported the rest.
+    /// </summary>
+    private static void DuplicateProcesses(SourceProductionContext context, Compilation compilation, List<(INamedTypeSymbol Process, ITypeSymbol Input)> own, bool ownOnly)
+    {
+        var all = own.Concat(compilation.SourceModule.ReferencedAssemblySymbols.Where(a => Roles.Of(a) == Role.Application)
+            .SelectMany(a => AllTypes(a.GlobalNamespace)).SelectMany(Processed));
+        foreach (var group in all.GroupBy(p => p.Input, SymbolEqualityComparer.Default).Where(g => g.Count() > 1))
+        {
+            var mine = group.FirstOrDefault(p => own.Contains(p));
+            if (ownOnly && mine.Process is null)
+            {
+                continue;
+            }
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.DuplicateProcess, mine.Process?.Locations.FirstOrDefault() ?? Location.None,
+                group.Key!.ToDisplayString(), group.Count(), string.Join(", ", group.Select(p => p.Process.ToDisplayString()))));
+        }
     }
 
     private static string DescriptorOf(OperationModel op)
@@ -555,6 +578,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 var named = mine.Where(a => a.Name is not null).ToList();
                 problem = setting is not null ? "a set (Many) is served by every adapter, so no setting chooses one. Fix: remove SelectedBy, or drop Many if one adapter serves at a time"
+                    : Known.DefaultAdapter(port) is { } fallback ? $"a set (Many) is served by every adapter, so there's no one adapter for Default '{fallback}' to stand in for. Fix: remove Default, or drop Many and add SelectedBy if one adapter serves at a time"
                     : named.Count > 0 && named.Count < mine.Count ? "a routed set names every adapter, or none. Fix: name each [Adapter(\"...\")], or none of them"
                     : named.GroupBy(a => a.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice ? $"two adapters are named '{twice.Key}'. Fix: give each a distinct name"
                     : null;
@@ -667,14 +691,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return path.Length == 0 ? named.Name : $"{path} ({named.Name})";
         }
-        foreach (var member in named.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        foreach (var member in named.GetMembers())
         {
-            var memberType = member switch
-            {
-                IPropertySymbol { IsIndexer: false, DeclaredAccessibility: Accessibility.Public } p => p.Type,
-                _ => null,
-            };
-            if (memberType is null)
+            if (Wired(member) is not { } memberType)
             {
                 continue;
             }
@@ -723,19 +742,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return null;
         }
-        // What the wire carries: public properties, and any field or property [JsonInclude] adds; an interface's, with those it inherits.
+        // An interface's members include those it inherits.
         var declared = named.TypeKind == TypeKind.Interface ? named.AllInterfaces.Prepend(named).SelectMany(i => i.GetMembers()) : named.GetMembers();
-        foreach (var member in declared.Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        foreach (var member in declared)
         {
-            var included = member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
-            var memberType = member switch
-            {
-                IPropertySymbol { IsIndexer: false } p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
-                IFieldSymbol f when included => f.Type,
-                _ => null,
-            };
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
-            if (memberType is not null && Untyped(memberType, seen, at) is { } found)
+            if (Wired(member) is { } memberType && Untyped(memberType, seen, at) is { } found)
             {
                 return found;
             }
@@ -768,6 +780,32 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// The member's type if System.Text.Json carries it, as its default member selection does: a public property, or a field
+    /// or non-public property [JsonInclude] adds, unless [JsonIgnore] always drops it. Null for anything else.
+    /// </summary>
+    private static ITypeSymbol? Wired(ISymbol member)
+    {
+        if (member.IsStatic || member.IsImplicitlyDeclared)
+        {
+            return null;
+        }
+        var attributes = member.GetAttributes();
+        // A condition other than Always (WhenWritingNull, WhenWritingDefault) still carries the member some of the time.
+        if (attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
+            && a.NamedArguments.All(n => n.Key != "Condition" || n.Value.Value is 1)))
+        {
+            return null;
+        }
+        var included = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+        return member switch
+        {
+            IPropertySymbol { IsIndexer: false } p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
+            IFieldSymbol f when included => f.Type,
+            _ => null,
+        };
     }
 
     private static IEnumerable<INamedTypeSymbol> Bases(INamedTypeSymbol type)
@@ -817,26 +855,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
         // The BCL's own types hold no [Secret]; their type arguments, above, may.
         foreach (var t in declaring.Where(t => t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true))
         {
-            // What the wire carries: public members and any [JsonInclude] adds, less any always ignored.
-            foreach (var member in t.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && m is IPropertySymbol { IsIndexer: false } or IFieldSymbol))
+            foreach (var member in t.GetMembers())
             {
-                var attributes = member.GetAttributes();
-                var included = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
-                var ignored = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
-                    && a.NamedArguments.All(n => n.Key != "Condition" || n.Value.Value is 1));
-                var memberType = member switch
-                {
-                    IPropertySymbol p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
-                    IFieldSymbol f when included => f.Type,
-                    _ => null,
-                };
-                if (memberType is null || ignored)
+                if (Wired(member) is not { } memberType)
                 {
                     continue;
                 }
                 var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
                 // Marked on the member, or on the interface member it implements.
-                var marked = attributes.Any(IsSecret) || (member is IPropertySymbol property && named.AllInterfaces
+                var marked = member.GetAttributes().Any(IsSecret) || (member is IPropertySymbol property && named.AllInterfaces
                     .SelectMany(i => i.GetMembers().OfType<IPropertySymbol>())
                     .Any(i => i.GetAttributes().Any(IsSecret) && SymbolEqualityComparer.Default.Equals(named.FindImplementationForInterfaceMember(i), property)));
                 if (marked)
@@ -902,7 +929,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 .FirstOrDefault();
             foreach (var parameter in constructor?.Parameters ?? [])
             {
-                if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false, IsGenericType: false } helper
+                if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false } helper && Closed(helper)
                     && SymbolEqualityComparer.Default.Equals(helper.ContainingAssembly, assembly)
                     && Injectable(helper) && seen.Add(helper))
                 {
@@ -913,6 +940,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         return [.. found.OrderBy(t => t.ToDisplayString(), StringComparer.Ordinal)];
     }
+
+    /// <summary>A type the container can construct as named: no type parameter left open in it or in a type it's nested in.</summary>
+    private static bool Closed(ITypeSymbol type) => type switch
+    {
+        ITypeParameterSymbol => false,
+        IArrayTypeSymbol array => Closed(array.ElementType),
+        INamedTypeSymbol named => !named.IsUnboundGenericType && named.TypeArguments.All(Closed) && (named.ContainingType is null || Closed(named.ContainingType)),
+        _ => true,
+    };
 
     /// <summary>A class whose widest constructor takes only services (interfaces and classes), never a value.</summary>
     private static bool Injectable(INamedTypeSymbol type) =>
