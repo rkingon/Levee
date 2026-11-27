@@ -84,6 +84,9 @@ Levee's guarantees are against mistakes: code that compiles in the wrong shape, 
   of factories) is a second catalog: ordinary code to the build, so not refused. Every operation it sends still runs the
   pipeline (access, scope, audit), but its names, schemas and refusals are its own, not the catalog's.
   `MapLeveeOperations` and `WithLeveeOperations` are the surfaces; the trial rubrics count a hand-written one as a miss.
+- **SQL of the app's own that runs as someone else:** a `security definer` function a migration creates runs with its
+  owner's rights, which row-level security may not bind. Levee's own (`levee_audit_write`) is held by the audit's insert
+  policy; an app's is the app's to answer for, as any grant of its own is.
 
 ## Forks
 
