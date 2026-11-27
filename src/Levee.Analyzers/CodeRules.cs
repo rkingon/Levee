@@ -27,7 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach,
+            Descriptors.SeparateContextReach, Descriptors.ByName,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -81,6 +81,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (clock)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.WallClock, context.Operation.Syntax.GetLocation(), $"{property.ContainingType!.Name}.{property.Name}"));
+        }
+        // An operation's type, read from its descriptor, is what turns a name into an input to send.
+        else if (owner == "Levee.OperationDescriptor" && property.Name is "InputType" or "ResultType")
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"{property.ContainingType!.Name}.{property.Name} is read"));
         }
     }
 
@@ -443,6 +448,12 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
     {
+        // What clients see, and what's pure, sends nothing: a contract that dispatches itself is a surface of its own.
+        if (role is Role.Kernel or Role.Contracts or Role.Domain && IsLevee(method.ContainingType, "Dispatcher"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"{role} calls Dispatcher.{method.Name}"));
+            return;
+        }
         // Public only because the root's generated composition, in another assembly, calls it.
         var generatedRegistration = method.ContainingType.Name.StartsWith("LeveeRegistration_", StringComparison.Ordinal)
             && method.ContainingType.ContainingNamespace?.ToDisplayString() == "Levee.Generated";

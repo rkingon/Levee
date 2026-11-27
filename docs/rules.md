@@ -380,7 +380,23 @@ The dispatcher trusts what a descriptor says: whether the operation is platform-
 writes descriptors only from `[Operation(...)]`, after LEVEE104–106 have checked it. A descriptor, catalog or catalog part
 built by hand (`OperationDescriptor.Create`, `new OperationCatalog`, `AddLeveePart`) skips every one of those checks, so
 outside tests it fails the build. So does calling the composition's own plumbing by hand (an assembly's generated
-`LeveeRegistration_*`, `PortSelection`): public only because the root's generated code, in another assembly, calls it. Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
+`LeveeRegistration_*`, `PortSelection`): public only because the root's generated code, in another assembly, calls it.
+
+Sending by name is Levee's projections' alone. A route of the app's that takes an operation's name and its input as
+JSON (reading the operation's type from its descriptor, `InputType` or `ResultType`, to deserialize it) is a second
+surface beside `MapLeveeOperations`, without the strict wire, the catalog's refusals, problem responses or rechecks. So
+is a contract that sends itself: Kernel, Contracts and Domain never call the `Dispatcher`. An API of the app's own
+design is a Projection, its routes typed:
+
+```csharp
+// Wrong: a by-name surface of the app's own
+app.MapPost("/v1/ops/{name}", (string name, JsonElement body, Dispatcher d) =>
+    d.SendAsync((IOperation<object>)body.Deserialize(catalog.Find(name)!.InputType)!, ...));
+
+// Right: Levee's, or a Projection's typed route
+app.MapLeveeOperations(identify);
+app.MapPost("/v1/notes", (CreateNoteBody body, Dispatcher d, ...) => d.SendAsync(new CreateNote(...), ...));
+``` Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
 it.
 
 ## LEVEE101: Every operation has a handler

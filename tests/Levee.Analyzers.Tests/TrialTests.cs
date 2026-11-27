@@ -113,4 +113,18 @@ public sealed class TrialTests
         Assert.Contains("AddScoped<global::Levee.IProcess<global::App.TurnStarted>, global::App.RunTurn>(services);", output.Generated("Levee.Assembly.g.cs"),
             StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("Host", "public static class Wire { public static System.Type Of(OperationDescriptor d) => d.InputType; }", true)]
+    [InlineData("Projection", "public static class Wire { public static string Of(OperationDescriptor d) => d.Name; }", false)]
+    [InlineData("Contracts", "public static class Send { public static System.Threading.Tasks.Task<Result<int>> Go(Dispatcher d, IOperation<int> o, Principal p) => d.SendAsync(o, p, default); }", true)]
+    [InlineData("Host", "public static class Send { public static System.Threading.Tasks.Task<Result<int>> Go(Dispatcher d, IOperation<int> o, Principal p) => d.SendAsync(o, p, default); }", false)]
+    [InlineData("Application", "public static class Send { public static System.Threading.Tasks.Task<Result<int>> Go(Dispatcher d, IOperation<int> o, Principal p) => d.SendAsync(o, p, default); }", false)]
+    public async Task Sending_by_name_is_Levees_projections_alone(string role, string declaration, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Host"), "using Levee;\n" + declaration
+            + (role == "Host" ? "\npublic static class Program { public static void Main() { } }" : ""), "App." + role, GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
+    }
 }

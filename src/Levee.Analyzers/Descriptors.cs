@@ -112,6 +112,10 @@ internal static class Descriptors
         "LEVEE020", "The catalog is the generator's",
         "{0} builds part of the catalog or the composition by hand, where no rule checks what it claims (Platform, Internal, Effects, which adapter serves a port) and the dispatcher trusts it. Fix: declare the operation with [Operation(...)] and let the generated AddLeveeOperations (or AddLeveeTestOperations) register it");
 
+    public static readonly DiagnosticDescriptor ByName = Rule(
+        "LEVEE020", "The catalog is the generator's",
+        "{0}: a surface of the app's own that sends operations by name, beside Levee's, holds none of what Levee's does (the strict wire, the catalog's refusals, problem responses, rechecks). Fix: MapLeveeOperations (HTTP) and WithLeveeOperations (MCP) are the by-name surface; an API of the app's own design is a Projection project, its routes typed, each sending its operation through the Dispatcher");
+
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",
         "Operation {0} ({1}) has no handler. Fix: add an internal sealed IOperationHandler<{1}, TResult> (ISubscriptionHandler for a subscription) in Application; dotnet levee generate operation scaffolds one");
