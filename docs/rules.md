@@ -580,8 +580,7 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
   forwarded unchanged to the base's positional constructor by its own name; and records whose every declared subtype has a
   discriminator. A Kernel type crosses into a contract as a value object or an enum, never as a record
   (`[JsonDerivedType(typeof(Card), "card")]`). Not an interface (written, never read back), a collection of the app's own,
-  or a constructor of two or more values written by hand, which decides where each value lands where no schema shows
-  it. An input's every member is one it reads: a computed member, or `ScopeKey` implemented publicly, is a caller's
+  or a constructor written by hand, which decides where each value lands where no schema shows it. An input's every member is one it reads: a computed member, or `ScopeKey` implemented publicly, is a caller's
   value silently dropped (implement `IScopedOperation.ScopeKey` explicitly). The catalog checks the same where it's made.
 - **Value objects say what they write**: a type of the app's that a converter of its own writes, in the input or the
   result, declares the primitive it's written as. No schema can read a converter, so without it every client and agent

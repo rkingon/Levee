@@ -238,15 +238,19 @@ public sealed class OperationCatalog
                 return $"{type.Name} is an interface, which the wire writes but can't read back." + language;
             }
             // Levee's own (ChangeSignal) are judged by Levee's tests.
+            if (ContractLanguage.LeveeRecords.Contains(MetadataName(type)))
+            {
+                continue;
+            }
             for (var baseOf = type.BaseType; baseOf is not null && baseOf != typeof(object) && baseOf != typeof(ValueType); baseOf = baseOf.BaseType)
             {
-                if (baseOf.Assembly != owner && baseOf.Assembly != typeof(OperationCatalog).Assembly)
+                if (baseOf.Assembly != owner)
                 {
                     return $"{type.Name} derives from {baseOf.Name}, {baseOf.Assembly.GetName().Name}'s, so how its values reach their members can't be judged "
                         + "where the contract is. Fix: declare the contract's own record, with no base from another assembly (LEVEE104).";
                 }
             }
-            if (type.Assembly != owner && type.Assembly != typeof(OperationCatalog).Assembly)
+            if (type.Assembly != owner)
             {
                 return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own, so how it's built can't be judged where the contract is. "
                     + "Fix: declare the contract's own record beside the operation, or carry the value as a value object or an enum (LEVEE104).";

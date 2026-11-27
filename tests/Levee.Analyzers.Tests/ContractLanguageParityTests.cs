@@ -48,6 +48,8 @@ public sealed class ContractLanguageParityTests
     [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered: Delivered, Delivered: Ordered);", "Q A", true, true)]
     [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered);", "Q A", true, true)]
     [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered: Delivered, Ordered: Ordered);", "Q A", false, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered);", "Q A", true, true)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered) { protected Counts() : this(0, 0) { } } public sealed record Q(int Ordered, int Delivered) : Counts();", "Q A", true, true)]
     [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } [System.Text.Json.Serialization.JsonConstructor] public Q(int ordered, int delivered) : this(delivered, ordered, 0) { } private Q(int ordered, int delivered, int _) { Ordered = ordered; Delivered = delivered; } }", "Q A", true, true)]
     public async Task The_build_and_the_catalog_agree_on_the_contract_language(string types, string members, bool refused, bool sourceOnly)
     {
