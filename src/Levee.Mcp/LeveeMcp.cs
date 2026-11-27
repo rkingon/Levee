@@ -150,9 +150,23 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
     public override async ValueTask<CallToolResult> InvokeAsync(RequestContext<CallToolRequestParams> request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send = mcp.Send is { } remote
-            ? (name, input, ct) => remote(request, name, input, ct)
-            : await InProcessAsync(request);
+        Func<string, JsonElement, CancellationToken, Task<Result<JsonElement>>> send;
+        try
+        {
+            send = mcp.Send is { } remote
+                ? (name, input, ct) => remote(request, name, input, ct)
+                : await InProcessAsync(request);
+        }
+        catch (Exception e) when (!cancellationToken.IsCancellationRequested)
+        {
+            // The host's own lookup failing is answered as a problem, as over HTTP.
+            var failed = request.Services?.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()?.CreateLogger("Levee.Mcp");
+            if (failed is not null)
+            {
+                IdentifyFailedMessage(failed, descriptor.Name, e);
+            }
+            return Failed(Error.Unavailable(LeveeErrors.CallerUnconfirmed, "The caller couldn't be confirmed: try again."));
+        }
         // Bind runs only for a tool that takes a bound input: an unrelated lookup can't fail the others.
         var bound = mcp.Bind is { } bind && mcp.BoundInputs.Any(Takes) ? await bind(request, descriptor) : null;
         var log = request.Services?.GetService<Microsoft.Extensions.Logging.ILoggerFactory>()?.CreateLogger("Levee.Mcp");
@@ -162,6 +176,10 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
     private static readonly Action<Microsoft.Extensions.Logging.ILogger, string, Exception?> RenderFailedMessage =
         Microsoft.Extensions.Logging.LoggerMessage.Define<string>(Microsoft.Extensions.Logging.LogLevel.Error, new(1, "RenderFailed"),
             "Rendering {Operation}'s result failed; answered as JSON");
+
+    private static readonly Action<Microsoft.Extensions.Logging.ILogger, string, Exception?> IdentifyFailedMessage =
+        Microsoft.Extensions.Logging.LoggerMessage.Define<string>(Microsoft.Extensions.Logging.LogLevel.Warning, new(2, "IdentifyFailed"),
+            "Confirming the caller of {Operation} failed");
 
     private static void RenderFailed(Microsoft.Extensions.Logging.ILogger log, Exception e, string operation) => RenderFailedMessage(log, operation, e);
 

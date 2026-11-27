@@ -447,3 +447,4 @@ Levee.LeveeOptions.OutcomeTimeout.set -> void
 const Levee.LeveeErrors.InvalidValue = "store.invalid_value" -> string!
 const Levee.LeveeErrors.Stale = "store.stale" -> string!
 const Levee.LeveeErrors.CallerUnconfirmed = "caller.unconfirmed" -> string!
+static Levee.LeveeJson.FindSecretIn(object! value, System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string?

@@ -26,6 +26,8 @@ public sealed class PostgresFixture : IAsyncLifetime
         var sql = new StringBuilder()
             .AppendLine("create role app login password 'app' nosuperuser nobypassrls nocreaterole nocreatedb;")
             .AppendLine("revoke create on schema public from public;")
+            // Not even a temporary table: what Oxbow's setup revokes too.
+            .AppendLine("do $$ begin execute format('revoke temporary on database %I from public', current_database()); end $$;")
             .AppendLine(LeveeSchema.Sql)
             .AppendLine(SampleDbContext.Sql);
         foreach (var migration in OxbowSchema.GetMigrations(0))

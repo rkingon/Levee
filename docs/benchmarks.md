@@ -41,9 +41,9 @@ iterations.
 - **A write costs about 360 µs more than the bare insert.** About 125 µs of it is the audit and the second scope setting:
   the statements alone, sent by hand. The other 233 µs is in-process work and EF's tracked insert (`SaveChanges` where the
   by-hand write sends one raw statement); those two aren't measured apart yet.
-- **Round trips likely dominate.** The same statements and audit by hand cost about 124 µs more than the bare insert (the
-  audit's statement, and the scope setup that differs between the two), which suggests a round trip through Docker
-  Desktop's network on macOS costs about that; not measured alone. A database nearer the app would
+- **Round trips may dominate.** The same statements and audit by hand cost about 124 µs more than the bare insert: the
+  audit's statement, the scope setup that differs between the two, and their transport together. What one round trip
+  through Docker Desktop's network costs isn't measured here. A database nearer the app would
   likely pay less for each, which this benchmark doesn't show.
 - **Not measured yet:** a subscription's recheck (a read-only unit of work per recheck, every 30 seconds per open
   stream) and jobs (Oxbow's own [benchmarks](https://github.com/rkingon/Oxbow/blob/main/docs/benchmarks.md) cover the

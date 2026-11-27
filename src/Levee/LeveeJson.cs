@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Levee;
 
@@ -49,16 +50,131 @@ public static class LeveeJson
 
     /// <summary>
     /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>
-    /// value replaced, at any depth (in nested records and collections, through interfaces and declared derived types), by
-    /// the same contract the serializer wrote it with, so under the name the wire gives it.
+    /// value replaced as the serializer writes it, so wherever the serializer goes (nested records and collections, nullable
+    /// values, interfaces, derived and fallback types) and under the name it gives each member.
     /// </summary>
     public static string Redact(object value, Type type, JsonSerializerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(value);
         var json = options ?? Options;
-        var node = JsonSerializer.SerializeToNode(value, type, json);
-        Redact(node, value, json.GetTypeInfo(type), json);
-        return node?.ToJsonString(json) ?? "null";
+        return JsonSerializer.Serialize(value, type, RedactingOf(json));
+    }
+
+    /// <summary>
+    /// The first <see cref="SecretAttribute"/> member <paramref name="value"/> carries, by its type and by the types its
+    /// members actually have (an implementation behind an interface), or null: what decides whether a job's input is sealed.
+    /// </summary>
+    public static string? FindSecretIn(object value, Type type, JsonSerializerOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        var json = options ?? Options;
+        if (FindSecret(type, json) is { } declared)
+        {
+            return declared;
+        }
+        FoundSecret = null;
+        JsonSerializer.SerializeToUtf8Bytes(value, type, RedactingOf(json));
+        var found = FoundSecret;
+        FoundSecret = null;
+        return found;
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions> Redacting = [];
+
+    /// <summary>The same options, each marked member written as its marker by its own contract.</summary>
+    private static JsonSerializerOptions RedactingOf(JsonSerializerOptions json) => Redacting.GetValue(json, o =>
+    {
+        var redacting = new JsonSerializerOptions(o)
+        {
+            TypeInfoResolver = (o.TypeInfoResolver ?? new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()).WithAddedModifier(MarkMembers),
+        };
+        redacting.MakeReadOnly();
+        return redacting;
+    });
+
+    // The member about to be written, when its mark depends on the value's own type: set by its getter, taken by its converter,
+    // which the serializer calls right after, on the same thread.
+    [ThreadStatic]
+    private static string? _pending;
+
+    [ThreadStatic]
+    private static string? FoundSecret;
+
+    private static void MarkMembers(System.Text.Json.Serialization.Metadata.JsonTypeInfo info)
+    {
+        if (info.Kind != System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object)
+        {
+            return;
+        }
+        foreach (var property in info.Properties)
+        {
+            if (Mark(property.AttributeProvider, info.Type) is { } mark)
+            {
+                property.CustomConverter = (JsonConverter)Activator.CreateInstance(typeof(MarkerConverter<>).MakeGenericType(property.PropertyType), mark, property.Name)!;
+            }
+            // Written by a contract another type may stand behind (an interface, a base the serializer falls back to): the value's
+            // own type may mark the member.
+            else if ((info.Type.IsInterface || (!info.Type.IsSealed && !info.Type.IsValueType)) && property.Get is { } get)
+            {
+                var provider = property.AttributeProvider;
+                property.Get = owner =>
+                {
+                    _pending = owner is null ? null : Mark(provider, owner.GetType());
+                    return get(owner!);
+                };
+                property.CustomConverter = (JsonConverter)Activator.CreateInstance(typeof(OwnTypeConverter<>).MakeGenericType(property.PropertyType),
+                    property.CustomConverter, property.Name)!;
+            }
+        }
+    }
+
+    private static void Wrote(string mark, string member)
+    {
+        if (mark == "[secret]")
+        {
+            FoundSecret ??= member;
+        }
+    }
+
+    private sealed class MarkerConverter<T>(string mark, string member) : JsonConverter<T>
+    {
+        public override bool HandleNull => true;
+
+        public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException("A redacted value is only written.");
+
+        public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
+        {
+            Wrote(mark, member);
+            writer.WriteStringValue(mark);
+        }
+    }
+
+    private sealed class OwnTypeConverter<T>(JsonConverter? inner, string member) : JsonConverter<T>
+    {
+        public override bool HandleNull => true;
+
+        public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            throw new NotSupportedException("A redacted value is only written.");
+
+        public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
+        {
+            var mark = _pending;
+            _pending = null;
+            if (mark is not null)
+            {
+                Wrote(mark, member);
+                writer.WriteStringValue(mark);
+            }
+            else if (value is null)
+            {
+                writer.WriteNullValue();
+            }
+            else
+            {
+                ((JsonConverter<T>)(inner ?? options.GetConverter(typeof(T)))).Write(writer, value, options);
+            }
+        }
     }
 
     /// <summary>The first <see cref="SecretAttribute"/> property anywhere in <paramref name="type"/>'s wire shape, or null.</summary>
@@ -93,6 +209,13 @@ public static class LeveeJson
         {
             return false;
         }
+        // Written by a base's contract: the value's own type may override the member and mark it there.
+        if (owner != property.DeclaringType && !property.DeclaringType!.IsInterface
+            && owner.GetProperty(property.Name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public) is { } own
+            && own != property && Attribute.IsDefined(own, mark, inherit: true))
+        {
+            return true;
+        }
         // Written through an interface: the member the value's own type implements it with may carry the mark.
         if (property.DeclaringType is { IsInterface: true } through && through.IsAssignableFrom(owner))
         {
@@ -122,82 +245,20 @@ public static class LeveeJson
         return false;
     }
 
-    /// <summary>
-    /// Walks the value and its JSON together by the contract the serializer used: the declared type's (an interface's
-    /// members, under its names), except where it writes the value's own (<c>object</c>, a declared polymorphic base).
-    /// </summary>
-    private static void Redact(JsonNode? node, object? value, System.Text.Json.Serialization.Metadata.JsonTypeInfo declared, JsonSerializerOptions json)
-    {
-        if (node is null || value is null)
-        {
-            return;
-        }
-        var info = declared.Type == typeof(object) || declared.PolymorphismOptions is not null ? json.GetTypeInfo(value.GetType()) : declared;
-        switch (node)
-        {
-            case JsonObject obj when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
-                foreach (var property in info.Properties)
-                {
-                    if (!obj.TryGetPropertyValue(property.Name, out var child))
-                    {
-                        continue;
-                    }
-                    if (Mark(property.AttributeProvider, value.GetType()) is { } mark)
-                    {
-                        obj[property.Name] = mark;
-                    }
-                    else if (child is not null && property.Get is { } get)
-                    {
-                        Redact(child, get(value), json.GetTypeInfo(property.PropertyType), json);
-                    }
-                }
-                break;
-            case JsonArray items when value is System.Collections.IEnumerable values && value is not string:
-                var element = json.GetTypeInfo(info.ElementType ?? typeof(object));
-                var index = 0;
-                foreach (var item in values)
-                {
-                    if (index < items.Count)
-                    {
-                        Redact(items[index], item, element, json);
-                    }
-                    index++;
-                }
-                break;
-            // Entries are written in the order they enumerate, so each is matched to its JSON by position: a key's own spelling
-            // (a date, an enum, a converter's) never has to be reproduced.
-            case JsonObject map when info.Kind == System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary && value is System.Collections.IEnumerable entries:
-                var entryInfo = json.GetTypeInfo(info.ElementType ?? typeof(object));
-                var at = 0;
-                foreach (var entry in entries)
-                {
-                    if (at < map.Count)
-                    {
-                        Redact(map[at], ValueOf(entry), entryInfo, json);
-                    }
-                    at++;
-                }
-                break;
-        }
-    }
-
     /// <summary>Never written: a bare <c>[JsonIgnore]</c>, or one whose condition is <c>Always</c>.</summary>
     private static bool Ignored(System.Text.Json.Serialization.Metadata.JsonPropertyInfo property) =>
         property.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: false).OfType<JsonIgnoreAttribute>()
             .Any(a => a.Condition == JsonIgnoreCondition.Always) == true;
-
-    private static object? ValueOf(object? entry) => entry switch
-    {
-        System.Collections.DictionaryEntry e => e.Value,
-        null => null,
-        _ => entry.GetType().GetProperty("Value")?.GetValue(entry),
-    };
 
     private static string? Find(System.Text.Json.Serialization.Metadata.JsonTypeInfo info, JsonSerializerOptions json, HashSet<Type> seen)
     {
         if (!seen.Add(info.Type))
         {
             return null;
+        }
+        if (Nullable.GetUnderlyingType(info.Type) is { } underlying)
+        {
+            return Find(json.GetTypeInfo(underlying), json, seen);
         }
         if (info.ElementType is { } element)
         {

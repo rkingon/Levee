@@ -468,7 +468,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (streams && errors.Count > 0)
         {
-            Report("a subscription fails only as it opens, with Levee's own errors. Fix: remove Errors");
+            Report("a subscription declares no error codes of its handler's: it's refused as it opens, and ends on a recheck or a failure, with Levee's own. Fix: remove Errors");
             return null;
         }
         if (streams && (effects != 1 || idempotency != 0))
@@ -669,6 +669,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
         return null;
     }
 
+    private static IEnumerable<INamedTypeSymbol> Bases(INamedTypeSymbol type)
+    {
+        for (var t = type.BaseType; t is not null; t = t.BaseType)
+        {
+            yield return t;
+        }
+    }
+
     private static bool IsSecret(AttributeData attribute) => attribute.AttributeClass?.ToDisplayString() == "Levee.SecretAttribute";
 
     /// <summary>The path to the first [Secret] member of an input, at any depth, or null.</summary>
@@ -693,8 +701,18 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 return inDerived;
             }
         }
+        // A collection of the app's own (a named List<Leaf>) carries its items by what it derives from and implements.
+        foreach (var carried in Bases(named).Concat(named.AllInterfaces).SelectMany(t => t.TypeArguments))
+        {
+            if (SecretIn(carried, seen, path) is { } inItems)
+            {
+                return inItems;
+            }
+        }
+        // An interface's members include those it inherits; a class's, its bases'.
+        IEnumerable<INamedTypeSymbol> declaring = named.TypeKind == TypeKind.Interface ? named.AllInterfaces.Prepend(named) : Bases(named).Prepend(named);
         // The BCL's own types hold no [Secret]; their type arguments, above, may.
-        for (var t = named; t is not null && t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true; t = t.BaseType)
+        foreach (var t in declaring.Where(t => t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true))
         {
             // What the wire carries: public members and any [JsonInclude] adds, less any always ignored.
             foreach (var member in t.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && m is IPropertySymbol { IsIndexer: false } or IFieldSymbol))

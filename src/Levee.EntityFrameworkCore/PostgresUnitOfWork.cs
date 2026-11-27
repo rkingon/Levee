@@ -316,8 +316,8 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                     };
                 case DbUpdateConcurrencyException:
                     return Error.Conflict(LeveeErrors.Stale, "There was no row to change: another write changed it first, or it isn't this scope's.");
+                // Npgsql's own timeouts come wrapped in it; a bare timeout is the handler's dependency's, not the store's.
                 case NpgsqlException { IsTransient: true }:
-                case TimeoutException:
                     return Error.Unavailable(LeveeErrors.StoreUnavailable, "The database couldn't be reached; try again.");
             }
         }

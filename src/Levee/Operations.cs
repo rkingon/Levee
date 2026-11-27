@@ -71,7 +71,8 @@ public sealed class OperationAttribute(string name, string access) : Attribute
 
     /// <summary>
     /// The platform's own: in the catalog and through the pipeline (authorized, scoped, audited) like any other, but never
-    /// projected to a client (HTTP, MCP, CLI). For what runs before there's a caller (sign-in) or for the platform alone.
+    /// projected to a client (HTTP, MCP): no client can call it. <c>dotnet levee catalog</c>, which reads the catalog offline,
+    /// lists it, marked internal. For what runs before there's a caller (sign-in) or for the platform alone.
     /// </summary>
     public bool Internal { get; set; }
 

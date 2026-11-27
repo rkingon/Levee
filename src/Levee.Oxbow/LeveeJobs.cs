@@ -91,7 +91,8 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             throw new InvalidOperationException(
                 $"{descriptor.Name} can't run as a job: jobs run at least once, and it declares that repeating it isn't safe (Idempotency.None).");
         }
-        var secret = LeveeJson.FindSecret(descriptor.InputType, levee.Json);
+        // By its type and by what its members actually are: an implementation behind an interface may carry the mark.
+        var secret = LeveeJson.FindSecretIn(operation, descriptor.InputType, levee.Json);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(

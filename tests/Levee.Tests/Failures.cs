@@ -879,3 +879,48 @@ public sealed class TwelfthAuditFixTests
         [Secret, System.Text.Json.Serialization.JsonIgnore] public string? Kept { get; init; }
     }
 }
+
+public readonly record struct ContactValue([property: Personal] string Email);
+
+public sealed record MaybeContact(ContactValue? Primary);
+
+[System.Text.Json.Serialization.JsonPolymorphic(UnknownDerivedTypeHandling = System.Text.Json.Serialization.JsonUnknownDerivedTypeHandling.FallBackToBaseType)]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(Known), "known")]
+public interface IShape
+{
+    [System.Text.Json.Serialization.JsonPropertyName("shape_owner")] string Owner { get; }
+}
+
+public sealed record Known(string Owner) : IShape;
+
+public sealed record Unlisted([property: Personal] string Owner) : IShape;
+
+public sealed record Drawing(IShape Shape);
+
+public sealed record Pay(IPayer Payer);
+
+public sealed class ThirteenthAuditFixTests
+{
+    [Fact]
+    public void A_marked_member_inside_a_nullable_value_is_redacted()
+    {
+        Assert.DoesNotContain("example.com", LeveeJson.Redact(new MaybeContact(new ContactValue("ada@example.com")), typeof(MaybeContact)), StringComparison.Ordinal);
+        Assert.Contains("\"primary\":null", LeveeJson.Redact(new MaybeContact(null), typeof(MaybeContact)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_type_the_serializer_falls_back_from_is_redacted_by_what_it_writes()
+    {
+        var audited = LeveeJson.Redact(new Drawing(new Unlisted("ada@example.com")), typeof(Drawing));
+
+        Assert.DoesNotContain("example.com", audited, StringComparison.Ordinal);
+        Assert.Contains("\"shape_owner\":\"[personal]\"", audited, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_secret_only_an_implementation_marks_is_found_in_the_value()
+    {
+        Assert.Null(LeveeJson.FindSecret(typeof(Pay)));
+        Assert.Equal("card", LeveeJson.FindSecretIn(new Pay(new Payer("4242")), typeof(Pay)));
+    }
+}
