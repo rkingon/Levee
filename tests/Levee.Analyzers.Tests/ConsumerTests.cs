@@ -205,6 +205,27 @@ public sealed class SecondRoundTests
     }
 
     [Theory]
+    [InlineData("services.AddZipCodes()", false)]
+    [InlineData("App.Adapters.ZipCodeOptions.Parse(\"x\")", true)]
+    [InlineData("App.Adapters.ZipCodes.Warm()", true)]
+    public async Task Composition_calls_an_adapters_own_registration_and_nothing_else_of_it(string expression, bool refused)
+    {
+        var adapters = await Compile("Adapter", """
+            namespace App.Adapters;
+            public static class ZipCodes
+            {
+                public static Microsoft.Extensions.DependencyInjection.IServiceCollection AddZipCodes(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) => services;
+                public static int Warm() => 1;
+            }
+            public sealed record ZipCodeOptions(string Key) { public static ZipCodeOptions Parse(string key) => new(key); }
+            """, "App.Adapters");
+        var output = await Compile("Composition", $"using App.Adapters;\ninternal static class Wiring {{ public static object Go(Microsoft.Extensions.DependencyInjection.IServiceCollection services) => {expression}; }}",
+            "App.Composition", adapters.Reference());
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE015"));
+    }
+
+    [Theory]
     [InlineData("App.Rules.Decide()", true)]
     [InlineData("new App.Settings(3)", false)]
     [InlineData("(System.Func<int>)App.Rules.Decide", true)]

@@ -283,6 +283,22 @@ Composition constructs, binds and registers. Calling into the application from t
 task) skips the pipeline: send an operation through the `Dispatcher` instead, as the app's own principal. A delegate to
 an Application method (a method group handed to a registration, a loop or a timer) is a call all the same.
 
+An adapter's own setup is the exception: what it needs beyond its ports (its options, an `HttpClient`, a vendor's SDK)
+is one `IServiceCollection` extension in its Adapter project, and Composition calls it. Nothing else of an adapter's is
+called from Composition, so its options are parsed inside that extension, not by Composition.
+
+```csharp
+// Adapter
+public static class ZipCodeApi
+{
+    public static IServiceCollection AddZipCodeApi(this IServiceCollection services, IConfiguration configuration) =>
+        services.Configure<ZipCodeApiOptions>(configuration.GetSection("ZipCodeApi"));
+}
+
+// Composition
+services.AddZipCodeApi(configuration);
+```
+
 ## LEVEE016: Application is reached only through operations
 
 An Application class that implements an interface from Kernel, Contracts or a package (a vendor's `IHealthCheck`, a

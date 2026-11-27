@@ -228,7 +228,14 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         {
             return;
         }
-        if (method.MethodKind == MethodKind.Ordinary && roleOf(method.ContainingType.ContainingAssembly) is Role.Application or Role.Domain or Role.Adapter)
+        var reached = method.MethodKind == MethodKind.Ordinary ? roleOf(method.ContainingType.ContainingAssembly) : Role.None;
+        // An adapter registers what it needs beyond its ports (its options, an HttpClient) in one extension of its own.
+        if (reached == Role.Adapter && method.IsExtensionMethod && method.IsStatic
+            && method.Parameters.FirstOrDefault()?.Type.ToDisplayString() == "Microsoft.Extensions.DependencyInjection.IServiceCollection")
+        {
+            return;
+        }
+        if (reached is Role.Application or Role.Domain or Role.Adapter)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.CompositionDrives, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
         }

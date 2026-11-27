@@ -81,7 +81,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor CompositionDrives = Rule(
         "LEVEE015", "Composition wires the application, never drives it",
-        "{0} calls into the application from Composition. Fix: construct, bind and register it here, and drive it by sending an operation through the Dispatcher");
+        "{0} calls into the application from Composition. Fix: construct, bind and register it here, and drive it by sending an operation through the Dispatcher; an adapter's own setup (its options, an HttpClient) is one IServiceCollection extension in its Adapter project, which Composition calls");
 
     public static readonly DiagnosticDescriptor ApplicationExposed = Rule(
         "LEVEE016", "Application is reached only through operations",
