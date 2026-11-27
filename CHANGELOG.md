@@ -4,6 +4,9 @@
 
 The first release: the keystone, for feedback from the apps migrating onto it. Everything may change.
 
+### Documentation
+- A Starlight site publishes the guides and a stable reference page for each build rule.
+
 ### Levee
 - **Operations.** `[Operation(name, access)]` with effects, idempotency, declared errors (`Errors`), metadata
   (`[OperationMetadata]`) and one scope: the input's (`IScopedOperation`), the caller's (`CallerScoped`, `IScopedPrincipal`)

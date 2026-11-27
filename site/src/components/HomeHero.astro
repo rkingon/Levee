@@ -1,0 +1,33 @@
+---
+import Hero from '@astrojs/starlight/components/Hero.astro';
+import descriptors from '../../../src/Levee.Analyzers/Descriptors.cs?raw';
+import { base, saveChangesDiagnostic } from '../lib/source.mjs';
+
+const { title, description } = Astro.locals.starlightRoute.entry.data;
+---
+
+{Astro.url.pathname === base ? <div class="home-hero">
+	<div class="hero-copy">
+		<h1 id="_top" data-page-title>{title}</h1>
+		<p>{description}</p>
+		<nav aria-label="Get started">
+			<a class="primary" href="#quick-start">Quick start <span aria-hidden="true">↓</span></a>
+			<a href={base + 'docs/'}>Read the docs <span aria-hidden="true">→</span></a>
+		</nav>
+	</div>
+	<section class="example" aria-label="Handler before and after LEVEE004">
+		<header><span class="filemark" aria-hidden="true">C#</span> CreateNoteHandler.cs</header>
+		<div class="snippet">
+			<span class="label">Before</span>
+			<pre><code>notes.Add(note);{'\n'}<em>db.SaveChanges();</em>{'\n'}return view;</code></pre>
+		</div>
+		<div class="diagnostic">
+			<a href={base + 'rules/levee004/'}>error LEVEE004</a>
+			<p>{saveChangesDiagnostic(descriptors)}</p>
+		</div>
+		<div class="snippet">
+			<span class="label">After</span>
+			<pre><code>notes.Add(note);{'\n'}return view;</code></pre>
+		</div>
+	</section>
+</div> : <Hero />}

@@ -1,0 +1,42 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Code } from '@astrojs/starlight/components';
+import { base } from '../lib/source.mjs';
+
+const title = 'Levee: the .NET framework that keeps your AI in check.';
+const description = "Wrong code fails the build with the fix in the error, and what the build can't see, Postgres refuses. Every agent, every repo, the same shape.";
+const install = `dotnet pack Levee.slnx -c Release -o artifacts
+feed="$PWD/artifacts"
+mkdir -p ../levee-quickstart && cd ../levee-quickstart
+dotnet new tool-manifest
+dotnet tool install Levee.Cli --add-source "$feed" --prerelease
+dotnet levee new Acme.Billing --package-source "$feed"
+cd Acme.Billing
+dotnet tool restore && dotnet build`;
+---
+
+<StarlightPage frontmatter={{ title, description, template: 'splash', hero: {}, editUrl: false }}>
+	<div class="home-content not-content">
+		<section aria-labelledby="guarantees">
+			<h2 id="guarantees">One operation, from build to commit.</h2>
+			<div class="guarantees">
+				<div>
+					<h3>At build time</h3>
+					<p>Every operation declares its scope. A write declares what happens on retry. The build refuses a handler that saves or commits its own transaction.</p>
+					<a href={base + 'rules/'}>Browse the rules →</a>
+				</div>
+				<div>
+					<h3>In Postgres</h3>
+					<p>Read-only transactions refuse writes. Row-level security holds the runtime role to the operation’s declared scope. A write and its audit record commit together.</p>
+					<a href={base + 'postgres/'}>Set up Postgres →</a>
+				</div>
+			</div>
+			<p class="benchmark">What does dispatch add to a read or write? <a href={base + 'benchmarks/'}>See the benchmarks →</a></p>
+		</section>
+		<section aria-labelledby="quick-start">
+			<h2 id="quick-start">Quick start</h2>
+			<p>From the root of a Levee checkout with the .NET 10 SDK, pack the tools and libraries. Install the CLI from that feed and scaffold a project with one operation end to end.</p>
+			<Code code={install} lang="sh" title="Shell" />
+		</section>
+	</div>
+</StarlightPage>
