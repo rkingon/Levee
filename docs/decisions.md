@@ -80,6 +80,10 @@ Levee's guarantees are against mistakes: code that compiles in the wrong shape, 
   connection, or SQL the build can't see) moves into another tenant's rows or adds a misleading record. The build refuses
   every such spelling it knows, but no analyzer of a general-purpose language sees them all. A dependency the app trusts is
   trusted. Separating that is the database's roles, per tenant or per service, not Levee's.
+- **A surface of the app's own** that picks an operation by a name it was handed (a `switch` over strings, a dictionary
+  of factories) is a second catalog: ordinary code to the build, so not refused. Every operation it sends still runs the
+  pipeline (access, scope, audit), but its names, schemas and refusals are its own, not the catalog's.
+  `MapLeveeOperations` and `WithLeveeOperations` are the surfaces; the trial rubrics count a hand-written one as a miss.
 
 ## Forks
 

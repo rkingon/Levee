@@ -61,7 +61,7 @@
   policy holds (`Isolation`, `Shared`) and resets the role to them; a table isolated later is granted as its policy is
   made. A table without one is unreachable, whatever names it: no blanket grant, no default privileges. Run Levee's
   grants first, then the app's own.
-- Before the first operation, what the role can reach beyond Levee's grants (by table or column, on the search path) is
+- Before the first operation, what the role can reach beyond Levee's grants (by table or column, in any schema it can use) is
   checked as what the context maps is.
 - `[SeparateContext("OpenIddict")]` and `AddLeveeSeparateContext<T>`: a separate bounded context's store (identity:
   OpenIddict's) beside the app's, used by the library it names outside every operation, kept apart by the database: it

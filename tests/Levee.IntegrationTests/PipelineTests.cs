@@ -913,7 +913,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
             // The fixture's owner is a superuser, as a container's is: a plain view reads every row.
             Assert.Contains("viewed_v: a view that reads with its owner's rights", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
             Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
-            await postgres.ExecuteAsync("drop table split_detail; drop view viewed_v;");
+            await postgres.ExecuteAsync("drop table split_detail; drop view viewed_v; drop schema by_path cascade;");
             Assert.Null(await RefusalOrNull<InvokerViewedDb>(postgres.App));
         }
         finally
@@ -935,6 +935,21 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         finally
         {
             await postgres.ExecuteAsync("drop table unmapped_rows;");
+        }
+    }
+
+    [Fact]
+    public async Task A_table_the_app_role_reaches_off_its_search_path_is_checked()
+    {
+        // Schema-qualified SQL reaches it whatever the search path says.
+        await postgres.ExecuteAsync("create schema off_path; grant usage on schema off_path to app; create table off_path.rows (id uuid primary key, tenant text not null); grant select on off_path.rows to app;");
+        try
+        {
+            Assert.Contains("off_path.rows: no forced row-level security", await Refusal<MapsNothingDb>(postgres.App), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("drop schema off_path cascade;");
         }
     }
 
@@ -993,8 +1008,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
                 create schema target_a; create schema target_b;
                 grant usage on schema target_a, target_b to app;
                 create table target_a.things (id uuid primary key, tenant text not null);
-                create table target_b.things (id uuid primary key, tenant text not null);
-                grant select on target_a.things, target_b.things to app;
+                grant select on target_a.things to app;
                 """ + LeveeSchema.Isolation("target_a.things", "tenant"), owner);
             await create.ExecuteNonQueryAsync(Ct);
         }
@@ -1002,7 +1016,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         // The same context type, checked once against target_a, then sent to target_b by its options.
         Assert.Null(await RefusalOrNull<ThingsDb>(On("target_a")));
-        Assert.Contains("things: no forced row-level security", await Refusal<ThingsDb>(On("target_b")), StringComparison.Ordinal);
+        Assert.Contains("things: doesn't exist yet", await Refusal<ThingsDb>(On("target_b")), StringComparison.Ordinal);
     }
 
     [Fact]

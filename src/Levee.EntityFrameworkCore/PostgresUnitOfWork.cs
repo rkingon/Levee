@@ -356,7 +356,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
               from pg_catalog.pg_class c
               join pg_catalog.pg_namespace s on s.oid = c.relnamespace
               where c.relkind in ('r', 'p', 'v', 'm', 'f')
-                and s.nspname = any (pg_catalog.current_schemas(false))
+                and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%' and has_schema_privilege(s.oid, 'usage')
                 and c.relname not like 'oxbow\_%' and c.relname <> '__EFMigrationsHistory'
                 and (has_table_privilege(c.oid, 'select') or has_table_privilege(c.oid, 'insert')
                   or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete')

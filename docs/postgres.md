@@ -43,9 +43,9 @@ allow-list, not a blanket:
 Run Levee's grants first, then anything the app grants itself (Oxbow's, `dotnet levee db grants <role> --jobs` prints
 both in order; a table with a policy of the app's own; a view). A grant of the app's own is the app's to answer for, so
 before the first operation Levee also checks what the role can reach that it didn't grant: everything the app's context
-maps, however it's mapped (split across tables, as a view, found through the search path), and everything on the
-search path the role may read or write, by table or column. Each is judged by what it is in the database, and every
-view among it by what it reads, down to the tables:
+maps, however it's mapped (split across tables, as a view, found through the search path), and everything in any
+schema the role may use that it may read or write, by table or column, since schema-qualified SQL reaches past the
+search path. Each is judged by what it is in the database, and every view among it by what it reads, down to the tables:
 
 - a table must have forced row-level security and a policy;
 - a view must be `security_invoker` or owned by a role that is neither a superuser nor bypasses row-level security,
