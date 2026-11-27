@@ -35,4 +35,17 @@ public sealed class Alpha2AuditTests
 
         Assert.Equal(refused ? ["LEVEE104"] : [], output.Ids.Distinct());
     }
+
+    [Theory]
+    [InlineData("[Port(Many = true, Default = \"missing\")]", true)]
+    [InlineData("[Port(Many = true)]", false)]
+    public async Task A_set_port_has_no_fallback(string port, bool refused)
+    {
+        var application = await Compile("Application", $"using Levee;\n{port} public interface IChannels;");
+        Assert.Empty(application.Errors);
+
+        var host = await Compile("Host", "public static class Program;", "App", application.Reference());
+
+        Assert.Equal(refused, host.Ids.Contains("LEVEE108"));
+    }
 }

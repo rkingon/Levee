@@ -512,7 +512,16 @@ and chosen by setting:
 - Several, one at a time: `[Port(SelectedBy = "Section:Key")]`, every adapter named, the setting naming one. Always
   set, never inferred.
 - Several, all at once: `[Port(Many = true)]`, taken as `IEnumerable<TPort>`; name every adapter (or none) to route
-  by name with `IAdapters<TPort>`.
+  by name with `IAdapters<TPort>`. A set has no `SelectedBy` and no `Default`: every adapter serves, so there's no one
+  for a setting to choose or a fallback to stand in for.
+
+```csharp
+// Wrong
+[Port(Many = true, Default = "email")] public interface IChannels { ... }
+
+// Right: every channel serves; route by name with IAdapters<IChannels>
+[Port(Many = true)] public interface IChannels { ... }
+```
 
 ## LEVEE109: Named adapters adapt a port
 

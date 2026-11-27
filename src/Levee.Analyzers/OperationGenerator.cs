@@ -555,6 +555,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 var named = mine.Where(a => a.Name is not null).ToList();
                 problem = setting is not null ? "a set (Many) is served by every adapter, so no setting chooses one. Fix: remove SelectedBy, or drop Many if one adapter serves at a time"
+                    : Known.DefaultAdapter(port) is { } fallback ? $"a set (Many) is served by every adapter, so there's no one adapter for Default '{fallback}' to stand in for. Fix: remove Default, or drop Many and add SelectedBy if one adapter serves at a time"
                     : named.Count > 0 && named.Count < mine.Count ? "a routed set names every adapter, or none. Fix: name each [Adapter(\"...\")], or none of them"
                     : named.GroupBy(a => a.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice ? $"two adapters are named '{twice.Key}'. Fix: give each a distinct name"
                     : null;
