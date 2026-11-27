@@ -43,6 +43,11 @@ public sealed class RuleTests
     [InlineData("Adapter", "Application", false)]
     [InlineData("Host", "Adapter", false)]
     [InlineData("Test", "Host", false)]
+    [InlineData("Test", "TestSupport", false)]
+    [InlineData("TestSupport", "Adapter", false)]
+    [InlineData("Host", "TestSupport", true)]
+    [InlineData("Composition", "TestSupport", true)]
+    [InlineData("Tool", "TestSupport", true)]
     public async Task A_role_references_only_what_it_may(string role, string referenced, bool refused)
     {
         var other = await Probe.CompileAsync(referenced, "public static class Other;", "Other", Levee, Di, Configuration);

@@ -37,7 +37,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         context.RegisterCompilationStartAction(start =>
         {
             var role = Roles.Of(start.Options);
-            if (role is Role.None or Role.Test || !Roles.UsesLevee(start.Compilation))
+            if (role == Role.None || Roles.IsTest(role) || !Roles.UsesLevee(start.Compilation))
             {
                 return;
             }

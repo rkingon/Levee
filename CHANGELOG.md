@@ -33,6 +33,8 @@
   still checked.
 
 ### Generator and analyzers
+- A `TestSupport` role for what several test projects share (fixtures, fakes, a harness): held to no code rule, like a
+  test, and referenced by tests alone.
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
 
 ### Documentation

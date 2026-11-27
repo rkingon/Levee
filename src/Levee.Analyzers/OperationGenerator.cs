@@ -37,7 +37,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var operations = own.Select(t => Operation(t, context)).Where(o => o is not null).Select(o => o!).ToList();
         var handlers = own.SelectMany(Handled).ToList();
         // A contract is Contracts'; the platform's own (internal) operations may sit with the application; a test declares its own.
-        if (role is not (Role.Contracts or Role.Application or Role.Test))
+        if (role is not (Role.Contracts or Role.Application or Role.Test or Role.TestSupport))
         {
             foreach (var op in operations)
             {
@@ -55,7 +55,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var adapters = role switch
         {
             Role.Adapter => own.SelectMany(t => Adapted(t, context)).ToList(),
-            Role.Test => own.Where(Known.IsNamedAdapter).SelectMany(t => Adapted(t, context)).ToList(),
+            Role.Test or Role.TestSupport => own.Where(Known.IsNamedAdapter).SelectMany(t => Adapted(t, context)).ToList(),
             _ => [],
         };
         var registration = "LeveeRegistration_" + Identifier(compilation.AssemblyName ?? "App");

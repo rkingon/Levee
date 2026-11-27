@@ -58,7 +58,7 @@
     side door (adapters sharing code, a package admitted into Application). A test may reference anything.
   -->
   <Target Name="_LeveeEveryProjectHasARole" AfterTargets="ResolveProjectReferences"
-          Condition="'$(LeveeRole)' != '' and '$(LeveeRole)' != 'Test' and '@(_MSBuildProjectReferenceExistent)' != ''">
+          Condition="'$(LeveeRole)' != '' and '$(LeveeRole)' != 'Test' and '$(LeveeRole)' != 'TestSupport' and '@(_MSBuildProjectReferenceExistent)' != ''">
     <ItemGroup>
       <_LeveeReferenced Include="@(_MSBuildProjectReferenceExistent)"
                         Condition="'%(_MSBuildProjectReferenceExistent.ReferenceOutputAssembly)' != 'false' and '%(_MSBuildProjectReferenceExistent.OutputItemType)' == ''" />

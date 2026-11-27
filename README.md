@@ -69,6 +69,7 @@ Every project that references Levee declares one, or the build fails (LEVEE001):
 | `Projection` | Kernel, Contracts, Projection | The app's own public API: routes it designs (resources, versions), mapped onto operations and sent through the `Dispatcher`, failing through `LeveeProblems`. It can't see Application, Domain or adapters, so it holds no logic of theirs. A Host or Composition maps it. |
 | `Tool` | what a Host sees but Client and Projection | A process run as the database's owner: migrations, the role bootstrap. Owns its transaction (LEVEE004 doesn't apply); otherwise held like a Host. Nothing references it (LEVEE017). |
 | `Test` | everything | Also a composition root. |
+| `TestSupport` | everything but Test | What several test projects share: fixtures, fakes, a harness. Held to no code rule, like a test, and referenced by tests alone, so nothing that ships carries it. |
 
 Every project in the app declares a role: one without Levee that a Levee project references fails the build.
 

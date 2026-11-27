@@ -39,4 +39,15 @@ public sealed class TrialTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE004"));
     }
+
+    [Theory]
+    [InlineData("TestSupport", false)]
+    [InlineData("Adapter", true)]
+    public async Task What_tests_share_is_held_to_no_code_rule(string role, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings(role), "public static class Frozen { public static System.DateTimeOffset Now() => System.DateTimeOffset.UtcNow; }",
+            "App.Testing", GeneratorTests.Levee);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
+    }
 }

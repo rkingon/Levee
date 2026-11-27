@@ -19,6 +19,7 @@ internal enum Role
     Projection,
     Tool,
     Test,
+    TestSupport,
 }
 
 internal static class Roles
@@ -48,8 +49,15 @@ internal static class Roles
         // A process run as the database's owner (migrations, role bootstrap): it sees what a Host does, nothing sees it.
         [Role.Tool] = ImmutableHashSet.Create(Role.Kernel, Role.Contracts, Role.Domain, Role.Application, Role.Adapter, Role.Infrastructure, Role.Composition),
         [Role.Test] = ImmutableHashSet.Create(Role.Kernel, Role.Contracts, Role.Domain, Role.Application, Role.Adapter, Role.Infrastructure, Role.Composition,
-            Role.Host, Role.Client, Role.Projection, Role.Tool, Role.Test),
+            Role.Host, Role.Client, Role.Projection, Role.Tool, Role.Test, Role.TestSupport),
+        // What several test projects share (fixtures, fakes, a harness): held to no code rule, as a test isn't, and
+        // referenced by tests alone, so nothing that ships can carry it.
+        [Role.TestSupport] = ImmutableHashSet.Create(Role.Kernel, Role.Contracts, Role.Domain, Role.Application, Role.Adapter, Role.Infrastructure,
+            Role.Composition, Role.Host, Role.Client, Role.Projection, Role.Tool, Role.TestSupport),
     }.ToImmutableDictionary();
+
+    /// <summary>Tests and what they share: the code rules don't hold them, and nothing that ships references them.</summary>
+    public static bool IsTest(Role role) => role is Role.Test or Role.TestSupport;
 
     /// <summary>The roles that are the app's core: pure, no I/O, nothing past the BCL and abstractions.</summary>
     public static bool IsInner(Role role) => role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application;

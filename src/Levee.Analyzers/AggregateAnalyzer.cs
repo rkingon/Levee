@@ -17,7 +17,7 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         context.RegisterCompilationStartAction(start =>
         {
             var role = Roles.Of(start.Options);
-            if (role is Role.None or Role.Test || start.Compilation.GetTypeByMetadataName(Known.AggregateRoot) is not { } root)
+            if (role == Role.None || Roles.IsTest(role) || start.Compilation.GetTypeByMetadataName(Known.AggregateRoot) is not { } root)
             {
                 return;
             }
