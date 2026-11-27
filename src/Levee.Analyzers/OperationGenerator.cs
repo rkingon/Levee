@@ -752,6 +752,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, Numbers);
             }
+            // JsonIgnoreCondition: WhenWritingDefault is 2, WhenWritingNull 3.
+            if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
+                && a.NamedArguments.Any(n => n.Key == "Condition" && n.Value.Value is 2 or 3)))
+            {
+                return (at, "is written only sometimes ([JsonIgnore(Condition = WhenWriting...)]), so what it writes the wire may refuse to read back. Fix: drop the condition; every member is written");
+            }
             if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonExtensionDataAttribute"))
             {
                 return (at, "takes every member it doesn't declare ([JsonExtensionData]), which no schema shows. Fix: declare each member it takes");

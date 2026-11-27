@@ -204,26 +204,33 @@ public static class LeveeSchema
             do $levee$
             declare reached text;
             begin
-              -- What the role reaches in effect, through a role it belongs to or PUBLIC as much as its own grants: only this
-              -- installation's tables, or the allow-list is a list of what it holds, not of what it can read.
+              -- What the role holds in effect, through itself, a role it belongs to, PUBLIC or ownership, against what each
+              -- relation allows: an allow-list over the ACLs, so a privilege a later Postgres adds is refused, not missed.
+              with held as (
+                select c.oid, x.grantee, x.privilege_type from pg_class c cross join lateral aclexplode(c.relacl) x where c.relacl is not null
+                union all
+                select a.attrelid, x.grantee, x.privilege_type from pg_attribute a cross join lateral aclexplode(a.attacl) x where a.attacl is not null
+              ), ours as (
+                select distinct p.polrelid as oid from pg_policy p
+                join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = p.oid and d.refclassid = 'pg_proc'::regclass
+                where p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write')
+                  and d.refobjid in ('{schema}.levee_scope()'::regprocedure, '{schema}.levee_platform()'::regprocedure)
+              )
               select string_agg(distinct c.oid::regclass::text, ', ') into reached from pg_class c
               join pg_namespace s on s.oid = c.relnamespace
-              cross join lateral (select exists (select 1 from pg_policy p
-                  join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = p.oid and d.refclassid = 'pg_proc'::regclass
-                  where p.polrelid = c.oid and p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write')
-                    and d.refobjid in ('{schema}.levee_scope()'::regprocedure, '{schema}.levee_platform()'::regprocedure)) as ours) o
               where c.relkind in ('r', 'p', 'v', 'm', 'f') and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%'
-                and has_schema_privilege('{role}', s.oid, 'usage')
-                and case
-                  -- Another's table: anything at all.
-                  when not o.ours then has_table_privilege('{role}', c.oid, 'select, insert, update, delete, truncate, references, trigger')
-                    or has_any_column_privilege('{role}', c.oid, 'select, insert, update, references')
-                  -- Its audit: read only, added to through levee_audit_write alone.
-                  when c.oid = '{schema}.{AuditTable}'::regclass then has_table_privilege('{role}', c.oid, 'insert, update, delete, truncate, references, trigger')
-                    or has_any_column_privilege('{role}', c.oid, 'insert, update, references')
-                  -- Its own tables: what row-level security holds, and nothing it doesn't (truncate empties every scope's rows).
-                  else has_table_privilege('{role}', c.oid, 'truncate, references, trigger')
-                end;
+                -- An extension's own relations (PostGIS's spatial_ref_sys, granted to PUBLIC) are the extension's, not the app's.
+                and not exists (select 1 from pg_depend e where e.classid = 'pg_class'::regclass and e.objid = c.oid and e.deptype = 'e')
+                and (pg_has_role('{role}', c.relowner, 'member')
+                  or exists (select 1 from held h
+                    where h.oid = c.oid and (h.grantee = 0 or pg_has_role('{role}', h.grantee, 'member'))
+                      and h.privilege_type <> all (case
+                        -- Its audit: read, and added to through levee_audit_write alone.
+                        when c.oid = '{schema}.{AuditTable}'::regclass then array['SELECT']
+                        -- Its own tables: what row-level security holds (truncate, say, empties every scope's rows).
+                        when c.oid in (select oid from ours) then array['SELECT', 'INSERT', 'UPDATE', 'DELETE']
+                        -- Another's: nothing.
+                        else array[]::text[] end)));
               if reached is not null then
                 raise exception '{role} reaches more than this installation''s tables allow: %', reached
                   using hint = 'It reaches them through a role it belongs to, or PUBLIC: revoke that role from {role} (or the grant from it). Then run Levee''s grants again.';

@@ -1013,9 +1013,11 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     [Theory]
     [InlineData("insert on reach_inherited.levee_audit", "reach_inherited.levee_audit")]
     [InlineData("truncate on reach_inherited.held", "reach_inherited.held")]
+    [InlineData("references (id) on reach_inherited.held", "reach_inherited.held")]
+    [InlineData("maintain on reach_inherited.held", "reach_inherited.held")]
     public async Task Grants_fail_on_what_the_role_reaches_through_a_role_it_belongs_to(string privilege, string named)
     {
-        var suffix = named.EndsWith("audit", StringComparison.Ordinal) ? "a" : "t";
+        var suffix = privilege.Split(' ')[0];
         await postgres.ExecuteAsync($"create schema if not exists reach_inherited; create role reach_app_{suffix}; create role reach_group_{suffix}; grant reach_group_{suffix} to reach_app_{suffix};");
         if (await postgres.CountAsync("select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'reach_inherited' and p.proname = 'levee_scope'") == 0)
         {

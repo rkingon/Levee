@@ -29,7 +29,8 @@ public static class LeveeJson
             NumberHandling = JsonNumberHandling.Strict,
             // An API's JSON, never embedded in HTML: '+' in a timestamp reads as '+'.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Closed } },
+            // A resolver of Levee's own, sealed, with nothing to add to: no modifier can be slipped in before first use.
+            TypeInfoResolver = new ClosedResolver(),
         };
         // A value object's converter is handed only the JSON its [ValueObject] says it writes.
         o.Converters.Add(new ValueObjectWire());
@@ -50,6 +51,14 @@ public static class LeveeJson
             throw new InvalidOperationException(
                 $"{info.Type.Name} skips members it doesn't know ([JsonUnmappedMemberHandling(Skip)]), so a misspelt field is dropped, not refused. "
                 + "Fix: drop it; the wire refuses what a contract doesn't declare (LEVEE104).");
+        }
+        // Every member is written, as the strict reader requires it: one written only sometimes reads back as missing.
+        if (info.Properties.FirstOrDefault(p => p.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: true)
+                is [JsonIgnoreAttribute { Condition: JsonIgnoreCondition.WhenWritingDefault or JsonIgnoreCondition.WhenWritingNull }, ..]) is { } sometimes)
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name}.{sometimes.Name} is written only sometimes ([JsonIgnore(Condition = WhenWriting...)]), so what it writes the wire may "
+                + "refuse to read back. Fix: drop the condition; every member is written (LEVEE104).");
         }
         if (info.Properties.FirstOrDefault(p => p.IsExtensionData) is { } extension)
         {
@@ -94,6 +103,20 @@ public static class LeveeJson
     }
 
     private interface IValueObjectWire;
+
+    private sealed class ClosedResolver : IJsonTypeInfoResolver
+    {
+        private readonly DefaultJsonTypeInfoResolver _inner = new();
+
+        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) =>
+            _inner.GetTypeInfo(type, options) is { } info ? Checked(info) : null;
+
+        private static JsonTypeInfo Checked(JsonTypeInfo info)
+        {
+            Closed(info);
+            return info;
+        }
+    }
 
 
     /// <summary>

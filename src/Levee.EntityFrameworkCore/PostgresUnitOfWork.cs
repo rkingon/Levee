@@ -385,6 +385,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
               where c.relkind in ('r', 'p', 'v', 'm', 'f')
                 and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%' and has_schema_privilege(s.oid, 'usage')
                 and not (s.nspname || '.' || c.relname = any ({theirs})) and c.relname <> '__EFMigrationsHistory'
+                and not exists (select 1 from pg_catalog.pg_depend e where e.classid = 'pg_catalog.pg_class'::regclass and e.objid = c.oid and e.deptype = 'e')
                 and (has_table_privilege(c.oid, 'select') or has_table_privilege(c.oid, 'insert')
                   or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete')
                   or has_any_column_privilege(c.oid, 'select') or has_any_column_privilege(c.oid, 'insert')

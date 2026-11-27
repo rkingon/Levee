@@ -36,7 +36,8 @@
   It's strict (unknown members refused, nullability and required parameters respected, every member written) and numbers
   are numbers both ways (Web's reading of one from a string is off). A value's JSON is its value object's own: a
   converter goes on a `[ValueObject]` type, never a member, and a `[ValueObject]` has one. A contract can't loosen the wire
-  (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`). A value object's schema and the
+  (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, a `[JsonIgnore]` that writes a
+  member only sometimes). Its resolver is Levee's own and sealed, with nothing to add to. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
@@ -70,8 +71,10 @@
 - `LeveeSchema.Grants` resets the role to its allow-list: it revokes exactly what the role holds, wherever it is (by
   table or column) and the default privileges (per schema and database-wide) that would grant it more, then fails naming
   anything another role granted that it couldn't take back, and anything it still reaches in effect (through a role it
-  belongs to, or PUBLIC) beyond what this installation allows: another's table at all, its audit beyond reading, its
-  own tables beyond what row-level security holds (`truncate` empties every scope's rows). It grants only this installation's tables: a second Levee
+  belongs to, or PUBLIC) beyond what this installation allows, read from the privileges themselves as an allow-list (so one a
+  later Postgres adds, as 17 added `maintain`, is refused, not missed): another's table nothing, its audit reading
+  only, its own tables what row-level security holds (`truncate` would empty every scope's rows). An extension's own
+  relations (PostGIS's `spatial_ref_sys`) are the extension's, here and in the first operation's check. It grants only this installation's tables: a second Levee
   schema's tables and audit stay its own role's. A schema's owner provisions it without rights over anyone else's.
 - **Breaking (schema):** the audit's policies are a read (`levee_scope`) and an insert (`levee_audit_insert`) that takes an
   unscoped operation's record, so an unscoped write commits when the audit's owner is an ordinary role. A database
@@ -141,7 +144,7 @@
 ### Generator and analyzers
 - LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
   is one too; a `[ValueObject]` has its converter; `[JsonNumberHandling]` other than strict, `[JsonUnmappedMemberHandling(Skip)]` and
-  `[JsonExtensionData]` are refused on a contract, through the interfaces a result extends too.
+  `[JsonExtensionData]` and a conditional `[JsonIgnore]` are refused on a contract, through the interfaces a result extends too.
 - LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
   that takes a principal (`Action<Principal>`) as holding one.
 - LEVEE003: a handler holding a port that tells the time (a `[Port]` or delegate answering a date or time at once without
