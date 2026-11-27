@@ -33,7 +33,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>An operation by name, its input and result as JSON, in-process: internal operations included (jobs run them).</summary>
-    public Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
+    internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
         SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for work asked for earlier, in the caller's scope as it was then.</summary>
@@ -41,7 +41,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for a client: what a projection sends. Internal operations aren't there.</summary>
-    public Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
+    internal Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
         SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, ct);
 
     public async Task<Result<IAsyncEnumerable<TItem>>> SubscribeAsync<TItem>(ISubscription<TItem> subscription, Principal principal, CancellationToken ct)
@@ -56,11 +56,11 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>A subscription by name, its input and items as JSON, in-process.</summary>
-    public Task<Result<IAsyncEnumerable<JsonElement>>> SubscribeJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
+    internal Task<Result<IAsyncEnumerable<JsonElement>>> SubscribeJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
         SubscribeFoundAsync(Find(name, fromClient: false), input, principal, ct);
 
     /// <summary>As <see cref="SubscribeJsonAsync"/>, for a client. Internal subscriptions aren't there.</summary>
-    public Task<Result<IAsyncEnumerable<JsonElement>>> SubscribeFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
+    internal Task<Result<IAsyncEnumerable<JsonElement>>> SubscribeFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
         SubscribeFoundAsync(Find(name, fromClient: true), input, principal, ct);
 
     /// <summary>
@@ -310,7 +310,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// access policy. What every call is checked by first, and what a job's enqueue is checked by, as its caller.
     /// </summary>
     /// <returns>Null to allow; the refusal otherwise.</returns>
-    public async Task<Error?> AuthorizeAsync(IOperation operation, Principal principal, CancellationToken ct)
+    internal async Task<Error?> AuthorizeAsync(IOperation operation, Principal principal, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(principal);
@@ -338,7 +338,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>As <see cref="AuthorizeAsync(IOperation, Principal, CancellationToken)"/>, by name and JSON, for a client.</summary>
-    public async Task<Error?> AuthorizeFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct)
+    internal async Task<Error?> AuthorizeFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(principal);
         var found = Find(name, fromClient: true);

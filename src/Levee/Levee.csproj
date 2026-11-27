@@ -9,6 +9,7 @@
     <!-- Levee's own projections ask the dispatcher what a client mustn't: a scope pinned from earlier, a stream's opening. -->
     <InternalsVisibleTo Include="Levee.AspNetCore" />
     <InternalsVisibleTo Include="Levee.Oxbow" />
+    <InternalsVisibleTo Include="Levee.Mcp" />
     <!-- The unit of work is Levee's to implement, not an app's: Postgres's, and the tests' fake. -->
     <InternalsVisibleTo Include="Levee.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Levee.Tests" />

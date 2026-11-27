@@ -14,7 +14,7 @@ namespace Levee.AspNetCore;
 /// <param name="Streams">A subscription: <c>GET {prefix}/{name}/events?input={json}</c> streams its items as server-sent events; <see cref="Result"/> is one item.</param>
 /// <param name="Errors">The codes it fails with besides Levee's own (<see cref="LeveeErrors"/>).</param>
 /// <param name="Refusals">The codes the access policy and admissions may refuse it with, the same for every operation.</param>
-public sealed record OperationView(string Name, string Summary, string Access, Effects Effects, Idempotency Idempotency, bool ReadOnly, bool Streams,
+internal sealed record OperationView(string Name, string Summary, string Access, Effects Effects, Idempotency Idempotency, bool ReadOnly, bool Streams,
     JsonNode Input, JsonNode Result, IReadOnlyList<string> Errors, IReadOnlyList<string> Refusals, IReadOnlyDictionary<string, JsonObject> Metadata);
 
 public static class LeveeEndpointRouteBuilderExtensions

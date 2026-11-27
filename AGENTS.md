@@ -13,6 +13,8 @@ Read [docs/principles.md](docs/principles.md) first: what belongs here and what 
   `tests/Levee.IntegrationTests` for the database (run as the least-privilege role, never the owner).
 - `tests/Sample` is a consumer in four roles; it must keep building with no suppressions.
 - All packages ship in lockstep at `Directory.Build.props`'s `Version`; record every change in `CHANGELOG.md`.
+- Internal by default: public is only what an app writes against. Levee's packages share the rest through
+  `InternalsVisibleTo`; what generated code must reach stays public, and a rule refuses it written by hand (LEVEE020).
 - Public API is tracked (`PublicAPI.Unshipped.txt` per package): a change to it is a deliberate diff, and a release moves
   Unshipped into Shipped.
 - Comments say why, never what.

@@ -1,1 +1,35 @@
 #nullable enable
+*REMOVED*Levee.AspNetCore.OperationView
+*REMOVED*Levee.AspNetCore.OperationView.<Clone>$() -> Levee.AspNetCore.OperationView!
+*REMOVED*Levee.AspNetCore.OperationView.Access.get -> string!
+*REMOVED*Levee.AspNetCore.OperationView.Access.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Deconstruct(out string! Name, out string! Summary, out string! Access, out Levee.Effects Effects, out Levee.Idempotency Idempotency, out bool ReadOnly, out bool Streams, out System.Text.Json.Nodes.JsonNode! Input, out System.Text.Json.Nodes.JsonNode! Result, out System.Collections.Generic.IReadOnlyList<string!>! Errors, out System.Collections.Generic.IReadOnlyList<string!>! Refusals, out System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.Nodes.JsonObject!>! Metadata) -> void
+*REMOVED*Levee.AspNetCore.OperationView.Effects.get -> Levee.Effects
+*REMOVED*Levee.AspNetCore.OperationView.Effects.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Equals(Levee.AspNetCore.OperationView? other) -> bool
+*REMOVED*Levee.AspNetCore.OperationView.Errors.get -> System.Collections.Generic.IReadOnlyList<string!>!
+*REMOVED*Levee.AspNetCore.OperationView.Errors.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Idempotency.get -> Levee.Idempotency
+*REMOVED*Levee.AspNetCore.OperationView.Idempotency.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Input.get -> System.Text.Json.Nodes.JsonNode!
+*REMOVED*Levee.AspNetCore.OperationView.Input.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Metadata.get -> System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.Nodes.JsonObject!>!
+*REMOVED*Levee.AspNetCore.OperationView.Metadata.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Name.get -> string!
+*REMOVED*Levee.AspNetCore.OperationView.Name.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.OperationView(string! Name, string! Summary, string! Access, Levee.Effects Effects, Levee.Idempotency Idempotency, bool ReadOnly, bool Streams, System.Text.Json.Nodes.JsonNode! Input, System.Text.Json.Nodes.JsonNode! Result, System.Collections.Generic.IReadOnlyList<string!>! Errors, System.Collections.Generic.IReadOnlyList<string!>! Refusals, System.Collections.Generic.IReadOnlyDictionary<string!, System.Text.Json.Nodes.JsonObject!>! Metadata) -> void
+*REMOVED*Levee.AspNetCore.OperationView.ReadOnly.get -> bool
+*REMOVED*Levee.AspNetCore.OperationView.ReadOnly.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Refusals.get -> System.Collections.Generic.IReadOnlyList<string!>!
+*REMOVED*Levee.AspNetCore.OperationView.Refusals.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Result.get -> System.Text.Json.Nodes.JsonNode!
+*REMOVED*Levee.AspNetCore.OperationView.Result.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Streams.get -> bool
+*REMOVED*Levee.AspNetCore.OperationView.Streams.init -> void
+*REMOVED*Levee.AspNetCore.OperationView.Summary.get -> string!
+*REMOVED*Levee.AspNetCore.OperationView.Summary.init -> void
+*REMOVED*override Levee.AspNetCore.OperationView.Equals(object? obj) -> bool
+*REMOVED*override Levee.AspNetCore.OperationView.GetHashCode() -> int
+*REMOVED*override Levee.AspNetCore.OperationView.ToString() -> string!
+*REMOVED*static Levee.AspNetCore.OperationView.operator !=(Levee.AspNetCore.OperationView? left, Levee.AspNetCore.OperationView? right) -> bool
+*REMOVED*static Levee.AspNetCore.OperationView.operator ==(Levee.AspNetCore.OperationView? left, Levee.AspNetCore.OperationView? right) -> bool

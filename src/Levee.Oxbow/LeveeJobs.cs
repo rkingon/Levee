@@ -178,4 +178,4 @@ internal static class Run
     }
 }
 
-public sealed class OperationUnavailableException(string message) : Exception(message);
+internal sealed class OperationUnavailableException(string message) : Exception(message);

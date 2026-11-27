@@ -26,3 +26,16 @@
 *REMOVED*override Levee.AuditEntry.ToString() -> string!
 *REMOVED*static Levee.AuditEntry.operator !=(Levee.AuditEntry? left, Levee.AuditEntry? right) -> bool
 *REMOVED*static Levee.AuditEntry.operator ==(Levee.AuditEntry? left, Levee.AuditEntry? right) -> bool
+*REMOVED*Levee.CurrentOperation
+*REMOVED*Levee.CurrentOperation.Context.get -> Levee.OperationContext?
+*REMOVED*Levee.CurrentOperation.CurrentOperation() -> void
+*REMOVED*Levee.Dispatcher.AuthorizeAsync(Levee.IOperation! operation, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Error?>!
+*REMOVED*Levee.Dispatcher.AuthorizeFromClientAsync(string! name, System.Text.Json.JsonElement input, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Error?>!
+*REMOVED*Levee.Dispatcher.SendFromClientAsync(string! name, System.Text.Json.JsonElement input, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<System.Text.Json.JsonElement>>!
+*REMOVED*Levee.Dispatcher.SendJsonAsync(string! name, System.Text.Json.JsonElement input, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<System.Text.Json.JsonElement>>!
+*REMOVED*Levee.Dispatcher.SubscribeFromClientAsync(string! name, System.Text.Json.JsonElement input, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<System.Collections.Generic.IAsyncEnumerable<System.Text.Json.JsonElement>!>>!
+*REMOVED*Levee.Dispatcher.SubscribeJsonAsync(string! name, System.Text.Json.JsonElement input, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<System.Collections.Generic.IAsyncEnumerable<System.Text.Json.JsonElement>!>>!
+*REMOVED*static Levee.LeveeJson.FindSecret(System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string?
+*REMOVED*static Levee.LeveeJson.FindSecretIn(object! value, System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string?
+*REMOVED*static Levee.LeveeJson.Redact(object! value, System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> string!
+*REMOVED*static Levee.LeveeJson.Schema(System.Type! type, System.Text.Json.JsonSerializerOptions? options = null) -> System.Text.Json.Nodes.JsonNode!

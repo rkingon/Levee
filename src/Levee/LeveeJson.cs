@@ -31,7 +31,7 @@ public static class LeveeJson
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
-    public static JsonNode Schema(Type type, JsonSerializerOptions? options = null)
+    internal static JsonNode Schema(Type type, JsonSerializerOptions? options = null)
     {
         var exporter = new JsonSchemaExporterOptions
         {
@@ -61,7 +61,7 @@ public static class LeveeJson
     /// value replaced as the serializer writes it, so wherever the serializer goes (nested records and collections, nullable
     /// values, interfaces, derived and fallback types) and under the name it gives each member.
     /// </summary>
-    public static string Redact(object value, Type type, JsonSerializerOptions? options = null)
+    internal static string Redact(object value, Type type, JsonSerializerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(value);
         var json = options ?? Options;
@@ -72,7 +72,7 @@ public static class LeveeJson
     /// The first <see cref="SecretAttribute"/> member <paramref name="value"/> carries, by its type and by the types its
     /// members actually have (an implementation behind an interface), or null: what decides whether a job's input is sealed.
     /// </summary>
-    public static string? FindSecretIn(object value, Type type, JsonSerializerOptions? options = null)
+    internal static string? FindSecretIn(object value, Type type, JsonSerializerOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(value);
         var json = options ?? Options;
@@ -284,7 +284,7 @@ public static class LeveeJson
     }
 
     /// <summary>The first <see cref="SecretAttribute"/> property anywhere in <paramref name="type"/>'s wire shape, or null.</summary>
-    public static string? FindSecret(Type type, JsonSerializerOptions? options = null)
+    internal static string? FindSecret(Type type, JsonSerializerOptions? options = null)
     {
         var json = options ?? Options;
         return Find(json.GetTypeInfo(type), json, []);
