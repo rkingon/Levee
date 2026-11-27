@@ -12,6 +12,7 @@ namespace Levee.Analyzers;
 /// The role-aware code rules. LEVEE003: no wall clock outside tests (TimeProvider.System only where the app composes). LEVEE004:
 /// nothing saves, controls a transaction, or sets the scope outside tests and Tools: the dispatcher commits. LEVEE005: services
 /// are located only where the app composes. LEVEE018: no connection of its own. LEVEE020: the catalog is the generator's.
+/// LEVEE022: no SQL on the change signals' channel.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class CodeRules : DiagnosticAnalyzer

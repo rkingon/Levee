@@ -41,8 +41,8 @@ internal static class Descriptors
         "This SQL sets the scope row-level security trusts (levee.scope, levee.platform) or writes the audit, both the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited by the dispatcher");
 
     public static readonly DiagnosticDescriptor SignalByHand = Rule(
-        "LEVEE004", "Only the dispatcher saves and commits",
-        "This SQL names levee_signals, the channel IChangeSignals raises change signals on, whose watchers trust the scope its payload names: a pg_notify or NOTIFY of the app's own reaches any tenant's watchers. Fix: raise the signal with IChangeSignals.RaiseAsync in the operation, which sends it with the operation's transaction, in its scope");
+        "LEVEE022", "Change signals go only through IChangeSignals",
+        "This SQL names levee_signals, the channel IChangeSignals raises change signals on, whose watchers trust the scope its payload names: a pg_notify, NOTIFY or LISTEN of the app's own reaches, or hears, any tenant's. Fix: raise the signal with IChangeSignals.RaiseAsync in the operation, which sends it with the operation's transaction, in its scope; watch with IChangeSignals.WatchAsync in a subscription's handler");
 
     public static readonly DiagnosticDescriptor ServiceLocation = Rule(
         "LEVEE005", "No service location outside hosts",
@@ -195,7 +195,7 @@ internal static class Descriptors
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
-        "LEVEE021",
+        "LEVEE021", "LEVEE022",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
         "LEVEE112", "LEVEE113",
     ];

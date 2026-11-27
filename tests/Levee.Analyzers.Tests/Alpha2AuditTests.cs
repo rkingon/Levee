@@ -168,13 +168,14 @@ public sealed class Alpha2AuditTests
     [InlineData("\"select pg_notify('levee_signals', json_build_object('kind', 'notes.changed', 'scope', 'b')::text)\"", true)]
     [InlineData("$\"select pg_notify('levee_signals', {payload})\"", true)]
     [InlineData("\"NOTIFY levee_signals, 'x'\"", true)]
+    [InlineData("\"LISTEN \" + \"levee_signals\"", true)]
     [InlineData("\"select pg_notify('app_feed', 'x')\"", false)]
     [InlineData("\"select current_setting('levee.scope', true)\"", false)]
     public async Task A_change_signal_is_raised_through_IChangeSignals_not_SQL(string sql, bool refused)
     {
         var output = await Compile("Adapter", $"public static class Feed {{ public static string Sql(string payload) => {sql}; }}");
 
-        Assert.Equal(refused ? ["LEVEE004"] : [], output.Ids.Distinct());
+        Assert.Equal(refused ? ["LEVEE022"] : [], output.Ids.Distinct());
         Assert.Equal(refused, output.Errors.Any(e => e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("IChangeSignals.RaiseAsync", StringComparison.Ordinal)));
     }
 

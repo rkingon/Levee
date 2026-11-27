@@ -106,11 +106,7 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them. SQL naming `levee_signals`, the channel `IChangeSignals` raises change
-signals on (`pg_notify('levee_signals', ...)`, `NOTIFY levee_signals`), is refused the same way: its watchers trust the
-scope the payload names, so a notification of the app's own reaches any tenant's. Raise a signal with
-`IChangeSignals.RaiseAsync` in the operation, which sends it with the transaction, in the operation's scope. The analyzer sees the name as a literal or a constant; a name put
-together at run time from pieces isn't seen, and is the trust model's to answer. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
@@ -515,6 +511,25 @@ principal as a method's argument. Work that must run as the system (a record tha
 nightly sweep) is the Host's or Composition's own code: a hosted service, a scheduled trigger, or a Composition class
 implementing a shared interface (LEVEE016's example), which makes the principal and sends through the `Dispatcher`
 there, and hands it to nothing.
+
+## LEVEE022: Change signals go only through IChangeSignals
+
+`IChangeSignals` raises a change signal on Postgres's `levee_signals` channel, with the operation's transaction and in
+its scope, and every watcher trusts the scope the payload names. SQL of the app's own naming the channel
+(`pg_notify('levee_signals', ...)`, `NOTIFY levee_signals`, `LISTEN levee_signals`) names any scope it likes, so its
+notification reaches every tenant's watchers, and a listener of its own hears them all.
+
+```csharp
+// Wrong: a signal by hand, in whatever scope the payload says
+await db.Database.ExecuteSqlAsync($"select pg_notify('levee_signals', {payload})", ct);
+
+// Right: raised in the operation, sent when it commits, in its scope
+await signals.RaiseAsync("notes.changed", note.Id.ToString(), ct);
+```
+
+Watch with `IChangeSignals.WatchAsync` in a subscription's handler. The analyzer sees the channel's name in a literal, a
+constant, a concatenation or an interpolation; a name put together at run time by a call (`string.Join`, configuration)
+isn't seen, and is the trust model's to answer.
 
 ## LEVEE101: Every operation has a handler
 
