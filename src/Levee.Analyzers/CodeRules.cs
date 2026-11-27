@@ -27,7 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -48,6 +48,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.TypeOf, OperationKind.DynamicInvocation);
+            start.RegisterSymbolAction(OnProcess, SymbolKind.NamedType);
+            if (role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application or Role.Adapter)
+            {
+                start.RegisterOperationAction(c => Known.Unless(c, () => OnPrincipalMade(c, role)), OperationKind.ObjectCreation, OperationKind.With);
+            }
             start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
             start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnSeparateContextHeld(c)), OperationKind.VariableDeclarator, OperationKind.AnonymousFunction,
@@ -521,6 +526,45 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 when IsLevee(receiver, "Dispatcher"):
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"Dispatcher.{member.MemberName} is called through dynamic"));
                 break;
+        }
+    }
+
+    /// <summary>A process holding the Dispatcher: whatever it sends steps out of its starter's identity and scope.</summary>
+    private static void OnProcess(SymbolAnalysisContext context)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        if (!type.AllInterfaces.Any(i => Known.Is(i, "IProcess", 1)))
+        {
+            return;
+        }
+        var held = type.InstanceConstructors.SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (Holds(heldType, "Dispatcher") && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ProcessSends, location, type.Name));
+                return;
+            }
+        }
+    }
+
+    /// <summary>Levee's <paramref name="name"/>, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static bool Holds(ITypeSymbol type, string name) => type switch
+    {
+        INamedTypeSymbol named when IsLevee(named, name) => true,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Any(t => Holds(t, name)),
+        IArrayTypeSymbol array => Holds(array.ElementType, name),
+        _ => false,
+    };
+
+    /// <summary>A principal made in the app's core or an adapter: who an operation runs as is decided where the app composes.</summary>
+    private static void OnPrincipalMade(OperationAnalysisContext context, Role role)
+    {
+        if (context.Operation.Type is INamedTypeSymbol type && Derives(type, "Levee.Principal"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.PrincipalMade, context.Operation.Syntax.GetLocation(), type.Name, role));
         }
     }
 

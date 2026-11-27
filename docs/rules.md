@@ -399,7 +399,7 @@ internal sealed class Ledger(AppDbContext db, IAmbientTransaction ambient) : ILe
 Holding the operation's own connection, from `IAmbientTransaction`, in a field or a record is fine: it's the
 transaction's. Hearing what changed (Postgres `LISTEN`) is Levee's own connection's: raise with `IChangeSignals.RaiseAsync`
 in the operation, and watch with `IChangeSignals.WatchAsync` in a subscription. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
-dispatched as the system. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
+dispatched as the system: a principal only Composition (or a Host) makes, handed to what sends as it (LEVEE021). Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
 to configure the context with.
 
 A separate bounded context's context (`[SeparateContext]`: identity's, for the library that serves it) is outside every
@@ -459,6 +459,33 @@ is one (its first parameter's type, or the type a constructor accessor returns; 
 It's static analysis: a type reached through a parameter, a field set elsewhere, a name built at run time or an assembly's
 `GetTypes()` isn't seen. Those are deliberate, and the [trust model](decisions.md#trust-model) answers them, not the
 build.
+
+## LEVEE021: Who an operation runs as is decided where the app composes
+
+The principal an operation runs as decides what the access policy lets it do and, with the operation's scope, which rows
+it reaches. An operation acts as its caller, and a process as the caller that started it, in the scope it was started in.
+A principal made anywhere else (a `SystemPrincipal` in a handler, a `JobPrincipal` in an adapter) acts as someone the
+caller isn't, and a process holding the `Dispatcher` sends as whoever it names, in any scope.
+
+```csharp
+// Wrong: started by a member in one tenant, it runs at platform scope as the system
+internal sealed class RecountProcess(Dispatcher dispatcher) : IProcess<RecountInput>
+{
+    public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) =>
+        dispatcher.SendAsync(new TallyAllNotes(), new SystemPrincipal("recount"), ct);
+}
+
+// Right: each step as its starter, in their scope
+internal sealed class RecountProcess : IProcess<RecountInput>
+{
+    public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) =>
+        context.SendAsync(new TallyNotes(input.Tenant), ct);
+}
+```
+
+A principal is made only in Composition, a Host or a Tool (and tests): constructing one (or a `with` of one) in Kernel,
+Contracts, Domain, Application or an Adapter fails the build. Work that must run as the system (a record that outlives
+the operation's rollback) is sent with the principal Composition makes and hands to what sends as it.
 
 ## LEVEE101: Every operation has a handler
 

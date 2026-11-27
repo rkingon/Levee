@@ -241,4 +241,40 @@ public sealed class Alpha2AuditTests
         Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
     }
+
+    private const string Recount = """
+        using Levee;
+        using System.Threading;
+        using System.Threading.Tasks;
+        public sealed record RecountInput(string Tenant);
+        [Operation("notes.tally", "system", Platform = true)] public sealed record TallyAllNotes : IOperation<int>;
+
+        """;
+
+    [Theory]
+    [InlineData("internal sealed class RecountProcess(Dispatcher dispatcher) : IProcess<RecountInput> { public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) => Task.CompletedTask; }", true)]
+    [InlineData("internal sealed class RecountProcess(System.Lazy<Dispatcher> dispatcher) : IProcess<RecountInput> { public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) => Task.CompletedTask; }", true)]
+    [InlineData("internal sealed class RecountProcess : IProcess<RecountInput> { public Task RunAsync(RecountInput input, ProcessContext context, CancellationToken ct) => context.SendAsync(new TallyAllNotes(), ct); }", false)]
+    public async Task A_process_sends_as_its_starter_through_its_context(string process, bool refused)
+    {
+        var output = await Compile("Application", Recount + process);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE021"));
+    }
+
+    [Theory]
+    [InlineData("Application", "public static Principal As() => new SystemPrincipal(\"recount\");", true)]
+    [InlineData("Adapter", "public static Principal As() => new JobPrincipal(\"recount\", true);", true)]
+    [InlineData("Contracts", "public static Principal As() => new AnonymousPrincipal();", true)]
+    [InlineData("Domain", "public static Principal As(SystemPrincipal p) => p with { Subject = \"other\" };", true)]
+    [InlineData("Application", "public static Principal As(OperationContext context) => context.Principal;", false)]
+    [InlineData("Composition", "public static Principal As() => new SystemPrincipal(\"recount\");", false)]
+    [InlineData("Infrastructure", "public static string As() => \"recount\";", false)]
+    public async Task Who_an_operation_runs_as_is_decided_where_the_app_composes(string role, string member, bool refused)
+    {
+        var output = await Compile(role, $"using Levee;\ninternal static class Acting {{ {member} }}");
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE021"));
+    }
 }

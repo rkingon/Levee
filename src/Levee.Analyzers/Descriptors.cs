@@ -98,7 +98,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor SideConnection = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
+        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system, a principal only Composition (or a Host) makes and hands to what sends as it (LEVEE021); to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
 
     public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
@@ -123,6 +123,14 @@ internal static class Descriptors
     public static readonly DiagnosticDescriptor Reflected = Rule(
         "LEVEE020", "The catalog is the generator's",
         "{0} reflects into {1}, one of Levee's own types: what Levee keeps internal is its own, and what it makes public is called, not looked up. Fix: call the public API; to send by name, MapLeveeOperations (HTTP) and WithLeveeOperations (MCP) are the surface, and in-process code sends the operation it holds through Dispatcher.SendAsync");
+
+    public static readonly DiagnosticDescriptor ProcessSends = Rule(
+        "LEVEE021", "Who an operation runs as is decided where the app composes",
+        "{0} is a process that holds the Dispatcher, so what it sends runs as whoever it names, in any scope, not as the caller that started it, in theirs. Fix: send each step through the ProcessContext RunAsync is given (context.SendAsync), which runs it as the process's starter, in their scope");
+
+    public static readonly DiagnosticDescriptor PrincipalMade = Rule(
+        "LEVEE021", "Who an operation runs as is decided where the app composes",
+        "{0} makes a principal in a {1} project, deciding there who an operation runs as and so what it may reach. Fix: act as the caller (OperationContext.Principal, or a process's ProcessContext.SendAsync); a principal of the app's own (the system's, for a write that must outlive the operation) is made in Composition, a Host or a Tool, and handed to what sends as it");
 
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",
@@ -175,6 +183,7 @@ internal static class Descriptors
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
+        "LEVEE021",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
         "LEVEE112",
     ];
