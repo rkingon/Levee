@@ -188,19 +188,25 @@ public sealed class OperationCatalog
     private static string MetadataName(Type type) => (type.IsGenericType ? type.GetGenericTypeDefinition() : type).FullName ?? type.Name;
 
     /// <summary>
-    /// The first type a contract carries outside the contract language, with why, or null: the build's LEVEE104 again, as the
-    /// wire's own metadata sees it, for whatever the build didn't. An allow-list, so a shape nobody thought of is refused, not
-    /// published: scalars, enums, value objects, the collections above, objects the wire constructs (an input's every member
-    /// read, not only written), and abstract types whose every subtype has a discriminator.
+    /// The first type a contract carries outside the contract language, with why, or null: LEVEE104's rule again, from the wire's
+    /// own metadata, for whatever the build didn't see. Values, lists and dictionaries of them, plain positional records (every
+    /// member a parameter, no other constructor, no JSON attribute, no base but the choice naming them), and a choice of them.
     /// </summary>
     private static string? Outside(Type root, bool input, System.Reflection.Assembly owner)
     {
+        const string Language = " Fix: values, lists and dictionaries of them, plain positional records whose members are their parameters, and an "
+            + "abstract record with no members whose [JsonDerivedType] subtypes are such records (LEVEE104).";
+        const System.Reflection.BindingFlags Instance = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly;
+        static bool Json(Attribute attribute) => attribute is System.Text.Json.Serialization.JsonAttribute;
         var seen = new HashSet<Type>();
         var next = new Stack<Type>([root]);
         while (next.TryPop(out var type))
         {
             type = Nullable.GetUnderlyingType(type) ?? type;
-            if (!seen.Add(type) || type.IsEnum || ContractLanguage.Scalars.Contains(MetadataName(type)) || LeveeJson.IsValueObject(type))
+            var name = MetadataName(type);
+            if (!seen.Add(type) || type.IsEnum || ContractLanguage.Scalars.Contains(name) || LeveeJson.IsValueObject(type)
+                || type.Assembly == typeof(OperationCatalog).Assembly && !type.IsNested && ContractLanguage.LeveeRecords.Contains(name))
             {
                 continue;
             }
@@ -208,17 +214,17 @@ public sealed class OperationCatalog
             {
                 if (type.GetArrayRank() != 1)
                 {
-                    return $"{type.Name} is a many-dimensional array, which JSON has no shape for. Fix: an array of arrays (LEVEE104).";
+                    return $"{type.Name} is a many-dimensional array. Fix: an array of arrays (LEVEE104).";
                 }
                 next.Push(type.GetElementType()!);
                 continue;
             }
-            if (type.IsGenericType && ContractLanguage.Collections.Contains(MetadataName(type)))
+            if (type.IsGenericType && ContractLanguage.Collections.Contains(name))
             {
                 var arguments = type.GetGenericArguments();
                 if (arguments.Length == 2 && !(arguments[0].IsEnum || ContractLanguage.Key(MetadataName(arguments[0]))))
                 {
-                    return $"{type.Name} is keyed by {arguments[0].Name}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum (LEVEE104).";
+                    return $"{type.Name} is keyed by {arguments[0].Name}. Fix: key it by a string, number, Guid, date or enum (LEVEE104).";
                 }
                 foreach (var argument in arguments)
                 {
@@ -226,103 +232,43 @@ public sealed class OperationCatalog
                 }
                 continue;
             }
-            var language = " Fix: a contract is made of what the wire reads back as it writes it: scalars, enums, value objects, arrays and "
-                + "List<T>-like collections, string-keyed dictionaries, positional records, and abstract records whose every subtype has a "
-                + "discriminator (LEVEE104).";
-            if (type.Namespace is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal) || ns.StartsWith("Microsoft.", StringComparison.Ordinal)))
+            // A record: the compiler gives each one <Clone>$.
+            if (!type.IsClass || type.GetMethod("<Clone>$") is null || type.Namespace?.StartsWith("System", StringComparison.Ordinal) == true)
             {
-                return $"{type.Name} isn't in the contract language." + language;
-            }
-            if (type.IsInterface)
-            {
-                return $"{type.Name} is an interface, which the wire writes but can't read back." + language;
-            }
-            // Levee's own (ChangeSignal) are judged by Levee's tests.
-            if (ContractLanguage.LeveeRecords.Contains(MetadataName(type)))
-            {
-                continue;
-            }
-            for (var baseOf = type.BaseType; baseOf is not null && baseOf != typeof(object) && baseOf != typeof(ValueType); baseOf = baseOf.BaseType)
-            {
-                if (baseOf.Assembly != owner)
-                {
-                    return $"{type.Name} derives from {baseOf.Name}, {baseOf.Assembly.GetName().Name}'s, so how its values reach their members can't be judged "
-                        + "where the contract is. Fix: declare the contract's own record, with no base from another assembly (LEVEE104).";
-                }
+                return $"{type.Name} isn't in the contract language." + Language;
             }
             if (type.Assembly != owner)
             {
-                return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own, so how it's built can't be judged where the contract is. "
-                    + "Fix: declare the contract's own record beside the operation, or carry the value as a value object or an enum (LEVEE104).";
+                return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own." + Language;
             }
             var info = LeveeJson.Options.GetTypeInfo(type);
-            if (info.Kind != System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object)
+            if (type.GetCustomAttributes(inherit: false).OfType<Attribute>().FirstOrDefault(a => Json(a) && !(type.IsAbstract && a is System.Text.Json.Serialization.JsonDerivedTypeAttribute)) is { } attribute)
             {
-                return $"{type.Name} isn't in the contract language." + language;
-            }
-            if (info.PolymorphismOptions is { } dropping && (dropping.IgnoreUnrecognizedTypeDiscriminators
-                || dropping.UnknownDerivedTypeHandling != System.Text.Json.Serialization.JsonUnknownDerivedTypeHandling.FailSerialization))
-            {
-                return $"{type.Name} drops what it doesn't recognize ([JsonPolymorphic] ignoring an unknown discriminator, or writing an undeclared "
-                    + "subtype as its base), so a caller's subtype is lost, not refused. Fix: leave [JsonPolymorphic] its defaults (LEVEE104).";
-            }
-            if (type.IsAbstract && info.PolymorphismOptions is not { DerivedTypes.Count: > 0 }
-                || info.PolymorphismOptions is { } some && some.DerivedTypes.Any(d => d.TypeDiscriminator is null))
-            {
-                return $"{type.Name} is read as one of its subtypes only by a discriminator each declares." + language;
-            }
-            // Each declared subtype is a shape the wire carries here, whether its base is abstract or not.
-            foreach (var derived in info.PolymorphismOptions?.DerivedTypes ?? [])
-            {
-                next.Push(derived.DerivedType);
+                return $"{type.Name} carries [{attribute.GetType().Name.Replace("Attribute", "", StringComparison.Ordinal)}]." + Language;
             }
             if (type.IsAbstract)
             {
+                if (type.BaseType != typeof(object) || info.Properties.Count > 0 || info.PolymorphismOptions is not { DerivedTypes.Count: > 0 } choice
+                    || choice.DerivedTypes.Any(d => d.TypeDiscriminator is null || d.DerivedType.BaseType != type))
+                {
+                    return $"{type.Name} isn't a choice of shapes the wire reads: no members, no base, each subtype deriving from it with a discriminator." + Language;
+                }
+                foreach (var derived in choice.DerivedTypes)
+                {
+                    next.Push(derived.DerivedType);
+                }
                 continue;
             }
-            for (var b = type.BaseType; b is not null && b != typeof(object) && b != typeof(ValueType); b = b.BaseType)
+            if (type.BaseType != typeof(object) && !(type.BaseType is { IsAbstract: true } choiceOf
+                && choiceOf.GetCustomAttributes(inherit: false).OfType<System.Text.Json.Serialization.JsonDerivedTypeAttribute>().Any(d => d.DerivedType == type)))
             {
-                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
-                if (b.GetConstructors(flags).Any(c => c.GetParameters() is { Length: > 0 } ps && !(ps.Length == 1 && ps[0].ParameterType == b)))
-                {
-                    return $"{type.Name} derives from {b.Name}, which takes constructor parameters, so a value can be forwarded to the wrong member, or none. "
-                        + "Fix: a contract's base takes nothing, its members abstract or set on their own; or no base (LEVEE104).";
-                }
+                return $"{type.Name} derives from {type.BaseType!.Name}: a record's only base is the choice of shapes that names it." + Language;
             }
-            // A positional parameter naming a member a base declares sets nothing, unless the nearest declaration is abstract.
-            foreach (var parameter in (info.ConstructorAttributeProvider as System.Reflection.MethodBase)?.GetParameters() ?? [])
+            // Every member is a parameter of its one constructor (the compiler's copy constructor aside), and nothing else.
+            var constructors = type.GetConstructors(Instance).Where(c => !(c.GetParameters() is [var only] && only.ParameterType == type)).ToList();
+            if (constructors.Count != 1 || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider)))
             {
-                for (var b = type.BaseType; b is not null && b != typeof(object) && b != typeof(ValueType); b = b.BaseType)
-                {
-                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
-                        | System.Reflection.BindingFlags.DeclaredOnly;
-                    if (b.GetProperties(flags).FirstOrDefault(m => string.Equals(m.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)) is { } declared)
-                    {
-                        if (declared.GetMethod is { IsAbstract: false })
-                        {
-                            return $"{type.Name} takes {parameter.Name}, which {b.Name} already declares, so the parameter sets nothing and the caller's value is dropped (LEVEE104).";
-                        }
-                        break;
-                    }
-                }
-            }
-            if (info.Properties.FirstOrDefault(p => p.AttributeProvider is System.Reflection.FieldInfo) is { } field)
-            {
-                return $"{type.Name}.{field.Name} is a field, which isn't in the contract language. Fix: a property (LEVEE104).";
-            }
-            if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
-            {
-                return $"{type.Name} has no constructor the wire can call, so it writes it but can't read it back. Fix: a positional record (LEVEE104).";
-            }
-            if (info.ConstructorAttributeProvider is System.Reflection.MethodBase constructor
-                && constructor.GetParameters().FirstOrDefault(p => !info.Properties.Any(m => m.AssociatedParameter?.Name == p.Name)) is { } unbound)
-            {
-                return $"{type.Name}'s constructor takes {unbound.Name}, which no member of its name carries, so the wire can't read it. Fix: a positional record (LEVEE104).";
-            }
-            if (input && info.Properties.FirstOrDefault(p => p.Set is null && p.AssociatedParameter is null) is { } writeOnly)
-            {
-                return $"{type.Name}.{writeOnly.Name} is a member the wire writes but never reads, so a caller's value for it is dropped, not refused. "
-                    + "Fix: take it as a positional parameter, or move it off the input (LEVEE104).";
+                return $"{type.Name} has a member or constructor besides its parameters, or a JSON attribute on one." + Language;
             }
             foreach (var member in info.Properties)
             {
@@ -331,6 +277,9 @@ public sealed class OperationCatalog
         }
         return null;
     }
+
+    private static bool JsonMember(System.Reflection.ICustomAttributeProvider? member) =>
+        member?.GetCustomAttributes(inherit: false).OfType<System.Text.Json.Serialization.JsonAttribute>().Any(a => !ContractLanguage.MemberAttributes.Contains(a.GetType().Name)) == true;
 
     public IReadOnlyList<OperationDescriptor> All { get; }
 

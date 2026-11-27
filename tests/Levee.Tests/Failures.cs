@@ -495,12 +495,9 @@ internal sealed class BrokenToDispose : IOperationOutcome, IAsyncDisposable
 }
 
 [System.Text.Json.Serialization.JsonDerivedType(typeof(Card), "card")]
-public abstract record PaymentMethod
-{
-    [Secret] public abstract string Token { get; init; }
-}
+public abstract record PaymentMethod;
 
-public sealed record Card(string Token, string Last4) : PaymentMethod;
+public sealed record Card([property: Secret] string Token, string Last4) : PaymentMethod;
 
 public interface IReachable
 {
@@ -563,11 +560,23 @@ internal sealed class Hanging : IOperationOutcome
     public Task RecordAsync(OperationOutcome outcome, CancellationToken ct) => Task.Delay(Timeout.Infinite, CancellationToken.None);
 }
 
-[Operation("probe.strict", "member", Platform = true)]
-public sealed record Strict(string Text) : IOperation<Unit>
+
+/// <summary>A value object whose own rules refuse, or fail, as its own check.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(RequiredTextJson))]
+[ValueObject(typeof(string))]
+public sealed record RequiredText(string Value);
+
+public sealed class RequiredTextJson : System.Text.Json.Serialization.JsonConverter<RequiredText>
 {
-    public string Text { get; } = string.IsNullOrEmpty(Text) ? throw new ArgumentException("Text is required.", nameof(Text)) : Text;
+    public override RequiredText Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        reader.GetString() is { Length: > 0 } text ? new(text) : throw new ArgumentException("Text is required.");
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, RequiredText value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Value);
 }
+
+[Operation("probe.strict", "member", Platform = true)]
+public sealed record Strict(RequiredText Text) : IOperation<Unit>;
 
 internal sealed class StrictHandler : IOperationHandler<Strict, Unit>
 {
@@ -668,10 +677,21 @@ public sealed class MarksTests
 
 public sealed class ValueObjectValidationException(string message) : Exception(message);
 
-public sealed record Email(string Value)
+
+/// <summary>A value object whose own rules refuse, or fail, as its own validation.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(EmailJson))]
+[ValueObject(typeof(string))]
+public sealed record Email(string Value);
+
+public sealed class EmailJson : System.Text.Json.Serialization.JsonConverter<Email>
 {
-    public string Value { get; } = Value.Contains('@', StringComparison.Ordinal) ? Value : throw new ValueObjectValidationException("Not an email.");
+    public override Email Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        reader.GetString() is { } text && text.Contains('@', StringComparison.Ordinal) ? new(text) : throw new ValueObjectValidationException("Not an email.");
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Email value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Value);
 }
+
 
 [Operation("probe.validated", "member", Platform = true)]
 public sealed record Validated(Email Email) : IOperation<Unit>;
@@ -681,10 +701,22 @@ internal sealed class ValidatedHandler : IOperationHandler<Validated, Unit>
     public Task<Result<Unit>> HandleAsync(Validated operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
 }
 
-public sealed record Unserializable
+
+/// <summary>A value object whose own rules refuse, or fail, as a bug writing it.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(BrokenJson))]
+[ValueObject(typeof(string))]
+public sealed record Broken(string Value);
+
+public sealed class BrokenJson : System.Text.Json.Serialization.JsonConverter<Broken>
 {
-    public string Broken => throw new InvalidOperationException("A getter's bug.");
+    public override Broken Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        new(reader.GetString()!);
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Broken value, System.Text.Json.JsonSerializerOptions options) =>
+        throw new InvalidOperationException("A getter's bug.");
 }
+
+public sealed record Unserializable(Broken Value);
 
 [Operation("probe.unserializable", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
 public sealed record AnswerUnserializable : IOperation<Unserializable>;
@@ -692,7 +724,7 @@ public sealed record AnswerUnserializable : IOperation<Unserializable>;
 internal sealed class AnswerUnserializableHandler : IOperationHandler<AnswerUnserializable, Unserializable>
 {
     public Task<Result<Unserializable>> HandleAsync(AnswerUnserializable operation, OperationContext context, CancellationToken ct) =>
-        Task.FromResult<Result<Unserializable>>(new Unserializable());
+        Task.FromResult<Result<Unserializable>>(new Unserializable(new Broken("x")));
 }
 
 internal sealed class Blocking : IOperationOutcome
@@ -715,7 +747,7 @@ public sealed class SixthAuditFixTests
     {
         var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
 
-        var result = await dispatcher.SendFromClientAsync("probe.validated", Json("""{"email":{"value":"nope"}}"""), Admin, CancellationToken.None);
+        var result = await dispatcher.SendFromClientAsync("probe.validated", Json("""{"email":"nope"}"""), Admin, CancellationToken.None);
 
         Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
     }
@@ -747,10 +779,21 @@ public sealed class SixthAuditFixTests
     }
 }
 
-public sealed record Leaky(string Value)
+
+/// <summary>A value object whose own rules refuse, or fail, as a leaky failure.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(LeakyJson))]
+[ValueObject(typeof(string))]
+public sealed record Leaky(string Value);
+
+public sealed class LeakyJson : System.Text.Json.Serialization.JsonConverter<Leaky>
 {
-    public string Value { get; } = Value.Length > 0 ? Value : throw new InvalidOperationException("connection=Host=db;Password=hunter2");
+    public override Leaky Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        reader.GetString() is { Length: > 0 } text ? new(text) : throw new InvalidOperationException("connection=Host=db;Password=hunter2");
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Leaky value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Value);
 }
+
 
 [Operation("probe.leaky", "member", Platform = true)]
 public sealed record LeakyInput(Leaky Value) : IOperation<Unit>;
@@ -776,7 +819,7 @@ public sealed class SeventhAuditFixTests
     {
         var dispatcher = DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>();
 
-        var result = await dispatcher.SendFromClientAsync("probe.leaky", System.Text.Json.JsonDocument.Parse("""{"value":{"value":""}}""").RootElement.Clone(), Admin, CancellationToken.None);
+        var result = await dispatcher.SendFromClientAsync("probe.leaky", System.Text.Json.JsonDocument.Parse("""{"value":""}""").RootElement.Clone(), Admin, CancellationToken.None);
 
         Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
         Assert.DoesNotContain("hunter2", result.Error.Message, StringComparison.Ordinal);
@@ -890,7 +933,7 @@ public sealed class TwelfthAuditFixTests
     [Fact]
     public void A_member_left_off_the_wire_is_refused_on_a_contract()
     {
-        Assert.Contains("[JsonIgnore]", Assert.Throws<InvalidOperationException>(() => LeveeJson.FindSecret(typeof(Unwritten))).Message, StringComparison.Ordinal);
+        Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("probe.unwritten", typeof(Unwritten))]));
     }
 
     public sealed record Unwritten(string Name)

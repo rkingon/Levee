@@ -13,9 +13,8 @@ public sealed class Alpha2FourthReviewTests
     [Fact]
     public void Annotating_a_nullable_struct_without_a_converter_keeps_schema_and_value_together()
     {
-        // Rejected before use: a [ValueObject] the serializer would write member by member promises a scalar it never sends.
-        Assert.Contains("no converter of its own", Assert.Throws<InvalidOperationException>(() => JsonSerializer.SerializeToNode(new Package(new Weight(3)), LeveeJson.Options)).Message, StringComparison.Ordinal);
-        Assert.Throws<InvalidOperationException>(() => LeveeJson.Schema(typeof(Package)));
+        // Refused where the catalog is made: a [ValueObject] the serializer would write member by member promises a scalar it never sends.
+        Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("review.package", typeof(Package))]));
     }
 
     [ValueObject(typeof(int)), JsonConverter(typeof(CountConverter))]

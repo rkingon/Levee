@@ -10,8 +10,8 @@ public sealed class Alpha2ReleaseReviewTests
     [Fact]
     public void Accepted_member_number_handling_round_trips_its_own_output()
     {
-        // Refused before use: a member can't loosen the wire's strict numbers either.
-        Assert.Contains("[JsonNumberHandling]", Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(new LegacyInvoice(42), LeveeJson.Options)).Message, StringComparison.Ordinal);
+        // Refused where the catalog is made: a JSON attribute on a member is outside the contract language.
+        Assert.Contains("JSON attribute", Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("review.invoice", typeof(LegacyInvoice))])).Message, StringComparison.Ordinal);
     }
 
     [Fact]

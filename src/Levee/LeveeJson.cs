@@ -41,72 +41,6 @@ public static class LeveeJson
         return o;
     }
 
-    /// <summary>
-    /// Every converter of the app's is a value object's, on its type: one on a member outranks the type's (and its check), and one
-    /// on a type that doesn't say what it writes makes a schema of nothing. LEVEE104 refuses both in the build; this, whatever
-    /// the build didn't see.
-    /// </summary>
-    private static void Closed(JsonTypeInfo info)
-    {
-        if (info.UnmappedMemberHandling == JsonUnmappedMemberHandling.Skip)
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name} skips members it doesn't know ([JsonUnmappedMemberHandling(Skip)]), so a misspelt field is dropped, not refused. "
-                + "Fix: drop it; the wire refuses what a contract doesn't declare (LEVEE104).");
-        }
-        // Every member is written, as the strict reader requires it: one written only sometimes reads back as missing.
-        // A contract is its wire: a member left off it is skipped when sent, not refused, and one on it only sometimes may not
-        // read back. Every member is on the wire, always.
-        if (info.Properties.FirstOrDefault(p => p.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: true)
-                is [JsonIgnoreAttribute { Condition: not JsonIgnoreCondition.Never }, ..]) is { } ignored)
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name}.{ignored.Name} is left off the wire ([JsonIgnore]), always or sometimes: a caller that sends it is silently ignored, "
-                + "not refused, and one written only sometimes may not read back. Fix: a contract carries what's on its wire and nothing else: move "
-                + "the member off the contract (to the domain type, or a method) (LEVEE104).");
-        }
-        if (info.Properties.FirstOrDefault(p => p.IsExtensionData) is { } extension)
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name}.{extension.Name} takes every member it doesn't declare ([JsonExtensionData]), which no schema shows. "
-                + "Fix: declare each member it takes (LEVEE104).");
-        }
-        if (info.NumberHandling is { } typeNumbers && typeNumbers != JsonNumberHandling.Strict)
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name} says how its numbers are written ([JsonNumberHandling]), so a number its schema shows isn't one on the wire. "
-                + "Fix: drop it; a value that travels as a string is a value object, [ValueObject(typeof(string))] with its converter (LEVEE104).");
-        }
-        foreach (var member in info.Properties)
-        {
-            if (member.NumberHandling is { } numbers && numbers != JsonNumberHandling.Strict)
-            {
-                throw new InvalidOperationException(
-                    $"{info.Type.Name}.{member.Name} says how its numbers are written ([JsonNumberHandling]), so a number its schema shows isn't one on the "
-                    + "wire. Fix: drop it; a value that travels as a string is a value object, [ValueObject(typeof(string))] with its converter (LEVEE104).");
-            }
-            if (member.CustomConverter is { } own && !BuiltIn(own))
-            {
-                throw new InvalidOperationException(
-                    $"{info.Type.Name}.{member.Name} has a converter of its own, which outranks its type's and says nothing a schema can show. "
-                    + $"Fix: put the converter on {member.PropertyType.Name} itself, with [ValueObject(typeof(T))] saying the JSON scalar it writes (LEVEE104).");
-            }
-        }
-        var declared = (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is not [];
-        if (declared && (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false) is [])
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name} is a [ValueObject] with no converter of its own, so the serializer would write its members, not the scalar its "
-                + "schema shows. Fix: put the converter that writes it as that scalar on the type, [JsonConverter(typeof(...))] beside [ValueObject] (LEVEE104).");
-        }
-        if (!BuiltIn(info.Converter) && info.Converter is not IValueObjectWire && !declared)
-        {
-            throw new InvalidOperationException(
-                $"{info.Type.Name} is written by a converter of its own, which no schema can read. Fix: say what it writes on the type, "
-                + "[ValueObject(typeof(string))] (with Format or Pattern if it has one) (LEVEE104).");
-        }
-    }
-
     private interface IValueObjectWire;
 
     /// <summary>A value object: written by its own converter as the one scalar its <see cref="ValueObjectAttribute"/> names.</summary>
@@ -116,14 +50,7 @@ public static class LeveeJson
     {
         private readonly DefaultJsonTypeInfoResolver _inner = new();
 
-        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) =>
-            _inner.GetTypeInfo(type, options) is { } info ? Checked(info) : null;
-
-        private static JsonTypeInfo Checked(JsonTypeInfo info)
-        {
-            Closed(info);
-            return info;
-        }
+        public JsonTypeInfo? GetTypeInfo(Type type, JsonSerializerOptions options) => _inner.GetTypeInfo(type, options);
     }
 
 

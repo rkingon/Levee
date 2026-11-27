@@ -19,38 +19,35 @@ public sealed class ContractLanguageParityTests
         """;
 
     [Theory]
+    // In the language.
     [InlineData("", "int A, string? B, System.Guid C, System.DateOnly D, System.TimeSpan E, System.Version F, System.Uri G", false, false)]
     [InlineData("public enum Size { Small, Large }", "Size A, Size? B", false, false)]
     [InlineData(Vo, "Qty A, Qty? B, System.Collections.Generic.List<Qty> C", false, false)]
     [InlineData("", "int[][] A, System.Collections.Generic.IReadOnlyList<int> B, System.Collections.Generic.HashSet<string> C", false, false)]
     [InlineData("", "System.Collections.Generic.Dictionary<System.Version, int> A, System.Collections.Generic.IReadOnlyDictionary<System.Guid, string> B", false, false)]
     [InlineData("public sealed record Folder(string Name, Folder? Parent = null);", "Folder A", false, false)]
-    [InlineData("public readonly record struct Point(int X, int Y);", "Point A", false, false)]
-    [InlineData("public sealed record Amount { [System.Text.Json.Serialization.JsonInclude] public int Value { get; private set; } }", "Amount A", false, false)]
+    [InlineData("public sealed record Line(int Sku, [property: System.Text.Json.Serialization.JsonPropertyName(\"qty\")] int Quantity);", "Line A", false, false)]
     [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", false, false)]
-    [InlineData("[System.Text.Json.Serialization.JsonPolymorphic(IgnoreUnrecognizedTypeDiscriminators = true)][System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
-    [InlineData("[System.Text.Json.Serialization.JsonPolymorphic(UnknownDerivedTypeHandling = System.Text.Json.Serialization.JsonUnknownDerivedTypeHandling.FallBackToBaseType)][System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
+    // Outside it, in both.
     [InlineData("", "System.Collections.Generic.Dictionary<Levee.Unit, int> A", true, false)]
     [InlineData("", "System.Collections.Generic.IReadOnlySet<int> A", true, false)]
     [InlineData("", "int[,] A", true, false)]
     [InlineData("", "System.Collections.ObjectModel.ReadOnlyCollection<int> A", true, false)]
-    [InlineData("", "System.Collections.Generic.Queue<int> A", true, false)]
     [InlineData("", "object A", true, false)]
     [InlineData("public interface IThing { int Size { get; } }", "IThing A", true, false)]
+    [InlineData("public readonly record struct Point(int X, int Y);", "Point A", true, false)]
+    [InlineData("public sealed class Bag { public int Size { get; set; } }", "Bag A", true, false)]
     [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Card))] public abstract record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
-    [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Bundle), \"bundle\")] public record Price(int Amount); public sealed record Bundle(int Amount, System.Collections.ObjectModel.ReadOnlyCollection<int> Parts) : Price(Amount);", "Price A", true, false)]
+    [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay(int Amount); public sealed record Card(int Amount, string Last4) : Pay(Amount);", "Pay A", true, false)]
+    [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay { public int Amount { get; init; } } public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
+    [InlineData("public record Counts(int Ordered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered);", "Q A", true, false)]
     [InlineData("public sealed record Order(int Quantity, int Price) { public int Total => Quantity * Price; }", "Order A", true, false)]
-    [InlineData("public sealed record Money { public int Amount { get; set; } public Money(int value) => Amount = value; }", "Money A", true, false)]
-    [InlineData("public sealed class Bag : System.Collections.Generic.List<int>;", "Bag A", true, false)]
-    // What only the source shows: which member a constructor's body puts each value in. A base taking parameters both refuse.
-    [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } public Q(int ordered, int delivered) { Ordered = delivered; Delivered = ordered; } }", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Q A", true, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered: Delivered, Delivered: Ordered);", "Q A", true, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered);", "Q A", true, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered: Delivered, Ordered: Ordered);", "Q A", true, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered);", "Q A", true, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered) { protected Counts() : this(0, 0) { } } public sealed record Q(int Ordered, int Delivered) : Counts();", "Q A", true, false)]
-    [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } [System.Text.Json.Serialization.JsonConstructor] public Q(int ordered, int delivered) : this(delivered, ordered, 0) { } private Q(int ordered, int delivered, int _) { Ordered = ordered; Delivered = delivered; } }", "Q A", true, true)]
+    [InlineData("public sealed record Amount { public int Value { get; init; } }", "Amount A", true, false)]
+    [InlineData("public sealed record Money { public int Amount { get; } public Money(int amount) => Amount = amount; }", "Money A", true, true)]
+    [InlineData("public sealed record Line([property: System.Text.Json.Serialization.JsonIgnore] int Sku);", "Line A", true, false)]
+    [InlineData("[System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Skip)] public sealed record Line(int Sku);", "Line A", true, false)]
+    // What only the source shows: a parameter's member declared again, set from something else.
+    [InlineData("public sealed record Q(int Ordered, int Delivered) { public int Ordered { get; init; } = Delivered; }", "Q A", true, true)]
     public async Task The_build_and_the_catalog_agree_on_the_contract_language(string types, string members, bool refused, bool sourceOnly)
     {
         var name = $"Parity{(types + members).GetHashCode(StringComparison.Ordinal):x8}";
@@ -76,7 +73,7 @@ public sealed class ContractLanguageParityTests
 public sealed class ReferencedOperationTests
 {
     [Theory]
-    [InlineData("public sealed record Amount { [System.Text.Json.Serialization.JsonInclude] public int Value { get; private set; } }", false)]
+    [InlineData("public sealed record Amount(int Value);", false)]
     [InlineData("public sealed record Amount { public int Value { get; } }", true)]
     public async Task An_operation_composed_from_another_assembly_is_judged_where_its_declared_and_never_left_out(string amount, bool refused)
     {

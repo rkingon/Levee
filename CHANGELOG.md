@@ -37,20 +37,13 @@
   are numbers both ways (Web's reading of one from a string is off). A value's JSON is its value object's own: a
   converter goes on a `[ValueObject]` type, never a member, and a `[ValueObject]` has one. A contract can't loosen the wire
   (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, any `[JsonIgnore]`: a member off
-  the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. Contracts are written in a closed language: what the wire reads back as it writes it. Scalars (strings,
-  numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays, `List<T>`,
-  `IReadOnlyList<T>` and the like (one dimension), and dictionaries keyed by a scalar; the contract's own records, built
-  only by their positional constructor or a parameterless one, from a base that takes nothing (its members abstract, which
-  a subtype's positional parameter overrides, or set on their own), with properties, not fields (a Kernel record crosses
-  into a contract as a value object), and records whose every declared
-  subtype, under an abstract base or not, has a discriminator, read wherever the caller puts it, with `[JsonPolymorphic]` left to refuse
-  what it doesn't recognize. LEVEE104 refuses anything else, an
-  interface, a collection of the app's own, a constructor written by hand (which decides where each value lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
-  made (a host's start, the generated catalog test), naming each operation it refuses. A referenced assembly's operation is
-  judged where it's declared, from its source, and carried as declared where it's composed, never left out of the catalog.
-  A record's base calls are judged as C# bound them, through every record it derives from. A value object's schema and the
-  JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
-  dictionary, it keeps its converter's property-name methods.
+  the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. Contracts are written in a small, closed language, so a type's schema is its parameter list and the wire can't
+  disagree with it: values (scalars, enums, value objects), lists and dictionaries of them, plain positional records whose
+  members are their parameters, and a choice of them (an abstract record with no members, its `[JsonDerivedType]`
+  subtypes plain positional records). Anything else (another property or field, a constructor, a base, a struct, an
+  interface, a JSON attribute but `[JsonPropertyName]`) is refused by LEVEE104 and by the catalog where it's made (a
+  host's start, the generated catalog test), naming the operation. A referenced assembly's operation is judged where it's
+  declared and carried as declared where it's composed, never left out of the catalog.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
   startup, the guard on the context, the audit, classified failures). `AddLeveePostgres<TContext>()` is the unit of work.

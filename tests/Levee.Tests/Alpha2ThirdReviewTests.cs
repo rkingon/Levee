@@ -81,9 +81,10 @@ public sealed class ClosedWireTests
     [Fact]
     public void A_converter_is_a_value_objects_on_its_type_and_nowhere_else()
     {
-        Assert.Contains("on Label itself", Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize<OnMember>("""{"label":42}""", LeveeJson.Options)).Message, StringComparison.Ordinal);
-        Assert.Throws<InvalidOperationException>(() => JsonSerializer.Deserialize<OnDerived>("""{"label":42}""", LeveeJson.Options));
-        Assert.Throws<InvalidOperationException>(() => LeveeJson.Schema(typeof(OnMember)));
-        Assert.Contains("say what it writes", Assert.Throws<InvalidOperationException>(() => JsonSerializer.Serialize(new OfUndeclared(new("x")), LeveeJson.Options)).Message, StringComparison.Ordinal);
+        // Refused where the catalog is made: a converter on a member, or one on a type that doesn't say what it writes.
+        foreach (var contract in new[] { typeof(OnMember), typeof(OnDerived), typeof(OfUndeclared) })
+        {
+            Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("review.label", contract)]));
+        }
     }
 }

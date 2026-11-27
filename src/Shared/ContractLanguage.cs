@@ -26,6 +26,9 @@ internal static class ContractLanguage
     /// <summary>Levee's own records a contract may carry, judged by Levee's tests.</summary>
     public static readonly HashSet<string> LeveeRecords = new(StringComparer.Ordinal) { "Levee.ChangeSignal" };
 
+    /// <summary>The System.Text.Json attributes a contract's member may carry: each says the same to the schema and the wire.</summary>
+    public static readonly HashSet<string> MemberAttributes = new(StringComparer.Ordinal) { "JsonPropertyNameAttribute" };
+
     /// <summary>A dictionary key: a scalar the wire writes as a property name (Unit has none), or an enum.</summary>
     public static bool Key(string name) => name != "Levee.Unit" && Scalars.Contains(name);
 }
