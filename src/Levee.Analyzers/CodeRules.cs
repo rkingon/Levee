@@ -575,7 +575,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnUnsafeAccessor(SymbolAnalysisContext context)
     {
         var method = (IMethodSymbol)context.Symbol;
-        if (!method.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorAttribute"))
+        if (method.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorAttribute")
+            is not { } accessor)
         {
             return;
         }
@@ -584,8 +585,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 .Select(a => a.ConstructorArguments.FirstOrDefault().Value as string)
                 .Select(n => n?.Split(',')[0].Trim())
                 .FirstOrDefault(n => n?.StartsWith("Levee.", StringComparison.Ordinal) == true) is { } full ? full.Substring(full.LastIndexOfAny(['.', '+']) + 1) : null;
-        var target = method.Parameters.Select(p => LeveeType(p.Type) ?? Named(p.GetAttributes())).FirstOrDefault(t => t is not null)
-            ?? LeveeType(method.ReturnType) ?? Named(method.GetReturnTypeAttributes());
+        // Its target is the type it constructs (UnsafeAccessorKind.Constructor, 0), or else its first parameter's.
+        var target = accessor.ConstructorArguments.FirstOrDefault().Value is 0
+            ? LeveeType(method.ReturnType) ?? Named(method.GetReturnTypeAttributes())
+            : method.Parameters.FirstOrDefault() is { } first ? LeveeType(first.Type) ?? Named(first.GetAttributes()) : null;
         if (target is not null && method.Locations.FirstOrDefault() is { IsInSource: true } location)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, location, $"[UnsafeAccessor] {method.Name}", target));

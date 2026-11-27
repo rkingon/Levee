@@ -110,7 +110,10 @@ public sealed class Alpha2AuditTests
     [Theory]
     [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"SendJsonAsync\")] static extern object Send(Dispatcher d);", true)]
     [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"Run\")] static extern void Run([System.Runtime.CompilerServices.UnsafeAccessorType(\"Levee.Worker, Levee\")] object w);", true)]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"SendJsonAsync\")] static extern System.Threading.Tasks.Task<Result<System.Text.Json.JsonElement>> SendJson(Dispatcher dispatcher, string name, System.Text.Json.JsonElement input, Principal principal, System.Threading.CancellationToken ct);", true)]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Constructor)] static extern OperationContext Make(Principal p, OperationDescriptor d, WorkScope s, System.DateTimeOffset now);", true)]
     [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Field, Name = \"_items\")] static extern ref int[] Items(System.Collections.Generic.List<int> list);", false)]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"Log\")] static extern void Log(System.Collections.Generic.List<int> list, Principal who);", false)]
     public async Task An_unsafe_accessor_into_Levee_is_reflection_by_another_name(string accessor, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true),
