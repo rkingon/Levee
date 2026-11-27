@@ -115,10 +115,10 @@ public interface IAmbientTransaction
     (System.Data.Common.DbConnection Connection, System.Data.Common.DbTransaction Transaction)? Current { get; }
 }
 
-public sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subject, string Operation, string Input);
+internal sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subject, string Operation, string Input);
 
 /// <summary>One operation's transaction. Opened scoped and read-only as its contract says; committed only by the dispatcher.</summary>
-public interface IUnitOfWork : IAsyncDisposable
+internal interface IUnitOfWork : IAsyncDisposable
 {
     WorkScope Scope { get; }
 
@@ -128,8 +128,12 @@ public interface IUnitOfWork : IAsyncDisposable
     Task CommitAsync(CancellationToken ct);
 }
 
-/// <summary>Resolved from the operation's DI scope, so the unit of work shares that scope's instances with the handler.</summary>
-public interface IUnitOfWorkFactory
+/// <summary>
+/// Resolved from the operation's DI scope, so the unit of work shares that scope's instances with the handler. Levee's
+/// alone: every guarantee past the dispatcher (row-level security checked, the guard, the audit, classified failures) is
+/// the Postgres unit of work's, so one of an app's own would keep the transaction and lose them.
+/// </summary>
+internal interface IUnitOfWorkFactory
 {
     Task<IUnitOfWork> BeginAsync(WorkScope scope, CancellationToken ct);
 

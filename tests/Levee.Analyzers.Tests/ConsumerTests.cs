@@ -88,22 +88,14 @@ public sealed class ConsumerTests
     }
 
     [Theory]
-    [InlineData("Application", "factory.BeginAsync(new WorkScope(null, false), CancellationToken.None)", true)]
-    [InlineData("Host", "factory.BeginAsync(new WorkScope(null, false), CancellationToken.None)", true)]
-    [InlineData("Test", "factory.BeginAsync(new WorkScope(null, false), CancellationToken.None)", false)]
-    public async Task Only_the_dispatcher_opens_a_unit_of_work(string role, string call, bool refused)
+    [InlineData("Adapter", "public sealed class Own : IUnitOfWorkFactory;")]
+    [InlineData("Host", "public static class Bridge { public static Task Commit(IUnitOfWork unit) => unit.CommitAsync(CancellationToken.None); }")]
+    [InlineData("Test", "public static class Bridge { public static Task<IUnitOfWork> Open(IUnitOfWorkFactory factory) => factory.BeginAsync(new WorkScope(null, false), CancellationToken.None); }")]
+    public async Task The_unit_of_work_is_Levees_alone(string role, string declaration)
     {
-        var output = await Compile(role, $"public static class Bridge {{ public static Task<IUnitOfWork> Open(IUnitOfWorkFactory factory) => {call}; }}", "App");
+        var output = await Compile(role, declaration, "App");
 
-        Assert.Equal(refused, output.Ids.Contains("LEVEE004"));
-    }
-
-    [Fact]
-    public async Task Only_the_dispatcher_commits()
-    {
-        var output = await Compile("Adapter", "public static class Bridge { public static Task Commit(IUnitOfWork unit) => unit.CommitAsync(CancellationToken.None); }", "App");
-
-        Assert.Contains("LEVEE004", output.Ids);
+        Assert.Contains("CS0122", output.Ids);
     }
 
     [Fact]

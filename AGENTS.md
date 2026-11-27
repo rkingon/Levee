@@ -5,7 +5,7 @@ Read [docs/principles.md](docs/principles.md) first: what belongs here and what 
 - Hold the shape every app converges on: what every product ends up writing gets one conventional shape here, so agents
   in every repo write it the same way.
 - A rule belongs here only if leaving it out lets wrong code compile. A legitimate per-app choice goes behind a hook
-  (`IAccessPolicy`, `IAdmission`, `IUnitOfWorkFactory`).
+  (`IAccessPolicy`, `IAdmission`).
 - A rule's message is the instructions: what's wrong, then `Fix:` and the conventional shape. Its section in
   `docs/rules.md` has why, the wrong shape and the right one. `MessageTests` holds both.
 - A consumer's request ends up in `docs/decisions.md`, built, held or open, with its reason.

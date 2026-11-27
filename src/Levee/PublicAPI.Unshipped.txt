@@ -1,1 +1,28 @@
 #nullable enable
+*REMOVED*Levee.AuditEntry
+*REMOVED*Levee.AuditEntry.<Clone>$() -> Levee.AuditEntry!
+*REMOVED*Levee.AuditEntry.At.get -> System.DateTimeOffset
+*REMOVED*Levee.AuditEntry.At.init -> void
+*REMOVED*Levee.AuditEntry.AuditEntry(System.DateTimeOffset At, string? Scope, string! Subject, string! Operation, string! Input) -> void
+*REMOVED*Levee.AuditEntry.Deconstruct(out System.DateTimeOffset At, out string? Scope, out string! Subject, out string! Operation, out string! Input) -> void
+*REMOVED*Levee.AuditEntry.Equals(Levee.AuditEntry? other) -> bool
+*REMOVED*Levee.AuditEntry.Input.get -> string!
+*REMOVED*Levee.AuditEntry.Input.init -> void
+*REMOVED*Levee.AuditEntry.Operation.get -> string!
+*REMOVED*Levee.AuditEntry.Operation.init -> void
+*REMOVED*Levee.AuditEntry.Scope.get -> string?
+*REMOVED*Levee.AuditEntry.Scope.init -> void
+*REMOVED*Levee.AuditEntry.Subject.get -> string!
+*REMOVED*Levee.AuditEntry.Subject.init -> void
+*REMOVED*Levee.IUnitOfWork
+*REMOVED*Levee.IUnitOfWork.AuditAsync(Levee.AuditEntry! entry, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+*REMOVED*Levee.IUnitOfWork.CommitAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+*REMOVED*Levee.IUnitOfWork.Scope.get -> Levee.WorkScope!
+*REMOVED*Levee.IUnitOfWorkFactory
+*REMOVED*Levee.IUnitOfWorkFactory.BeginAsync(Levee.WorkScope! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.IUnitOfWork!>!
+*REMOVED*Levee.IUnitOfWorkFactory.Classify(System.Exception! exception) -> Levee.Error?
+*REMOVED*override Levee.AuditEntry.Equals(object? obj) -> bool
+*REMOVED*override Levee.AuditEntry.GetHashCode() -> int
+*REMOVED*override Levee.AuditEntry.ToString() -> string!
+*REMOVED*static Levee.AuditEntry.operator !=(Levee.AuditEntry? left, Levee.AuditEntry? right) -> bool
+*REMOVED*static Levee.AuditEntry.operator ==(Levee.AuditEntry? left, Levee.AuditEntry? right) -> bool

@@ -424,8 +424,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             return;
         }
         if (role != Role.Tool && ((TransactionMembers.Contains(method.Name) && IsPersistence(method.ContainingType))
-            || (TransactionObjectMembers.Contains(method.Name) && IsTransaction(method.ContainingType))
-            || IsLeveeUnitOfWork(method)))
+            || (TransactionObjectMembers.Contains(method.Name) && IsTransaction(method.ContainingType))))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.Transaction, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
         }
@@ -455,15 +454,6 @@ public sealed class CodeRules : DiagnosticAnalyzer
             }
         }
         return false;
-    }
-
-    /// <summary>Opening, auditing or committing Levee's unit of work: the dispatcher's alone, or it runs unauthorized and unaudited.</summary>
-    private static bool IsLeveeUnitOfWork(IMethodSymbol method)
-    {
-        static bool Is(INamedTypeSymbol t, string name) => t.Name == name && t.ContainingNamespace is { Name: "Levee", ContainingNamespace.IsGlobalNamespace: true };
-        var type = method.ContainingType;
-        return (method.Name == "BeginAsync" && (Is(type, "IUnitOfWorkFactory") || type.AllInterfaces.Any(i => Is(i, "IUnitOfWorkFactory"))))
-            || (method.Name is "CommitAsync" or "AuditAsync" && (Is(type, "IUnitOfWork") || type.AllInterfaces.Any(i => Is(i, "IUnitOfWork"))));
     }
 
     private static bool IsTransaction(INamedTypeSymbol? type)

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Levee
+- **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
+  app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
+  startup, the guard on the context, the audit, classified failures). `AddLeveePostgres<TContext>()` is the unit of work.
+
 ### Levee.Cli
 - `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
   a migration build, never makes it green.
