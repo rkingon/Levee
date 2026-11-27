@@ -64,6 +64,11 @@
 - LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.
 
 ### Levee.Cli
+- `dotnet levee check` no longer passes a failed analyzed build: a project whose analyzed build fails on anything but a
+  LEVEE rule is named with its errors and its analysis is incomplete, in the verdict and in `--json` (an entry per project,
+  `"incomplete": true` and no rule; each finding gains `"incomplete": false`). It reads a multi-target project's findings
+  (`[App.csproj::TargetFramework=…]`) once each, and builds the app at its real path, so an `.editorconfig` applies as it
+  does to `dotnet build` in the directory. `--json` lists projects that don't compile.
 - `dotnet levee check` ends with its verdict: not on Levee yet while any rule is broken or suppressed, or a project
   doesn't compile.
 - `dotnet levee db isolate` and `share` take a table in a schema of its own (`billing.invoices`), as the docs say.
