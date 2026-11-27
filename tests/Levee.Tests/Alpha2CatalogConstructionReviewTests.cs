@@ -129,3 +129,15 @@ public sealed class ContractLanguageTests
     [InlineData(typeof(Keyed))]
     public void What_the_wire_reads_back_starts(Type contract) => OperationCatalog.Prove([("review.read", contract)]);
 }
+
+public sealed class DiscriminatorOrderTests
+{
+    [Fact]
+    public void A_subtype_reads_with_its_discriminator_anywhere_among_its_members()
+    {
+        var first = JsonSerializer.Deserialize<ContractLanguageTests.Tagged>("""{"$type":"retail","amount":3}""", LeveeJson.Options);
+        var last = JsonSerializer.Deserialize<ContractLanguageTests.Tagged>("""{"amount":3,"$type":"retail"}""", LeveeJson.Options);
+
+        Assert.Equal(first, last);
+    }
+}

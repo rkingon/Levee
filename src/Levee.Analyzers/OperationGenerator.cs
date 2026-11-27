@@ -238,9 +238,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 .Select(a => a.ConstructorArguments.FirstOrDefault().Value as string)
                 .OfType<string>())
             .Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal).ToList();
+        // A referenced operation that fails here, as the declaring build saw it pass, is reported, never left out of the catalog.
         var operations = own.Concat(referenced.SelectMany(a => AllTypes(a.GlobalNamespace))
                 .Where(t => t.DeclaredAccessibility == Accessibility.Public)
-                .Select(t => Operation(t, null))
+                .Select(t => Operation(t, context))
                 .Where(o => o is not null)
                 .Select(o => o!))
             .ToList();
@@ -672,6 +673,36 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// writes it), with what's wrong, or null. An allow-list: what isn't named here is refused, so no shape the reader can't
     /// take back gets in by being one nobody thought of.
     /// </summary>
+    /// <summary>
+    /// How a positional record's base call sends a value somewhere other than the base parameter of its name, or null: each
+    /// argument, named or by position, the identifier of its parameter's own name. An optional one left out is the base's own
+    /// member, read from the caller on its own.
+    /// </summary>
+    private static string? Misrouted(SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax> arguments, INamedTypeSymbol? baseType)
+    {
+        var named = arguments.Select(a => a.NameColon?.Name.Identifier.Text).OfType<string>().ToList();
+        var positionalCount = arguments.Count(a => a.NameColon is null);
+        // The base constructor the call binds: every parameter it leaves out has a default, as the compiler requires.
+        var target = baseType?.InstanceConstructors.FirstOrDefault(c => arguments.Count <= c.Parameters.Length
+            && named.All(n => c.Parameters.Any(p => p.Name == n))
+            && c.Parameters.Select((p, i) => (p, i)).All(x => x.i < positionalCount || named.Contains(x.p.Name) || x.p.HasExplicitDefaultValue));
+        if (target is null)
+        {
+            return $"forwards {arguments.Count} value(s) to a base constructor that doesn't take them by these names";
+        }
+        for (var i = 0; i < arguments.Count; i++)
+        {
+            var argument = arguments[i];
+            var parameter = argument.NameColon is { } name ? target.Parameters.First(p => p.Name == name.Name.Identifier.Text) : target.Parameters[i];
+            if (!(argument.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id
+                && string.Equals(id.Identifier.Text, parameter.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                return $"passes {argument.Expression} to its base's {parameter.Name}";
+            }
+        }
+        return null;
+    }
+
     private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input)
     {
         // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
@@ -788,6 +819,13 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"is read as one of its subtypes only by a discriminator each declares. {Language}");
         }
+        // An unknown discriminator dropped to the base, or a subtype written as its base, loses what the caller sent.
+        if (named.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonPolymorphicAttribute") is { } polymorphic
+            && polymorphic.NamedArguments.Any(n => n.Key == "IgnoreUnrecognizedTypeDiscriminators" && n.Value.Value is true
+                || n.Key == "UnknownDerivedTypeHandling" && n.Value.Value is int handling && handling != 0))
+        {
+            return (here, "drops what it doesn't recognize ([JsonPolymorphic] ignoring an unknown discriminator, or writing an undeclared subtype as its base), so a caller's subtype is lost, not refused. Fix: leave [JsonPolymorphic] its defaults; declare each subtype with [JsonDerivedType]");
+        }
         // Each declared subtype is a shape the wire carries here, whether its base is abstract or not.
         if (subtypes.Select(d => d.ConstructorArguments[0].Value as ITypeSymbol).OfType<ITypeSymbol>()
                 .Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null) is { } inSubtype)
@@ -844,16 +882,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
         // A positional record forwards to its base by name: an argument read from another parameter lands a value in another member.
         if (positional && constructor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax record
             && record.BaseList?.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() is { } forwarded
-            && named.BaseType?.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == forwarded.ArgumentList.Arguments.Count) is { } baseConstructor
-            && forwarded.ArgumentList.Arguments.Select((argument, i) => (argument, parameter: baseConstructor.Parameters[i]))
-                .FirstOrDefault(f => !(f.argument.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id
-                    && string.Equals(id.Identifier.Text, f.parameter.Name, StringComparison.OrdinalIgnoreCase))) is { argument: not null } misrouted)
+            && Misrouted(forwarded.ArgumentList.Arguments, named.BaseType) is { } misrouted)
         {
-            return (here, $"passes {misrouted.argument} to its base's {misrouted.parameter.Name}, so a value can land in another member. Fix: forward each parameter to the base parameter of its own name");
+            return (here, $"{misrouted}, so a value can land in another member, or in none. Fix: forward each base parameter as the parameter of its own name: : Base(Ordered, Delivered)");
         }
+        // [JsonInclude] lets the wire set a non-public setter, one a referenced assembly's metadata doesn't even show; one with
+        // no setter at all the catalog refuses at start.
         static bool Settable(IPropertySymbol property) =>
             property.SetMethod is { DeclaredAccessibility: Accessibility.Public }
-            || property.SetMethod is not null && property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+            || property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
         if (input && wired.FirstOrDefault(w => w.Member is IPropertySymbol property && !Settable(property)
                 && !constructor.Parameters.Any(p => string.Equals(p.Name, w.Member.Name, StringComparison.OrdinalIgnoreCase))) is { Member: { } writeOnly })
         {

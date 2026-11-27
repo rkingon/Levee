@@ -238,6 +238,12 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} isn't in the contract language." + language;
             }
+            if (info.PolymorphismOptions is { } dropping && (dropping.IgnoreUnrecognizedTypeDiscriminators
+                || dropping.UnknownDerivedTypeHandling != System.Text.Json.Serialization.JsonUnknownDerivedTypeHandling.FailSerialization))
+            {
+                return $"{type.Name} drops what it doesn't recognize ([JsonPolymorphic] ignoring an unknown discriminator, or writing an undeclared "
+                    + "subtype as its base), so a caller's subtype is lost, not refused. Fix: leave [JsonPolymorphic] its defaults (LEVEE104).";
+            }
             if (type.IsAbstract && info.PolymorphismOptions is not { DerivedTypes.Count: > 0 }
                 || info.PolymorphismOptions is { } some && some.DerivedTypes.Any(d => d.TypeDiscriminator is null))
             {

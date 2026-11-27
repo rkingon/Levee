@@ -27,6 +27,8 @@ public static class LeveeJson
             DefaultIgnoreCondition = JsonIgnoreCondition.Never,
             // A number is a number on the wire, as its schema says: Web's defaults would also read one from a string.
             NumberHandling = JsonNumberHandling.Strict,
+            // A subtype's discriminator wherever the caller puts it among its members, as its schema allows.
+            AllowOutOfOrderMetadataProperties = true,
             // An API's JSON, never embedded in HTML: '+' in a timestamp reads as '+'.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             // A resolver of Levee's own, sealed, with nothing to add to: no modifier can be slipped in before first use.

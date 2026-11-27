@@ -28,6 +28,8 @@ public sealed class ContractLanguageParityTests
     [InlineData("public readonly record struct Point(int X, int Y);", "Point A", false, false)]
     [InlineData("public sealed record Amount { [System.Text.Json.Serialization.JsonInclude] public int Value { get; private set; } }", "Amount A", false, false)]
     [InlineData("[System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", false, false)]
+    [InlineData("[System.Text.Json.Serialization.JsonPolymorphic(IgnoreUnrecognizedTypeDiscriminators = true)][System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public abstract record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
+    [InlineData("[System.Text.Json.Serialization.JsonPolymorphic(UnknownDerivedTypeHandling = System.Text.Json.Serialization.JsonUnknownDerivedTypeHandling.FallBackToBaseType)][System.Text.Json.Serialization.JsonDerivedType(typeof(Card), \"card\")] public record Pay; public sealed record Card(string Last4) : Pay;", "Pay A", true, false)]
     [InlineData("", "System.Collections.Generic.Dictionary<Levee.Unit, int> A", true, false)]
     [InlineData("", "System.Collections.Generic.IReadOnlySet<int> A", true, false)]
     [InlineData("", "int[,] A", true, false)]
@@ -43,6 +45,9 @@ public sealed class ContractLanguageParityTests
     // What only the source shows: which member a constructor's body, or a base call, puts each value in.
     [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } public Q(int ordered, int delivered) { Ordered = delivered; Delivered = ordered; } }", "Q A", true, true)]
     [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Q A", true, true)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered: Delivered, Delivered: Ordered);", "Q A", true, true)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered);", "Q A", true, true)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered: Delivered, Ordered: Ordered);", "Q A", false, false)]
     public async Task The_build_and_the_catalog_agree_on_the_contract_language(string types, string members, bool refused, bool sourceOnly)
     {
         var name = $"Parity{(types + members).GetHashCode(StringComparison.Ordinal):x8}";
@@ -62,5 +67,29 @@ public sealed class ContractLanguageParityTests
 
         Assert.Equal(refused, built);
         Assert.Equal(sourceOnly ? true : !refused, started);
+    }
+}
+
+public sealed class ReferencedOperationTests
+{
+    [Theory]
+    [InlineData("public sealed record Amount { [System.Text.Json.Serialization.JsonInclude] public int Value { get; private set; } }", false)]
+    [InlineData("public sealed record Amount { public int Value { get; } }", true)]
+    public async Task An_operation_composed_from_another_assembly_is_in_the_catalog_or_refused_never_left_out(string amount, bool refused)
+    {
+        var contracts = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""
+            using Levee;
+            {{amount}}
+            [Operation("prices.set", "member", Platform = true)] public sealed record SetPrice(Amount Price) : IOperation<int>;
+            """, "Shop.Contracts", GeneratorTests.Levee);
+        var composition = await Probe.CompileAsync(new Probe.Settings("Composition"), "internal static class Wiring;", "Shop.Composition",
+            GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference());
+
+        Assert.Equal(refused, contracts.Ids.Contains("LEVEE104"));
+        Assert.Equal(refused, composition.Ids.Contains("LEVEE104"));
+        if (!refused)
+        {
+            Assert.Contains("prices.set", composition.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
+        }
     }
 }

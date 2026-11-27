@@ -41,10 +41,12 @@
   numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays, `List<T>`,
   `IReadOnlyList<T>` and the like (one dimension), and dictionaries keyed by a scalar; positional records (or records
   whose every member is set on its own) that forward to a base by name, and records whose every declared subtype, under
-  an abstract base or not, has a discriminator. LEVEE104 refuses anything else, an
+  an abstract base or not, has a discriminator, read wherever the caller puts it, with `[JsonPolymorphic]` left to refuse
+  what it doesn't recognize. LEVEE104 refuses anything else, an
   interface, a collection of the app's own, a constructor of two or more values written by hand (which decides where each
   lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
-  made (a host's start, the generated catalog test), naming each operation it refuses. A value object's schema and the
+  made (a host's start, the generated catalog test), naming each operation it refuses. A referenced assembly's operation
+  that fails where it's composed is reported there, never left out of the catalog. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
