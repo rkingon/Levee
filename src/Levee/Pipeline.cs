@@ -37,8 +37,18 @@ public sealed class OperationContext(Principal principal, OperationDescriptor de
         long sequence;
         lock (_ids)
         {
-            // Started low and random, so ids of different operations in one millisecond rarely collide in order.
-            _idSequence = _idSequence < 0 ? (bytes[15] | (bytes[14] << 8)) & 0x7FFF : _idSequence + 1;
+            // Seeded from random bits of its own, apart from the ones the id keeps: two operations in one millisecond then
+            // differ in 41 + 32 bits. The top bit starts clear, so the counter can't run out within an operation.
+            if (_idSequence < 0)
+            {
+                Span<byte> seed = stackalloc byte[8];
+                System.Security.Cryptography.RandomNumberGenerator.Fill(seed);
+                _idSequence = (long)(BitConverter.ToUInt64(seed) & ((1UL << 41) - 1));
+            }
+            else
+            {
+                _idSequence++;
+            }
             sequence = _idSequence;
         }
         var milliseconds = Now.ToUnixTimeMilliseconds();

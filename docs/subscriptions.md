@@ -53,7 +53,8 @@ internal sealed class WatchNotesHandler(IChangeSignals signals, Dispatcher dispa
 }
 ```
 
-A watch is scoped by the subscription the dispatcher authorized, in whose handler it's called; nothing the handler
+Every change is either delivered or followed by a read-again: a watch opened while the listening connection is down
+waits until it's back. A watch is scoped by the subscription the dispatcher authorized, in whose handler it's called; nothing the handler
 passes widens it. The listening connection is Levee's, one per process: an app opens none of its own (LEVEE018). A watcher that falls
 behind loses its oldest signals, not its newest; each is only a reason to read again. A platform operation that changes
 one scope's rows raises into that scope by name; a signal raised by a read-only operation, or outside one, is refused.

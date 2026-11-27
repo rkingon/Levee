@@ -124,6 +124,8 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
         }
     }
 
+    // Resolved while LISTEN is in effect, and replaced the moment the connection drops: a watch that starts then waits for
+    // the next one, rather than reading before anything listens.
     private TaskCompletionSource? _ready;
 
     /// <summary>Starts listening with the first watch; resolves once LISTEN is in effect.</summary>
@@ -134,15 +136,15 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
             if (_ready is null)
             {
                 _ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                var ready = _ready;
-                _listening = Task.Run(() => ListenAsync(ready, _stopping.Token));
+                _listening = Task.Run(() => ListenAsync(_stopping.Token));
             }
             return _ready.Task;
         }
     }
 
-    private async Task ListenAsync(TaskCompletionSource ready, CancellationToken ct)
+    private async Task ListenAsync(CancellationToken ct)
     {
+        var dropped = false;
         while (!ct.IsCancellationRequested)
         {
             try
@@ -157,9 +159,13 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
                     await listen.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 }
                 // Back after a drop: whatever committed while nothing listened is unknown, so every watch reads again.
-                if (!ready.TrySetResult())
+                if (dropped)
                 {
                     Refresh();
+                }
+                lock (_gate)
+                {
+                    _ready!.TrySetResult();
                 }
                 while (!ct.IsCancellationRequested)
                 {
@@ -172,6 +178,14 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
             }
             catch (Exception e) when (e is NpgsqlException or InvalidOperationException or System.IO.IOException)
             {
+                lock (_gate)
+                {
+                    if (_ready!.Task.IsCompleted)
+                    {
+                        _ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    }
+                }
+                dropped = true;
                 LogDropped(log, e);
                 await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
             }

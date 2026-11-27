@@ -32,3 +32,17 @@ public sealed class NewIdTests
     // As Postgres orders a uuid: its bytes, as written.
     private static string Bytes(Guid id) => Convert.ToHexString(id.ToByteArray(bigEndian: true));
 }
+
+public sealed class NewIdAcrossOperationsTests
+{
+    [Fact]
+    public void Operations_in_one_millisecond_dont_mint_the_same_first_id()
+    {
+        var now = new DateTimeOffset(2026, 11, 27, 12, 0, 0, TimeSpan.Zero);
+        var descriptor = Generated.LeveeComposition.Catalog.Find(typeof(Echo))!;
+
+        var ids = Enumerable.Range(0, 500_000).Select(_ => new OperationContext(new Member("ada", "acme"), descriptor, new WorkScope(null, true), now).NewId());
+
+        Assert.Equal(500_000, ids.Distinct().Count());
+    }
+}

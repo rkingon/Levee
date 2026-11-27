@@ -6,7 +6,8 @@
 - `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope
   answers it `Unauthenticated` (401), not `scope.caller` (403).
 - `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
-  42-bit counter in the version's sequence bits, RFC 9562's method 1, so every id keeps the operation's own time), where
+  42-bit counter in the version's sequence bits, RFC 9562's method 1, seeded from random bits of its own, so every id
+  keeps the operation's own time and operations in one millisecond don't collide), where
   `Guid.CreateVersion7(context.Now)` would order ids minted in one operation at random.
 - Processes: `IProcess<TInput>`, long-running work an operation starts with `IJobs.StartAsync` (inserted in its
   transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation

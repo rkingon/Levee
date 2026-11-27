@@ -89,9 +89,20 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         // What committed while nothing listened can't be known: the watch is told to read again.
         await postgres.ExecuteAsync("select pg_terminate_backend(pid) from pg_stat_activity where query = 'listen levee_signals'");
+        // A watch opened while it's down says it's ready only once Levee listens again.
+        var late = (await dispatcher.SubscribeAsync(new WatchSignals(acme), ada, watching.Token)).Value.GetAsyncEnumerator(watching.Token);
+        Assert.True(await late.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), Ct));
+        Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "after", Refuse: false), ada, Ct)).IsSuccess);
 
         Assert.True(await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), Ct));
         Assert.Equal("*", watch.Current);
+        // Either it hears the change, or (the drop not yet noticed as it opened) the read-again that covers it.
+        var heard = new List<string>();
+        while (!heard.Contains("after") && !heard.Contains("*") && await late.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), Ct))
+        {
+            heard.Add(late.Current);
+        }
+        Assert.True(heard.Contains("after") || heard.Contains("*"), string.Join(",", heard));
         await watching.CancelAsync();
     }
 
