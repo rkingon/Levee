@@ -573,7 +573,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var type = (INamedTypeSymbol)context.Symbol;
         var handler = type.AllInterfaces.Any(i => Known.Is(i, "IOperationHandler", 2) || Known.Is(i, "ISubscriptionHandler", 2));
         // In Application a clock is a process's alone: a helper holding one hands the wall clock to whatever handler takes it.
-        var helper = !handler && role == Role.Application && type.TypeKind == TypeKind.Class && !type.AllInterfaces.Any(i => Known.Is(i, "IProcess", 1))
+        var helper = !handler && role == Role.Application && type.TypeKind is TypeKind.Class or TypeKind.Struct && !type.AllInterfaces.Any(i => Known.Is(i, "IProcess", 1))
             && Clock(type) is null;
         if (!handler && !helper)
         {

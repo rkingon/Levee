@@ -251,7 +251,7 @@ public sealed class CliTests : IDisposable
         Assert.Contains("public sealed record AddOrderLine(string Tenant) : IOperation<OrderLineView>, IScopedOperation", contract, StringComparison.Ordinal);
         Assert.Contains("string IScopedOperation.ScopeKey => Tenant;", contract, StringComparison.Ordinal);
         Assert.Contains("internal sealed class AddOrderLineHandler : IOperationHandler<AddOrderLine, OrderLineView>", Read("Shop", "src", "Shop.Application", "OrderLines", "AddOrderLineHandler.cs"), StringComparison.Ordinal);
-        Assert.Contains("""Assert.Equal(("member", Effects.Write, false)""", Read("Shop", "tests", "Shop.Tests", "OrderLines", "AddOrderLineTests.cs"), StringComparison.Ordinal);
+        Assert.Contains("""Assert.Equal(("member", Effects.Write, false, false, false), (operation.Access, operation.Effects, operation.Platform, operation.Unscoped, operation.CallerScoped))""", Read("Shop", "tests", "Shop.Tests", "OrderLines", "AddOrderLineTests.cs"), StringComparison.Ordinal);
 
         // A second operation answering with the same view reuses it.
         var (again, _, _) = await Run(app, "generate", "operation", "order_lines.get", "GetOrderLine", "--access", "member", "--summary", "One line.",

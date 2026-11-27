@@ -150,7 +150,8 @@ public static class LeveeSchema
                 exception when insufficient_privilege then null;
                 end;
               end loop;
-              for r in select distinct d.defaclrole::regrole as grantor, n.nspname, d.defaclobjtype from pg_default_acl d
+              for r in select distinct o.rolname as grantor, n.nspname, d.defaclobjtype from pg_default_acl d
+                       join pg_roles o on o.oid = d.defaclrole
                        left join pg_namespace n on n.oid = d.defaclnamespace
                        cross join lateral aclexplode(d.defaclacl) g
                        where g.grantee = '{role}'::regrole and pg_has_role(d.defaclrole, 'member') loop
@@ -199,6 +200,26 @@ public static class LeveeSchema
                                     else 'grant select, insert, update, delete on %s to {role}' end, t);
                 perform {schema}.levee_runtime_sequences(t);
               end loop;
+            end $levee$;
+            do $levee$
+            declare reached text;
+            begin
+              -- What the role reaches in effect, through a role it belongs to or PUBLIC as much as its own grants: only this
+              -- installation's tables, or the allow-list is a list of what it holds, not of what it can read.
+              select string_agg(distinct c.oid::regclass::text, ', ') into reached from pg_class c
+              join pg_namespace s on s.oid = c.relnamespace
+              where c.relkind in ('r', 'p', 'v', 'm', 'f') and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%'
+                and has_schema_privilege('{role}', s.oid, 'usage')
+                and (has_table_privilege('{role}', c.oid, 'select, insert, update, delete')
+                  or has_any_column_privilege('{role}', c.oid, 'select, insert, update'))
+                and not exists (select 1 from pg_policy p
+                  join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = p.oid and d.refclassid = 'pg_proc'::regclass
+                  where p.polrelid = c.oid and p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write')
+                    and d.refobjid in ('{schema}.levee_scope()'::regprocedure, '{schema}.levee_platform()'::regprocedure));
+              if reached is not null then
+                raise exception '{role} reaches more than this installation''s tables: %', reached
+                  using hint = 'It reaches them through a role it belongs to, or PUBLIC: revoke that role from {role} (or the grant from it). Then run Levee''s grants again.';
+              end if;
             end $levee$;
             """;
     }

@@ -686,6 +686,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
         static ITypeSymbol Unwrapped(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : t;
         static AttributeData? ValueObject(ITypeSymbol t) => Unwrapped(t).GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
         static bool Declared(ITypeSymbol t) => ValueObject(t) is not null;
+        // Strict is 0: anything else writes or reads a number as a string its schema doesn't show.
+        static bool Loosened(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonNumberHandlingAttribute"
+            && a.ConstructorArguments.FirstOrDefault().Value is int handling && handling != 0);
+        const string Numbers = "says how its numbers are written ([JsonNumberHandling]), so a number its schema shows isn't one on the wire. Fix: drop it; a value that travels as a string is a value object, [ValueObject(typeof(string))] with its converter";
         static (string, string)? NotScalar(ITypeSymbol t, string at) =>
             ValueObject(t)?.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol wire
                 && Unwrapped(wire) is { TypeKind: not TypeKind.Enum } scalar && !ScalarWires.Contains(scalar.ToDisplayString())
@@ -715,6 +719,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
             return null;
         }
         var here = path.Length == 0 ? named.Name : $"{path} ({named.Name})";
+        if (Loosened(named))
+        {
+            return (here, Numbers);
+        }
         if (NotScalar(named, here) is { } declaredOtherwise)
         {
             return declaredOtherwise;
@@ -734,6 +742,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 continue;
             }
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
+            if (Loosened(member))
+            {
+                return (at, Numbers);
+            }
             if (Converted(member))
             {
                 return (at, "has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes");

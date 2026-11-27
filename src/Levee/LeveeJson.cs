@@ -32,9 +32,15 @@ public static class LeveeJson
             // An API's JSON, never embedded in HTML: '+' in a timestamp reads as '+'.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
-        var enums = new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false);
-        o.Converters.Add(enums);
         configure?.Invoke(o);
+        // Strict is the wire's, not the callback's: what it leaves loosened, every schema would misstate.
+        if (o.UnmappedMemberHandling != JsonUnmappedMemberHandling.Disallow || !o.RespectNullableAnnotations || !o.RespectRequiredConstructorParameters
+            || o.DefaultIgnoreCondition != JsonIgnoreCondition.Never)
+        {
+            throw new InvalidOperationException(
+                "Contract JSON is Levee's, and strict: unknown members refused, nullability and required parameters respected, every member written. "
+                + "Fix: leave those as LeveeJson.Create sets them; the callback is for what the wire leaves open (naming, depth, references).");
+        }
         // The contract wire is Levee's: a value's own JSON is its value object's ([JsonConverter] with [ValueObject]), which
         // the build sees and the schema says. A converter or a resolver handed in here would be neither.
         // How numbers are written is the wire's too: a number the schema says is a number is one, both ways.
@@ -44,15 +50,17 @@ public static class LeveeJson
                 "Contract JSON is Levee's: number handling changes what every schema says a number is. Fix: leave it strict; a value that must travel "
                 + "as a string (an id past 2^53) is a value object, [ValueObject(typeof(string))] with its converter.");
         }
-        if (o.Converters.Any(c => !ReferenceEquals(c, enums)) || o.TypeInfoResolver is not null)
+        if (o.Converters.Count > 0 || o.TypeInfoResolver is not null)
         {
             throw new InvalidOperationException(
                 "Contract JSON is Levee's: a converter or a type resolver in its options rewrites what every schema says. Fix: put the converter on the "
                 + "value's own type, [JsonConverter(typeof(...))] with [ValueObject(typeof(T))] saying what it writes; a .NET type keeps the JSON "
                 + "System.Text.Json gives it.");
         }
-        // A value object's converter is handed only the JSON its [ValueObject] says it writes.
-        o.Converters.Insert(0, new ValueObjectWire());
+        // Levee's own, after the callback, so none can remove them: enums by name, and a value object's converter handed only the
+        // JSON its [ValueObject] says it writes.
+        o.Converters.Add(new ValueObjectWire());
+        o.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
         o.TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Closed } };
         o.MakeReadOnly();
         Made.AddOrUpdate(o, Made);
@@ -66,8 +74,20 @@ public static class LeveeJson
     /// </summary>
     private static void Closed(JsonTypeInfo info)
     {
+        if (info.NumberHandling is { } typeNumbers && typeNumbers != JsonNumberHandling.Strict)
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name} says how its numbers are written ([JsonNumberHandling]), so a number its schema shows isn't one on the wire. "
+                + "Fix: drop it; a value that travels as a string is a value object, [ValueObject(typeof(string))] with its converter (LEVEE104).");
+        }
         foreach (var member in info.Properties)
         {
+            if (member.NumberHandling is { } numbers && numbers != JsonNumberHandling.Strict)
+            {
+                throw new InvalidOperationException(
+                    $"{info.Type.Name}.{member.Name} says how its numbers are written ([JsonNumberHandling]), so a number its schema shows isn't one on the "
+                    + "wire. Fix: drop it; a value that travels as a string is a value object, [ValueObject(typeof(string))] with its converter (LEVEE104).");
+            }
             if (member.CustomConverter is { } own && !BuiltIn(own))
             {
                 throw new InvalidOperationException(

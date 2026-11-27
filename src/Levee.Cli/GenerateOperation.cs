@@ -159,7 +159,7 @@ internal static partial class GenerateOperation
                         var operation = LeveeComposition.Catalog.Find({{Literal(name)}});
 
                         Assert.NotNull(operation);
-                        Assert.Equal(({{Literal(access)}}, Effects.{{(writes ? "Write" : "Read")}}, {{(platform ? "true" : "false")}}), (operation.Access, operation.Effects, operation.Platform));
+                        Assert.Equal(({{Literal(access)}}, Effects.{{(writes ? "Write" : "Read")}}, {{Bool(platform)}}, {{Bool(unscoped)}}, {{Bool(callerScoped)}}), (operation.Access, operation.Effects, operation.Platform, operation.Unscoped, operation.CallerScoped));
                     }
                 }
 
@@ -185,4 +185,6 @@ internal static partial class GenerateOperation
 
     [GeneratedRegex("^[A-Z][A-Za-z0-9]*$")]
     private static partial Regex TypeName();
+
+    private static string Bool(bool value) => value ? "true" : "false";
 }

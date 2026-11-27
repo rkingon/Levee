@@ -977,7 +977,6 @@ public class Settings
     [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<Level>))]
     public Level Level { get; init; }
 
-    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString)]
     public int Count { get; init; }
 
     [System.Text.Json.Serialization.JsonExtensionData]
@@ -1054,7 +1053,6 @@ public sealed record Counts(int[] Values, byte[] Raw);
 
 public record Tallies
 {
-    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString)]
     public List<int> Values { get; init; } = [];
 
 }
