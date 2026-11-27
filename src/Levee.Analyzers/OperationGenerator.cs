@@ -906,7 +906,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 .FirstOrDefault();
             foreach (var parameter in constructor?.Parameters ?? [])
             {
-                if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false, IsGenericType: false } helper
+                if (parameter.Type is INamedTypeSymbol { TypeKind: TypeKind.Class, IsAbstract: false, IsStatic: false } helper && Closed(helper)
                     && SymbolEqualityComparer.Default.Equals(helper.ContainingAssembly, assembly)
                     && Injectable(helper) && seen.Add(helper))
                 {
@@ -917,6 +917,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         return [.. found.OrderBy(t => t.ToDisplayString(), StringComparer.Ordinal)];
     }
+
+    /// <summary>A type the container can construct as named: no type parameter left open in it or in a type it's nested in.</summary>
+    private static bool Closed(ITypeSymbol type) => type switch
+    {
+        ITypeParameterSymbol => false,
+        IArrayTypeSymbol array => Closed(array.ElementType),
+        INamedTypeSymbol named => !named.IsUnboundGenericType && named.TypeArguments.All(Closed) && (named.ContainingType is null || Closed(named.ContainingType)),
+        _ => true,
+    };
 
     /// <summary>A class whose widest constructor takes only services (interfaces and classes), never a value.</summary>
     private static bool Injectable(INamedTypeSymbol type) =>

@@ -48,4 +48,25 @@ public sealed class Alpha2AuditTests
 
         Assert.Equal(refused, host.Ids.Contains("LEVEE108"));
     }
+
+    [Fact]
+    public async Task A_closed_generic_helper_is_registered_as_constructed()
+    {
+        var output = await Compile("Application", """
+            using Levee;
+            using System.Threading;
+            using System.Threading.Tasks;
+            internal sealed class Formatter<T>;
+            internal sealed class FormatNumber(Formatter<int> numbers, Formatter<string> labels) : IProcess<int>
+            {
+                public Task RunAsync(int input, ProcessContext context, CancellationToken ct) => Task.CompletedTask;
+            }
+            """);
+        var registration = output.Generated("Levee.Assembly.g.cs");
+
+        Assert.Empty(output.Errors);
+        Assert.Contains("TryAddScoped<global::Formatter<int>>(services);", registration, StringComparison.Ordinal);
+        Assert.Contains("TryAddScoped<global::Formatter<string>>(services);", registration, StringComparison.Ordinal);
+        Assert.DoesNotContain("Formatter<T>", registration, StringComparison.Ordinal);
+    }
 }
