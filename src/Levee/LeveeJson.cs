@@ -53,12 +53,13 @@ public static class LeveeJson
                 + "Fix: drop it; the wire refuses what a contract doesn't declare (LEVEE104).");
         }
         // Every member is written, as the strict reader requires it: one written only sometimes reads back as missing.
+        // Always (never on the wire) or Never (always on it): any other condition writes or reads a member only sometimes.
         if (info.Properties.FirstOrDefault(p => p.AttributeProvider?.GetCustomAttributes(typeof(JsonIgnoreAttribute), inherit: true)
-                is [JsonIgnoreAttribute { Condition: JsonIgnoreCondition.WhenWritingDefault or JsonIgnoreCondition.WhenWritingNull }, ..]) is { } sometimes)
+                is [JsonIgnoreAttribute { Condition: not (JsonIgnoreCondition.Always or JsonIgnoreCondition.Never) }, ..]) is { } sometimes)
         {
             throw new InvalidOperationException(
-                $"{info.Type.Name}.{sometimes.Name} is written only sometimes ([JsonIgnore(Condition = WhenWriting...)]), so what it writes the wire may "
-                + "refuse to read back. Fix: drop the condition; every member is written (LEVEE104).");
+                $"{info.Type.Name}.{sometimes.Name} is written or read only sometimes ([JsonIgnore(Condition = ...)]), so what it writes the wire may "
+                + "refuse, or lose, reading it back. Fix: drop the condition; a member is on the wire always, or ([JsonIgnore]) never (LEVEE104).");
         }
         if (info.Properties.FirstOrDefault(p => p.IsExtensionData) is { } extension)
         {

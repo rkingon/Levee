@@ -203,7 +203,16 @@ public static class LeveeSchema
             end $levee$;
             do $levee$
             declare reached text;
+            declare belongs text;
             begin
+              -- A role it belongs to lends it everything that role holds, a predefined one (pg_read_all_data) included, none of it
+              -- in any ACL: the runtime role belongs to none.
+              select string_agg(r.rolname, ', ') into belongs from pg_auth_members m join pg_roles r on r.oid = m.roleid
+              where m.member = '{role}'::regrole;
+              if belongs is not null then
+                raise exception '{role} belongs to %, and holds whatever that holds', belongs
+                  using hint = 'Revoke each from {role}: the runtime role holds Levee''s grants and nothing else. Then run Levee''s grants again.';
+              end if;
               -- What the role holds in effect, through itself, a role it belongs to, PUBLIC or ownership, against what each
               -- relation allows: an allow-list over the ACLs, so a privilege a later Postgres adds is refused, not missed.
               with held as (

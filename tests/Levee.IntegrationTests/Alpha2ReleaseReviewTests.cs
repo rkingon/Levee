@@ -43,9 +43,9 @@ public sealed class Alpha2ReleaseReviewTests(PostgresFixture postgres) : IClassF
             """ + LeveeSchema.Create("review_catalog") + LeveeSchema.Create("review_group_product") +
             "create table review_catalog.plans(id int);" + LeveeSchema.Shared("review_catalog.plans", "review_catalog") +
             "grant usage on schema review_catalog to review_catalog_readers; grant select on review_catalog.plans to review_catalog_readers;");
-        // Refused, naming what it reaches through the role it belongs to.
+        // Refused, naming the role it belongs to: whatever that holds, it holds.
         var refused = await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants("review_group_app", "review_group_product")));
-        Assert.Contains("review_catalog.plans", refused.MessageText, StringComparison.Ordinal);
+        Assert.Contains("belongs to review_catalog_readers", refused.MessageText, StringComparison.Ordinal);
     }
 
     [Fact]

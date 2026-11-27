@@ -1011,24 +1011,47 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Theory]
-    [InlineData("insert on reach_inherited.levee_audit", "reach_inherited.levee_audit")]
-    [InlineData("truncate on reach_inherited.held", "reach_inherited.held")]
-    [InlineData("references (id) on reach_inherited.held", "reach_inherited.held")]
-    [InlineData("maintain on reach_inherited.held", "reach_inherited.held")]
-    public async Task Grants_fail_on_what_the_role_reaches_through_a_role_it_belongs_to(string privilege, string named)
+    [InlineData("reach_group")]
+    [InlineData("pg_read_all_data")]
+    public async Task Grants_fail_on_a_role_the_runtime_role_belongs_to(string group)
     {
-        var suffix = privilege.Split(' ')[0];
-        await postgres.ExecuteAsync($"create schema if not exists reach_inherited; create role reach_app_{suffix}; create role reach_group_{suffix}; grant reach_group_{suffix} to reach_app_{suffix};");
-        if (await postgres.CountAsync("select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'reach_inherited' and p.proname = 'levee_scope'") == 0)
+        var app = $"reach_member_{group}";
+        await postgres.ExecuteAsync($"create role {app};" + (group == "reach_group" ? "create role reach_group;" : "") + $"grant {group} to {app};");
+
+        var refused = await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants(app)));
+
+        Assert.Contains($"belongs to {group}", refused.MessageText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("insert on reach_public.levee_audit", "reach_public.levee_audit", 0)]
+    [InlineData("truncate on reach_public.held", "reach_public.held", 0)]
+    [InlineData("references (id) on reach_public.held", "reach_public.held", 0)]
+    [InlineData("maintain on reach_public.held", "reach_public.held", 170000)]
+    public async Task Grants_fail_on_what_the_role_reaches_through_public_beyond_what_its_tables_allow(string privilege, string named, int since)
+    {
+        if (await postgres.CountAsync("select current_setting('server_version_num')::bigint") < since)
         {
-            await postgres.ExecuteAsync(LeveeSchema.Create("reach_inherited") + "create table reach_inherited.held (id int, tenant text);"
-                + LeveeSchema.Isolation("reach_inherited.held", "tenant", schema: "reach_inherited"));
+            Assert.Skip($"{privilege.Split(' ')[0]} is a privilege from Postgres {since / 10000}.");
         }
-        await postgres.ExecuteAsync($"grant usage on schema reach_inherited to reach_group_{suffix}; grant {privilege} to reach_group_{suffix};");
+        var app = "reach_public_" + privilege.Split(' ')[0];
+        await postgres.ExecuteAsync($"create schema if not exists reach_public; create role {app};");
+        if (await postgres.CountAsync("select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'reach_public' and p.proname = 'levee_scope'") == 0)
+        {
+            await postgres.ExecuteAsync(LeveeSchema.Create("reach_public") + "create table reach_public.held (id int, tenant text);"
+                + LeveeSchema.Isolation("reach_public.held", "tenant", schema: "reach_public"));
+        }
+        await postgres.ExecuteAsync($"grant {privilege} to public;");
+        try
+        {
+            var refused = await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants(app, "reach_public")));
 
-        var refused = await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants($"reach_app_{suffix}", "reach_inherited")));
-
-        Assert.Contains(named, refused.MessageText, StringComparison.Ordinal);
+            Assert.Contains(named, refused.MessageText, StringComparison.Ordinal);
+        }
+        finally
+        {
+            await postgres.ExecuteAsync($"revoke {privilege} from public;");
+        }
     }
 
     [Fact]

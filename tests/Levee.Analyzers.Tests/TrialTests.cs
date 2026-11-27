@@ -76,6 +76,7 @@ public sealed class TrialTests
     [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.Strict)] int Area", false)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] int Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Never)] int Area", false)]
+    [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWriting)] int Area", true)]
     [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<Zip>))] public enum Zip { North, South }", "Zip Area", false)]
     [InlineData(ZipJson + "[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(System.Text.Json.JsonElement))] public readonly record struct Zip(string Value);", "Zip Area", true)]
     [InlineData(ZipJson + "[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(string[]))] public readonly record struct Zip(string Value);", "Zip Area", true)]

@@ -752,11 +752,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, Numbers);
             }
-            // JsonIgnoreCondition: WhenWritingDefault is 2, WhenWritingNull 3.
+            // JsonIgnoreCondition: Never is 0, Always 1; any other writes or reads a member only sometimes.
             if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
-                && a.NamedArguments.Any(n => n.Key == "Condition" && n.Value.Value is 2 or 3)))
+                && a.NamedArguments.Any(n => n.Key == "Condition" && n.Value.Value is int condition && condition is not (0 or 1))))
             {
-                return (at, "is written only sometimes ([JsonIgnore(Condition = WhenWriting...)]), so what it writes the wire may refuse to read back. Fix: drop the condition; every member is written");
+                return (at, "is written or read only sometimes ([JsonIgnore(Condition = ...)]), so what it writes the wire may refuse, or lose, reading it back. Fix: drop the condition; a member is on the wire always, or ([JsonIgnore]) never");
             }
             if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonExtensionDataAttribute"))
             {

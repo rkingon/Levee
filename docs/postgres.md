@@ -37,8 +37,8 @@ allow-list, not a blanket:
   SQL that names it, mapped or not, qualified or not, is denied by Postgres. A second installation's tables, and its
   audit, are its own role's. `Grants` resets the role to that list (anything granted it before, in any schema, is
   revoked) and records the role, so a table a later migration isolates is granted as its policy is made, whichever runs
-  first. It fails, naming them, on what it can't take back: a grant another role made, or a table the role still
-  reaches through a role it belongs to;
+  first. It fails, naming them, on what it can't take back: a grant another role made, or a role the runtime role
+  belongs to (a group, or a predefined one such as `pg_read_all_data`), which lends it what no grant shows;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
