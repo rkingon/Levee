@@ -139,6 +139,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
         var operation = context.Operation;
+        // A migration runs as the owner, at migrate, never inside an operation: its SQL may backfill the audit.
+        if (InMigration(context.ContainingSymbol))
+        {
+            return;
+        }
         // The whole string once, at its outermost piece.
         if (operation.Parent is IInterpolatedStringTextOperation or IInterpolationOperation or IInterpolatedStringOperation
             || operation.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, Type.SpecialType: SpecialType.System_String }
@@ -156,6 +161,18 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.ScopeSetting, operation.Syntax.GetLocation()));
         }
+    }
+
+    private static bool InMigration(ISymbol? symbol)
+    {
+        for (var type = symbol as INamedTypeSymbol ?? symbol?.ContainingType; type is not null; type = type.BaseType)
+        {
+            if (type.ToDisplayString() == "Microsoft.EntityFrameworkCore.Migrations.Migration")
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private const char Hole = '\u0001';

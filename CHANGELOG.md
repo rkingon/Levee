@@ -20,6 +20,7 @@
 ### Generator and analyzers
 - LEVEE006 leaves .NET's own source generators' output alone (`[GeneratedRegex]` emits a bare `#pragma warning disable`),
   and holds every other generator's to the rule.
+- LEVEE004 leaves an EF migration's SQL alone: it's the owner's, run at migrate, so it may backfill the audit.
 
 ### Levee.Cli
 - `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
