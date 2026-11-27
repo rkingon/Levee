@@ -63,14 +63,21 @@
 - LEVEE021 (new): a principal is made only where the app composes (Composition, a Host, a Tool), and a process sends
   through its `ProcessContext`, never a `Dispatcher` it holds.
 - LEVEE112 (new): one process per input across the composed app, or a queued run would go to whichever DI resolves.
-- LEVEE113 (new): an access policy reads `AccessRequest.Scope`; one that grants by the access word alone lets any caller
-  into any scope. `dotnet levee new`'s policy grants `anyone` only at platform scope.
+- LEVEE113 (new): an access policy reads the scope's `Key`; one that grants by the access word alone, or reads only
+  `Scope.Platform`, lets any caller into any scope. A policy that refuses everything is exempt. `dotnet levee new`'s
+  policy grants `anyone` only at platform scope.
+- LEVEE022 (new): change signals go only through `IChangeSignals`; SQL naming `levee_signals` is refused.
+- LEVEE021 also refuses holding a principal (a constructor parameter, field or property) in Kernel, Contracts, Domain,
+  Application or an Adapter: those act as the caller their context names. Acting as the system is a Host's or
+  Composition's own code, as LEVEE016, LEVEE018 and LEVEE008's messages now say.
+- LEVEE003 refuses a clock (`TimeProvider`, NodaTime's `IClock`) held by an operation's or a subscription's handler: a
+  handler's time is `OperationContext.Now`, its ids `OperationContext.NewId()`.
+- LEVEE020 refuses `OperationAttribute` named as a type anywhere outside an attribute.
 - LEVEE020 follows reflection into Levee's types through `Type` locals and fields, `Type.GetType`, `GetTypeInfo`, the
-  reflection extensions and activators, and judges an `[UnsafeAccessor]` by its target; it refuses reading `[Operation]` by
-  reflection and a `dynamic` call on the `Dispatcher`.
+  reflection extensions and activators, and judges an `[UnsafeAccessor]` by its target; it refuses a `dynamic` call on the
+  `Dispatcher`.
 - LEVEE005 refuses reflecting on the container and the DI extensions to locate services, outside where the app composes.
-- LEVEE004 refuses SQL naming `levee_signals`: a change signal is raised through `IChangeSignals`. Its migration
-  exemption covers only SQL handed to the `MigrationBuilder`.
+- LEVEE004's migration exemption covers only SQL handed to the `MigrationBuilder`.
 - LEVEE003 refuses Visual Basic's `DateAndTime` clock, and NodaTime's `SystemClock.Instance` outside where the app composes.
 - LEVEE018 refuses holding a separate context in every role; Composition and a Host name it only as a registration's type
   argument.
