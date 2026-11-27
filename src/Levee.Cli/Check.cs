@@ -11,7 +11,8 @@ namespace Levee.Cli;
 /// </summary>
 internal static partial class Check
 {
-    public sealed record Finding(string Rule, string Project, string? File, int? Line, string Message);
+    /// <param name="Suppressed">The reason it was silenced, when it was: debt a migration may carry, never a green check.</param>
+    public sealed record Finding(string Rule, string Project, string? File, int? Line, string Message, string? Suppressed = null);
 
     public static List<string> ProjectsOf(string solution)
     {
@@ -50,14 +51,30 @@ internal static partial class Check
 
         // The solution's projects, the ones it compiled: a template or a sample beside them isn't the app.
         var projects = ProjectsOf(solution);
-        await Parallel.ForEachAsync(projects, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) }, async (project, _) =>
+        // The compiler's error log is the one record of what a suppression silenced: the build output omits it.
+        var logs = Directory.CreateTempSubdirectory("levee-check-");
+        try
         {
-            var (_, text) = await DotnetAsync("build", project, "--no-dependencies", "--no-restore", "-nologo", "-v:q");
-            foreach (var finding in Parse(text))
+            await Parallel.ForEachAsync(projects, new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount / 2) }, async (project, _) =>
             {
-                findings.Add(finding);
+                var (_, text) = await DotnetAsync("build", project, "--no-dependencies", "--no-restore", "-nologo", "-v:q", $"-p:LeveeCheckLogs={logs.FullName}");
+                foreach (var finding in Parse(text))
+                {
+                    findings.Add(finding);
+                }
+            });
+            foreach (var errorLog in logs.EnumerateFiles("*.sarif"))
+            {
+                foreach (var finding in Suppressed(errorLog.FullName, errorLog.Name[..errorLog.Name.LastIndexOf('~')]))
+                {
+                    findings.Add(finding);
+                }
             }
-        });
+        }
+        finally
+        {
+            logs.Delete(recursive: true);
+        }
 
         var distinct = findings.Distinct().OrderBy(f => f.Rule, StringComparer.Ordinal).ThenBy(f => f.Project, StringComparer.Ordinal)
             .ThenBy(f => f.File, StringComparer.Ordinal).ThenBy(f => f.Line).ToList();
@@ -71,7 +88,26 @@ internal static partial class Check
             await output.WriteLineAsync($"No LEVEE findings in {projects.Count} projects.");
             return 0;
         }
-        foreach (var rule in distinct.GroupBy(f => f.Rule))
+        var open = distinct.Where(f => f.Suppressed is null).ToList();
+        var debt = distinct.Where(f => f.Suppressed is not null).ToList();
+        await WriteAsync(open, root, output);
+        if (debt.Count > 0)
+        {
+            await output.WriteLineAsync($"Suppressed ({debt.Count}): each still breaks its rule. Fix: change the code to follow it; "
+                + "where Levee has no way to express what the code needs, that's a gap in Levee to report, not a suppression to keep.");
+            await WriteAsync(debt, root, output);
+        }
+        await output.WriteLineAsync($"{open.Count} findings and {debt.Count} suppressed in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
+        if (!compiled)
+        {
+            await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");
+        }
+        return 1;
+    }
+
+    private static async Task WriteAsync(List<Finding> findings, string root, TextWriter output)
+    {
+        foreach (var rule in findings.GroupBy(f => f.Rule))
         {
             var hint = $" (dotnet levee explain {rule.Key})";
             await output.WriteLineAsync($"{rule.Key} ({rule.Count()}){hint}");
@@ -79,15 +115,67 @@ internal static partial class Check
             {
                 var where = f.File is null ? "" : $"{Path.GetRelativePath(root, f.File)}{(f.Line is { } line ? $":{line}" : "")}: ";
                 var message = f.Message.EndsWith(hint, StringComparison.Ordinal) ? f.Message[..^hint.Length] : f.Message;
-                await output.WriteLineAsync($"  {f.Project}  {where}{message}");
+                await output.WriteLineAsync(f.Suppressed is { } reason
+                    ? $"  {f.Project}  {where}{message}{Environment.NewLine}      suppressed: {reason}"
+                    : $"  {f.Project}  {where}{message}");
             }
         }
-        await output.WriteLineAsync($"{distinct.Count} findings in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
-        if (!compiled)
+    }
+
+    /// <summary>The LEVEE diagnostics a project's code silenced, from its SARIF 2.1 error log.</summary>
+    internal static IEnumerable<Finding> Suppressed(string log, string project)
+    {
+        using var sarif = JsonDocument.Parse(File.ReadAllText(log));
+        var found = new List<Finding>();
+        foreach (var run in sarif.RootElement.GetProperty("runs").EnumerateArray())
         {
-            await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");
+            if (!run.TryGetProperty("results", out var results))
+            {
+                continue;
+            }
+            foreach (var result in results.EnumerateArray())
+            {
+                var rule = result.GetProperty("ruleId").GetString()!;
+                if (!rule.StartsWith("LEVEE", StringComparison.Ordinal)
+                    || !result.TryGetProperty("suppressions", out var suppressions) || suppressions.GetArrayLength() == 0)
+                {
+                    continue;
+                }
+                string? file = null;
+                int? line = null;
+                if (result.TryGetProperty("locations", out var locations) && locations.GetArrayLength() > 0
+                    && locations[0].TryGetProperty("physicalLocation", out var physical))
+                {
+                    file = physical.TryGetProperty("artifactLocation", out var artifact) && artifact.TryGetProperty("uri", out var uri)
+                        ? new Uri(uri.GetString()!).LocalPath : null;
+                    line = physical.TryGetProperty("region", out var region) && region.TryGetProperty("startLine", out var start) ? start.GetInt32() : null;
+                }
+                var suppression = suppressions[0];
+                var reason = suppression.TryGetProperty("justification", out var justification) ? justification.GetString() : PragmaReason(file, line, rule);
+                found.Add(new Finding(rule, project, file, line, result.GetProperty("message").GetProperty("text").GetString()!, reason ?? "(no reason)"));
+            }
         }
-        return 1;
+        return found;
+    }
+
+    /// <summary>The reason beside the nearest <c>#pragma warning disable</c> of the rule above the line.</summary>
+    private static string? PragmaReason(string? file, int? line, string rule)
+    {
+        if (file is null || line is not { } at || !File.Exists(file))
+        {
+            return null;
+        }
+        var lines = File.ReadAllLines(file);
+        for (var i = Math.Min(at, lines.Length) - 1; i >= 0; i--)
+        {
+            var text = lines[i].Trim();
+            if (text.StartsWith("#pragma warning disable", StringComparison.Ordinal) && text.Contains(rule, StringComparison.Ordinal))
+            {
+                var comment = text.IndexOf("//", StringComparison.Ordinal);
+                return comment < 0 ? null : text[(comment + 2)..].Trim();
+            }
+        }
+        return null;
     }
 
     /// <summary>The LEVEE errors in a build's output, one per diagnostic however often the build repeats it.</summary>

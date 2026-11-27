@@ -124,12 +124,16 @@ time by name (per tenant, per request), declare `[Port(Many = true)]`, name the 
 
 ## LEVEE006: Levee rules are suppressed only with a reason
 
-A rule weakened for a whole project is a rule nobody knows is off. The fix is almost always the code. Where it truly
-can't follow the rule, suppress at that line, with the reason beside it:
+A rule weakened for a whole project is a rule nobody knows is off. The fix is the code. A suppression is migration debt:
+at that line, with the reason beside it, it lets an app build while it moves onto Levee a piece at a time,
 
 ```csharp
 #pragma warning disable LEVEE012 // the generated client's only I/O is this stream, owned by the SDK
 ```
+
+but `dotnet levee check` lists every one, with its reason, and fails until none is left. Code that can't follow a rule
+because Levee has no way to say what it needs is a gap in Levee: report it, and keep the suppression only until Levee
+closes it.
 
 `NoWarn`, rulesets, `.editorconfig` or global config severities (per rule, for Levee's category, or for every analyzer at
 once), assembly-wide `[SuppressMessage]`, a bare `#pragma warning disable`, turning analyzers off (`RunAnalyzers`,

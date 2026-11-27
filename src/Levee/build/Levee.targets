@@ -41,6 +41,11 @@
            Text="This project uses Levee without its analyzers, so none of its rules run here. Fix: reference Levee without ExcludeAssets or PrivateAssets naming analyzers (dotnet levee explain LEVEE009)" />
   </Target>
 
+  <!-- dotnet levee check reads what each compilation suppressed from its error log: one per project and target framework. -->
+  <PropertyGroup Condition="'$(LeveeCheckLogs)' != ''">
+    <ErrorLog>$(LeveeCheckLogs)/$(MSBuildProjectName)~$(TargetFramework).sarif,version=2.1</ErrorLog>
+  </PropertyGroup>
+
   <!-- What a referencing project asks of this one: its role. A project without Levee has no such target. -->
   <Target Name="LeveeRoleOf" Returns="@(_LeveeRoleOf)">
     <ItemGroup>

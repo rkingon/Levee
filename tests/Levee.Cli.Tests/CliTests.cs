@@ -314,4 +314,45 @@ public sealed class CheckTests
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE007", "App.Domain", "/app/src/App.Domain/Note.cs", 12, "Text can be changed from outside aggregate root Note"), findings[0]);
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE002", "App.Domain", null, null, "A Domain project may not reference App.Adapters (Adapter)"), findings[1]);
     }
+
+    [Fact]
+    public void What_the_code_suppressed_is_read_from_the_error_log_with_its_reason()
+    {
+        var dir = Directory.CreateTempSubdirectory("levee-sarif-").FullName;
+        try
+        {
+            var source = Path.Combine(dir, "Clock.cs");
+            File.WriteAllLines(source, [
+                "internal static class Clock",
+                "{",
+                "#pragma warning disable LEVEE003 // the vendor's SDK reads the wall clock",
+                "    public static System.DateTimeOffset A() => System.DateTimeOffset.UtcNow;",
+                "}",
+            ]);
+            var uri = new Uri(source).AbsoluteUri;
+            var log = Path.Combine(dir, "App.Application~net10.0.sarif");
+            File.WriteAllText(log, """
+                {"version":"2.1.0","runs":[{"results":[
+                  {"ruleId":"LEVEE003","message":{"text":"DateTimeOffset.UtcNow reads the wall clock"},"suppressions":[{"kind":"inSource"}],
+                   "locations":[{"physicalLocation":{"artifactLocation":{"uri":"URI"},"region":{"startLine":4}}}]},
+                  {"ruleId":"LEVEE018","message":{"text":"Opens its own connection"},"suppressions":[{"kind":"inSource","justification":"LISTEN outlives a transaction"}],
+                   "locations":[{"physicalLocation":{"artifactLocation":{"uri":"URI"},"region":{"startLine":2}}}]},
+                  {"ruleId":"LEVEE005","message":{"text":"Locates services"},
+                   "locations":[{"physicalLocation":{"artifactLocation":{"uri":"URI"},"region":{"startLine":2}}}]},
+                  {"ruleId":"CA1822","message":{"text":"Mark as static"},"suppressions":[{"kind":"inSource"}]}
+                ]}]}
+                """.Replace("URI", uri, StringComparison.Ordinal));
+
+            var suppressed = Levee.Cli.Check.Suppressed(log, "App.Application").ToList();
+
+            Assert.Equal([
+                new Levee.Cli.Check.Finding("LEVEE003", "App.Application", source, 4, "DateTimeOffset.UtcNow reads the wall clock", "the vendor's SDK reads the wall clock"),
+                new Levee.Cli.Check.Finding("LEVEE018", "App.Application", source, 2, "Opens its own connection", "LISTEN outlives a transaction"),
+            ], suppressed);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

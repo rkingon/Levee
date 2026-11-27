@@ -27,7 +27,7 @@ dotnet levee new Acme.Billing                     # a project per role, one oper
 dotnet levee generate operation notes.create CreateNote --access member --summary "Writes a note." \
     --scoped-by Tenant --writes --idempotency conflicts --result NoteView --errors notes.too_long
 dotnet levee catalog                              # builds the Host and lists what it serves (--json)
-dotnet levee check                                # every LEVEE rule the app breaks, by rule and project (--json)
+dotnet levee check                                # every LEVEE rule the app breaks or suppresses, by rule and project (--json)
 dotnet levee explain LEVEE004                     # a rule's why, the shape it refuses, the shape to write
 dotnet levee db schema --jobs                     # the owner's DDL: Levee's functions and audit, Oxbow's tables
 dotnet levee db isolate notes tenant_id --type uuid
@@ -38,7 +38,8 @@ dotnet levee db grants app_role --jobs            # what the runtime role needs
 `dotnet levee check` runs every rule over an app, project by project (compiled once without analyzers, then each
 analyzed alone), so one project's errors never hide another's, except that a project failing the generator's rules
 (LEVEE101-111) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
-asks of it.
+asks of it. A suppressed rule is listed with its reason and still fails the check: a migration may build with one, but
+it's green only once none is left.
 
 `generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write) and what the
 scaffolded app's tests check (a summary),

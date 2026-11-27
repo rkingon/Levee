@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Levee.Cli
+- `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
+  a migration build, never makes it green.
+
 ### Generator and analyzers
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
 
