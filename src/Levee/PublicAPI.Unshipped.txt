@@ -79,3 +79,4 @@ Levee.ProcessContext.Principal.get -> Levee.Principal!
 Levee.ProcessContext.Scope.get -> string?
 Levee.ProcessContext.SendAsync<TResult>(Levee.IOperation<TResult>! operation, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
 Levee.ProcessContext.Snooze(System.TimeSpan delay) -> void
+Levee.OperationContext.NewId() -> System.Guid

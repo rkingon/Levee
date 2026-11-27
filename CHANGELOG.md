@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Levee
+- `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
+  counter in the version's sequence bits, RFC 9562's method 1), where `Guid.CreateVersion7(context.Now)` would order ids
+  minted in one operation at random.
 - Processes: `IProcess<TInput>`, long-running work an operation starts with `IJobs.StartAsync` (inserted in its
   transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation
   it sends through `ProcessContext`, as its starter, in their scope; `Snooze` runs it again later, from the top, reading

@@ -61,7 +61,9 @@ var due = context.Now.AddDays(30);
 internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetUtcNow(); }
 ```
 
-`Guid.CreateVersion7()` reads the clock too: pass the time, `Guid.CreateVersion7(context.Now)`.
+`Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,
+and later than every id the operation made before it, which `Guid.CreateVersion7(context.Now)` isn't (every id in one
+operation shares its one time, so their order would be random). Elsewhere, pass the time.
 
 Only Composition, a Host or a Tool uses `TimeProvider.System`; tests register a `FakeTimeProvider`.
 

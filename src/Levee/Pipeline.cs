@@ -22,6 +22,44 @@ public sealed class OperationContext(Principal principal, OperationDescriptor de
     /// <summary>The operation's one time, at the store's precision (microseconds), so what's written reads back equal.</summary>
     public DateTimeOffset Now { get; } = now;
 
+    private readonly Lock _ids = new();
+    private long _idMilliseconds = -1;
+    private int _idSequence;
+
+    /// <summary>
+    /// A UUIDv7 at the operation's time, later than every one this operation made before it: ids minted in one operation
+    /// share its one time, so a counter in the version's sequence bits (RFC 9562's method 1) keeps them in creation order.
+    /// </summary>
+    public Guid NewId()
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
+        long milliseconds;
+        int sequence;
+        lock (_ids)
+        {
+            var now = Now.ToUnixTimeMilliseconds();
+            if (now > _idMilliseconds)
+            {
+                // Started low, so thousands more fit before the sequence runs out.
+                (_idMilliseconds, _idSequence) = (now, bytes[15] & 0x1FF);
+            }
+            else if (++_idSequence > 0xFFF)
+            {
+                (_idMilliseconds, _idSequence) = (_idMilliseconds + 1, 0);
+            }
+            (milliseconds, sequence) = (_idMilliseconds, _idSequence);
+        }
+        for (var i = 0; i < 6; i++)
+        {
+            bytes[i] = (byte)(milliseconds >> (8 * (5 - i)));
+        }
+        bytes[6] = (byte)(0x70 | ((sequence >> 8) & 0x0F));
+        bytes[7] = (byte)sequence;
+        bytes[8] = (byte)(0x80 | (bytes[8] & 0x3F));
+        return new Guid(bytes, bigEndian: true);
+    }
+
     /// <summary>The caller as the app's own principal type.</summary>
     public TPrincipal PrincipalAs<TPrincipal>()
         where TPrincipal : Principal =>

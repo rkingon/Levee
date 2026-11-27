@@ -49,7 +49,7 @@ internal sealed class CreateNoteLaterHandler(IJobs jobs) : IOperationHandler<Cre
 {
     public async Task<Result<Unit>> HandleAsync(CreateNoteLater operation, OperationContext context, CancellationToken ct)
     {
-        var queued = await jobs.EnqueueAsync(new CreateNote(Guid.CreateVersion7(context.Now), operation.Tenant, operation.Text), null, ct);
+        var queued = await jobs.EnqueueAsync(new CreateNote(context.NewId(), operation.Tenant, operation.Text), null, ct);
         return queued.IsSuccess ? Unit.Value : queued.Error;
     }
 }
