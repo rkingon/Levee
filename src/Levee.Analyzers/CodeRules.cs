@@ -27,7 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -176,6 +176,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (refused)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.ScopeSetting, operation.Syntax.GetLocation()));
+        }
+        // Levee's channel delivers by the scope its payload names: a NOTIFY on it from the app's SQL names any scope it likes.
+        else if (flat.Contains("levee_signals"))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SignalByHand, operation.Syntax.GetLocation()));
         }
     }
 

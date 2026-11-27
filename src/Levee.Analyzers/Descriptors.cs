@@ -36,6 +36,10 @@ internal static class Descriptors
         "LEVEE004", "Only the dispatcher saves and commits",
         "This SQL sets the scope row-level security trusts (levee.scope, levee.platform) or writes the audit, both the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited by the dispatcher");
 
+    public static readonly DiagnosticDescriptor SignalByHand = Rule(
+        "LEVEE004", "Only the dispatcher saves and commits",
+        "This SQL names levee_signals, the channel IChangeSignals raises change signals on, whose watchers trust the scope its payload names: a pg_notify or NOTIFY of the app's own reaches any tenant's watchers. Fix: raise the signal with IChangeSignals.RaiseAsync in the operation, which sends it with the operation's transaction, in its scope");
+
     public static readonly DiagnosticDescriptor ServiceLocation = Rule(
         "LEVEE005", "No service location outside hosts",
         "{0} locates services. Fix: take the dependency through the constructor; to choose an adapter by setting, declare [Port(SelectedBy = \"...\")]; to choose one at run time by name, take IAdapters<TPort>");
