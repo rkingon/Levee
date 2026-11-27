@@ -38,6 +38,8 @@
 - LEVEE015 lets Composition call an adapter's own registration, one `IServiceCollection` extension in its Adapter
   project for what it needs beyond its ports; nothing else of an adapter's.
 - A Tool binds the ports it references, not every port the app declares (LEVEE107 holds a Host and Composition to all).
+- LEVEE020 refuses calling the composition's plumbing by hand (a generated `LeveeRegistration_*`, `PortSelection`),
+  which is public only because the root's generated code calls it; the generated registration is hidden from IntelliSense.
 - A `TestSupport` role for what several test projects share (fixtures, fakes, a harness): held to no code rule, like a
   test, and referenced by tests alone.
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).

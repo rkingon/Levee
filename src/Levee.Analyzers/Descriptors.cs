@@ -106,7 +106,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor CatalogByHand = Rule(
         "LEVEE020", "The catalog is the generator's",
-        "{0} builds part of the catalog by hand, where no rule checks the flags it claims (Platform, Internal, Effects) and the dispatcher trusts them. Fix: declare the operation with [Operation(...)] and let the generated AddLeveeOperations (or AddLeveeTestOperations) register it");
+        "{0} builds part of the catalog or the composition by hand, where no rule checks what it claims (Platform, Internal, Effects, which adapter serves a port) and the dispatcher trusts it. Fix: declare the operation with [Operation(...)] and let the generated AddLeveeOperations (or AddLeveeTestOperations) register it");
 
     public static readonly DiagnosticDescriptor MissingHandler = Rule(
         "LEVEE101", "Every operation has a handler",

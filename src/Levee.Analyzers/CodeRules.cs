@@ -406,8 +406,13 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
     {
+        // Public only because the root's generated composition, in another assembly, calls it.
+        var generatedRegistration = method.ContainingType.Name.StartsWith("LeveeRegistration_", StringComparison.Ordinal)
+            && method.ContainingType.ContainingNamespace?.ToDisplayString() == "Levee.Generated";
         if ((IsLevee(method.ContainingType, "OperationDescriptor") && method.Name is "Create" or "CreateSubscription")
-            || (IsLevee(method.ContainingType, "LeveeServiceCollectionExtensions") && method.Name == "AddLeveePart"))
+            || (IsLevee(method.ContainingType, "LeveeServiceCollectionExtensions") && method.Name == "AddLeveePart")
+            || generatedRegistration
+            || (IsLevee(method.ContainingType, "PortSelection") && method.Name is "Select" or "Wants" or "Bind"))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.CatalogByHand, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
             return;

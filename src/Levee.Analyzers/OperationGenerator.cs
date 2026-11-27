@@ -86,6 +86,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 .AppendLine("{")
                 .AppendLine("    /// <summary>This assembly's handlers and adapters, for the composition root to register.</summary>")
                 .AppendLine("    [global::System.CodeDom.Compiler.GeneratedCode(\"Levee\", \"0.0.1\")]")
+                .AppendLine("    [global::System.ComponentModel.EditorBrowsable(global::System.ComponentModel.EditorBrowsableState.Never)]")
                 .AppendLine($"    public static class {registration}")
                 .AppendLine("    {")
                 .AppendLine("        /// <summary>Registers every handler, and every adapter but those a port's setting in <paramref name=\"configuration\"/> didn't choose.</summary>")

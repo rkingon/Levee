@@ -373,7 +373,8 @@ LEVEE007 guards an aggregate's state only in Domain; an aggregate declared anywh
 The dispatcher trusts what a descriptor says: whether the operation is platform-wide, internal, read-only. The generator
 writes descriptors only from `[Operation(...)]`, after LEVEE104–106 have checked it. A descriptor, catalog or catalog part
 built by hand (`OperationDescriptor.Create`, `new OperationCatalog`, `AddLeveePart`) skips every one of those checks, so
-outside tests it fails the build. Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
+outside tests it fails the build. So does calling the composition's own plumbing by hand (an assembly's generated
+`LeveeRegistration_*`, `PortSelection`): public only because the root's generated code, in another assembly, calls it. Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
 it.
 
 ## LEVEE101: Every operation has a handler

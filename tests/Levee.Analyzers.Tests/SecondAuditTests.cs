@@ -118,6 +118,8 @@ public sealed class SecondAuditTests
     [InlineData("Composition", """_ = OperationDescriptor.Create<Ping, int>("ping", "", "x", Effects.Read, Idempotency.Safe, platform: true);""", true)]
     [InlineData("Composition", """_ = new OperationCatalog([]);""", true)]
     [InlineData("Test", """_ = new OperationCatalog([]);""", false)]
+    [InlineData("Composition", """Levee.Generated.LeveeRegistration_App.Register(null!, null);""", true)]
+    [InlineData("Composition", """_ = PortSelection.Select(null, "P", "IPrices", ["a"]);""", true)]
     public async Task The_catalog_is_built_only_by_generated_code(string role, string statement, bool refused)
     {
         var output = await Compile(role, $$"""
