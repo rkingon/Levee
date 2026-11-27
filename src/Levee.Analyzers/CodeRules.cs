@@ -652,10 +652,16 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
-    /// <summary>A principal type, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    /// <summary>
+    /// A principal type, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array). A delegate holds only what it hands back: one
+    /// that takes a principal (Action&lt;Principal&gt;) is given the caller's, and gives none.
+    /// </summary>
     private static INamedTypeSymbol? HeldPrincipal(ITypeSymbol type) => type switch
     {
         INamedTypeSymbol named when Derives(named.OriginalDefinition, "Levee.Principal") => named,
+        INamedTypeSymbol { TypeKind: TypeKind.Delegate, DelegateInvokeMethod: { } invoke } => invoke.Parameters
+            .Where(p => p.RefKind is RefKind.Out or RefKind.Ref).Select(p => p.Type).Prepend(invoke.ReturnType)
+            .Select(HeldPrincipal).FirstOrDefault(p => p is not null),
         INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(HeldPrincipal).FirstOrDefault(p => p is not null),
         IArrayTypeSymbol array => HeldPrincipal(array.ElementType),
         _ => null,

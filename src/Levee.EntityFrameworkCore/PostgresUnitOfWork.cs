@@ -133,6 +133,13 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
                 + "a separate bounded context the app doesn't model (identity) is marked [SeparateContext(library)] and registered with "
                 + "AddLeveeSeparateContext<T>, and nothing else.");
         }
+        // Resolved once at start, so a second registration of the same context would be an instance nothing here checked.
+        if (sanctioned.Append(context).FirstOrDefault(t => services.Count(d => d.ServiceType == t) > 1) is { } twice)
+        {
+            return ValidateOptionsResult.Fail(
+                $"{twice.Name} is registered more than once, so it resolves as more than one context and only one is checked. "
+                + $"Fix: register it once, with {(twice == context ? "AddDbContext" : "AddLeveeSeparateContext")}<{twice.Name}>, and nothing else.");
+        }
         using var scope = scopes.CreateScope();
         var app = (DbContext)scope.ServiceProvider.GetRequiredService(context);
         if (Unfit(app) is { } problem)
@@ -317,7 +324,8 @@ internal sealed class AmbientTransaction : IAmbientTransaction
     public (System.Data.Common.DbConnection Connection, System.Data.Common.DbTransaction Transaction)? Current { get; set; }
 }
 
-internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTransaction ambient, IOptions<OneContext> one) : IUnitOfWorkFactory
+internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTransaction ambient, IOptions<OneContext> one,
+    IEnumerable<OwnedRelations> owned) : IUnitOfWorkFactory
     where TContext : DbContext
 {
     // Outside a host nothing validates on start: the first operation does.
@@ -334,9 +342,9 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     private async Task VerifyIsolationAsync(CancellationToken ct)
     {
         // Every relation the model reads or writes, however it's mapped (split, as a view, through the search path), every one
-        // on the search path the runtime role may read or write at all (raw SQL reaches by name what the model doesn't map),
-        // and every relation a view among them reads, down to the tables. Oxbow's queue and EF's migration history are their
-        // owners', not the app's; a relation named in another schema is deliberate, and the trust model's.
+        // in any schema the runtime role may read or write at all (raw SQL reaches by name what the model doesn't map), and
+        // every relation a view among them reads, down to the tables. The tables a Levee package installs (Oxbow's queue,
+        // named one by one) and EF's migration history are their owners', not the app's.
         // Each is judged by what it is, not by how EF maps it:
         // - a table: forced row-level security and a policy;
         // - a view: security_invoker, or an owner row-level security holds (neither a superuser nor bypassing it);
@@ -348,6 +356,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             .Select(r => r.Schema is { } schema ? $"{Quote(schema)}.{Quote(r.Name)}" : Quote(r.Name))
             .Distinct()
             .ToArray();
+        var theirs = owned.SelectMany(o => o.Names).ToArray();
         var open = await db.Database.SqlQuery<string>($"""
             with recursive mapped as (
               select n, to_regclass(n)::oid as oid from unnest({names}) n
@@ -357,7 +366,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
               join pg_catalog.pg_namespace s on s.oid = c.relnamespace
               where c.relkind in ('r', 'p', 'v', 'm', 'f')
                 and s.nspname <> 'information_schema' and s.nspname not like 'pg\_%' and has_schema_privilege(s.oid, 'usage')
-                and c.relname not like 'oxbow\_%' and c.relname <> '__EFMigrationsHistory'
+                and not (s.nspname || '.' || c.relname = any ({theirs})) and c.relname <> '__EFMigrationsHistory'
                 and (has_table_privilege(c.oid, 'select') or has_table_privilege(c.oid, 'insert')
                   or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete')
                   or has_any_column_privilege(c.oid, 'select') or has_any_column_privilege(c.oid, 'insert')

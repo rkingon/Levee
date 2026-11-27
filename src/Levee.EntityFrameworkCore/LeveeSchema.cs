@@ -114,10 +114,10 @@ public static class LeveeSchema
         """;
 
     /// <summary>
-    /// What the app's runtime role may reach, run by the owner: exactly the tables row-level security holds, a Levee policy on
-    /// each (<see cref="Isolation"/>, <see cref="Shared"/>), and nothing else. A table without one is unreachable, not
+    /// What the app's runtime role may reach, run by the owner: exactly the tables row-level security holds, a policy of this
+    /// installation's on each (<see cref="Isolation"/>, <see cref="Shared"/>), and nothing else. A table without one is unreachable, not
     /// refused later: whatever names it (an unmapped table, raw SQL, another schema) is denied by Postgres. It resets the
-    /// role to that list (a grant of the role's from before is revoked) and names the role, so a table isolated afterwards,
+    /// role to that list (a grant of the role's from before, in any schema, is revoked) and names the role, so a table isolated afterwards,
     /// by a later migration, is granted as its policy is made. The audit it reads, and adds to only through
     /// <c>levee_audit_write</c>, at the transaction's time. Run before any grant of the app's own (Oxbow's, a table with a
     /// policy of its own), which it would revoke.
@@ -127,10 +127,16 @@ public static class LeveeSchema
         Identifier(role, nameof(role));
         Identifier(schema, nameof(schema));
         return $"""
-            revoke all on all tables in schema {schema} from {role};
-            revoke all on all sequences in schema {schema} from {role};
-            alter default privileges in schema {schema} revoke all on tables from {role};
-            alter default privileges in schema {schema} revoke all on sequences from {role};
+            do $levee$
+            declare s name;
+            begin
+              for s in select n.nspname from pg_namespace n where n.nspname <> 'information_schema' and n.nspname not like 'pg\_%' loop
+                execute format('revoke all on all tables in schema %I from {role}', s);
+                execute format('revoke all on all sequences in schema %I from {role}', s);
+                execute format('alter default privileges in schema %I revoke all on tables from {role}', s);
+                execute format('alter default privileges in schema %I revoke all on sequences from {role}', s);
+              end loop;
+            end $levee$;
             grant usage on schema {schema} to {role};
             grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role};
             grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role};
@@ -146,14 +152,18 @@ public static class LeveeSchema
             do $levee$
             declare t regclass;
             begin
+              -- This installation's policies only: each reads this schema's functions, so another installation's tables (and its
+              -- audit) stay its own role's.
               for t in select distinct p.polrelid::regclass from pg_policy p
-                       where p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write') loop
+                       join pg_depend d on d.classid = 'pg_policy'::regclass and d.objid = p.oid and d.refclassid = 'pg_proc'::regclass
+                       where p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write')
+                         and d.refobjid in ('{schema}.levee_scope()'::regprocedure, '{schema}.levee_platform()'::regprocedure) loop
                 execute format('grant usage on schema %I to {role}', (select n.nspname from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.oid = t));
-                execute format('grant select, insert, update, delete on %s to {role}', t);
+                execute format(case when t = '{schema}.{AuditTable}'::regclass then 'grant select on %s to {role}'
+                                    else 'grant select, insert, update, delete on %s to {role}' end, t);
                 perform {schema}.levee_runtime_sequences(t);
               end loop;
             end $levee$;
-            revoke insert, update, delete on {schema}.{AuditTable} from {role};
             """;
     }
 

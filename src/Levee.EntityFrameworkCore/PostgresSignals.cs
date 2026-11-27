@@ -133,6 +133,7 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_stopping.IsCancellationRequested, this);
             if (_ready is null)
             {
                 _ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -230,6 +231,15 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
     public async ValueTask DisposeAsync()
     {
         await _stopping.CancelAsync().ConfigureAwait(false);
+        // Nothing will listen again: a watch still waiting for LISTEN, or reading, ends with the host rather than waiting on it.
+        lock (_gate)
+        {
+            _ready?.TrySetException(new ObjectDisposedException(GetType().Name));
+        }
+        foreach (var channel in _watchers.Keys)
+        {
+            channel.Writer.TryComplete();
+        }
         if (_listening is { } listening)
         {
             await listening.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);

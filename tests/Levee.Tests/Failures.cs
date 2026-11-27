@@ -945,6 +945,7 @@ public sealed class Person : INamed, IReachableBy
 public sealed record ViaSibling(IReachableBy Who);
 
 [System.Text.Json.Serialization.JsonConverter(typeof(EmailAddressConverter))]
+[ValueObject(typeof(string))]
 public sealed record EmailAddress([property: Secret] string Value);
 
 public sealed class EmailAddressConverter : System.Text.Json.Serialization.JsonConverter<EmailAddress>
@@ -1011,6 +1012,7 @@ public sealed class FourteenthAuditFixTests
 public sealed record Credential([property: Secret] string Token);
 
 [System.Text.Json.Serialization.JsonConverter(typeof(VaultConverter))]
+[ValueObject(typeof(string))]
 public sealed record Vault([property: Personal] Credential Owner);
 
 public sealed class VaultConverter : System.Text.Json.Serialization.JsonConverter<Vault>
@@ -1023,6 +1025,7 @@ public sealed class VaultConverter : System.Text.Json.Serialization.JsonConverte
 }
 
 [System.Text.Json.Serialization.JsonConverter(typeof(HolderConverter))]
+[ValueObject(typeof(string))]
 public sealed class FieldHolder
 {
     [System.Text.Json.Serialization.JsonInclude] internal Credential? Kept = null;
@@ -1043,18 +1046,6 @@ public record Tallies
     [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString)]
     public List<int> Values { get; init; } = [];
 
-    [System.Text.Json.Serialization.JsonConverter(typeof(AbsentConverter))]
-    public string? Note { get; init; }
-}
-
-public sealed class AbsentConverter : System.Text.Json.Serialization.JsonConverter<string?>
-{
-    public override bool HandleNull => true;
-
-    public override string? Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => reader.GetString();
-
-    public override void Write(System.Text.Json.Utf8JsonWriter writer, string? value, System.Text.Json.JsonSerializerOptions options) =>
-        writer.WriteStringValue(value ?? "absent");
 }
 
 public record Shown
@@ -1134,11 +1125,11 @@ public sealed class ArrayWriteTests
 public sealed class SchemaTests
 {
     [Fact]
-    public void A_value_its_own_converter_writes_promises_no_shape()
+    public void A_value_its_own_converter_writes_shows_what_it_declares()
     {
         var schema = LeveeJson.Schema(typeof(Mailing));
 
-        Assert.Empty((System.Text.Json.Nodes.JsonObject)schema["properties"]!["to"]!);
+        Assert.Equal("string", schema["properties"]!["to"]!["type"]!.GetValue<string>());
     }
 }
 

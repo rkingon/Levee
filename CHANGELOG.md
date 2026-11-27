@@ -31,7 +31,9 @@
   one JSON scalar; LEVEE104 refuses any other wire, and so does the contract wire.
 - **Breaking:** the contract wire is Levee's. `LeveeJson.Create` refuses a converter or a type resolver, and
   `LeveeOptions.Json` takes only options it made: a value's JSON is its value object's own, a .NET type's is
-  System.Text.Json's.
+  System.Text.Json's. A converter on a member, or on a type with no `[ValueObject]`, is refused as the wire meets it. A
+  value object's schema and the JSON it accepts come from one description of its wire: an enum by name, a nullable one
+  with null.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
   startup, the guard on the context, the audit, classified failures). `AddLeveePostgres<TContext>()` is the unit of work.
@@ -46,6 +48,10 @@
   `OperationUnavailableException`.
 
 ### Levee.Analyzers
+- LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
+  is one too.
+- LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
+  that takes a principal (`Action<Principal>`) as holding one.
 - LEVEE003: a handler holding a port that tells the time (an interface or delegate answering a date or time when asked
   nothing) holds a clock, as one holding `TimeProvider` does.
 
@@ -62,7 +68,11 @@
   made. A table without one is unreachable, whatever names it: no blanket grant, no default privileges. Run Levee's
   grants first, then the app's own.
 - Before the first operation, what the role can reach beyond Levee's grants (by table or column, in any schema it can use) is
-  checked as what the context maps is.
+  checked as what the context maps is. The tables Levee.Oxbow installs are left to it by name, not by prefix.
+- `LeveeSchema.Grants` resets the role in every schema, and grants only this installation's tables: a second Levee
+  schema's tables and audit stay its own role's.
+- A context registered more than once (the separate store beside its `AddLeveeSeparateContext`) fails the host's start.
+- A watch waiting for, or reading, the listening connection ends when the host does.
 - `[SeparateContext("OpenIddict")]` and `AddLeveeSeparateContext<T>`: a separate bounded context's store (identity:
   OpenIddict's) beside the app's, used by the library it names outside every operation, kept apart by the database: it
   connects as a role of its own, and the app's role reaches only the tables Levee's policies hold. The host's start

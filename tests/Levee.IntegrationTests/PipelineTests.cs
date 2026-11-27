@@ -212,8 +212,10 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     private static async Task Until(Func<Task<long>> count, long expected)
     {
         var deadline = DateTime.UtcNow.AddSeconds(30);
-        while (await count() < expected && DateTime.UtcNow < deadline)
+        long seen;
+        while ((seen = await count()) < expected)
         {
+            Assert.True(DateTime.UtcNow < deadline, $"Waited 30s for {expected}, saw {seen}.");
             await Task.Delay(100, Ct);
         }
     }
@@ -865,6 +867,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddDbContext<LedgerDb>(o => o.UseNpgsql(postgres.App));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<LedgerDb>();
+        builder.Services.AddLeveeOxbow();
         using var host = builder.Build();
         async Task Begin()
         {
@@ -950,6 +953,20 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         finally
         {
             await postgres.ExecuteAsync("drop schema off_path cascade;");
+        }
+    }
+
+    [Fact]
+    public async Task A_table_named_like_oxbows_is_checked_as_the_apps()
+    {
+        await postgres.ExecuteAsync("create table oxbow_notes (id uuid primary key, tenant text not null); grant select on oxbow_notes to app;");
+        try
+        {
+            Assert.Contains("oxbow_notes: no forced row-level security", await Refusal<MapsNothingDb>(postgres.App), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("drop table oxbow_notes;");
         }
     }
 
@@ -1093,6 +1110,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddDbContext<TContext>(o => o.UseNpgsql(connection));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<TContext>();
+        // The fixture's database has Oxbow's queue, granted to the app: its tables are Oxbow's once Levee.Oxbow says so.
+        builder.Services.AddLeveeOxbow();
         using var host = builder.Build();
         await using var scope = host.Services.CreateAsyncScope();
         try
@@ -1161,6 +1180,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddDbContext<PlansDb>(o => o.UseNpgsql(postgres.App));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<PlansDb>();
+        builder.Services.AddLeveeOxbow();
         using var host = builder.Build();
         async Task<Error?> Refused(Func<PlansDb, Task> work)
         {

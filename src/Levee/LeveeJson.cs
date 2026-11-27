@@ -15,7 +15,10 @@ public static class LeveeJson
 
     public static JsonSerializerOptions Options { get; } = Create();
 
-    /// <summary>The strict defaults, for an app that adds its own converters (typed ids) before making them read-only.</summary>
+    /// <summary>
+    /// The strict defaults, for an app that sets what the wire leaves open (naming, depth). A value's own JSON (a typed id) is
+    /// its value object's, <c>[JsonConverter]</c> with <c>[ValueObject]</c> on its type, never a converter added here.
+    /// </summary>
     public static JsonSerializerOptions Create(Action<JsonSerializerOptions>? configure = null)
     {
         var o = new JsonSerializerOptions(JsonSerializerDefaults.Web)
@@ -41,10 +44,38 @@ public static class LeveeJson
         }
         // A value object's converter is handed only the JSON its [ValueObject] says it writes.
         o.Converters.Insert(0, new ValueObjectWire());
-        o.MakeReadOnly(populateMissingResolver: true);
+        o.TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Closed } };
+        o.MakeReadOnly();
         Made.AddOrUpdate(o, Made);
         return o;
     }
+
+    /// <summary>
+    /// Every converter of the app's is a value object's, on its type: one on a member outranks the type's (and its check), and one
+    /// on a type that doesn't say what it writes makes a schema of nothing. LEVEE104 refuses both in the build; this, whatever
+    /// the build didn't see.
+    /// </summary>
+    private static void Closed(JsonTypeInfo info)
+    {
+        foreach (var member in info.Properties)
+        {
+            if (member.CustomConverter is { } own && !BuiltIn(own))
+            {
+                throw new InvalidOperationException(
+                    $"{info.Type.Name}.{member.Name} has a converter of its own, which outranks its type's and says nothing a schema can show. "
+                    + $"Fix: put the converter on {member.PropertyType.Name} itself, with [ValueObject(typeof(T))] saying the JSON scalar it writes (LEVEE104).");
+            }
+        }
+        if (!BuiltIn(info.Converter) && info.Converter is not IValueObjectWire
+            && (Nullable.GetUnderlyingType(info.Type) ?? info.Type).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [])
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name} is written by a converter of its own, which no schema can read. Fix: say what it writes on the type, "
+                + "[ValueObject(typeof(string))] (with Format or Pattern if it has one) (LEVEE104).");
+        }
+    }
+
+    private interface IValueObjectWire;
 
     /// <summary>Whether <paramref name="options"/> are Levee's own, made by <see cref="Create"/>.</summary>
     internal static bool IsLevees(JsonSerializerOptions options) => Made.TryGetValue(options, out _);
@@ -57,37 +88,26 @@ public static class LeveeJson
     {
         public override bool CanConvert(Type typeToConvert) =>
             typeToConvert.GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [ValueObjectAttribute]
-            && typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false) is [JsonConverterAttribute { ConverterType: not null }];
+            && typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false) is [JsonConverterAttribute];
 
         public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options)
         {
             var declared = (ValueObjectAttribute)typeToConvert.GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false)[0];
-            var converterType = ((JsonConverterAttribute)typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false)[0]).ConverterType!;
-            var inner = (JsonConverter)Activator.CreateInstance(converterType)!;
+            var attribute = (JsonConverterAttribute)typeToConvert.GetCustomAttributes(typeof(JsonConverterAttribute), inherit: false)[0];
+            // A library's attribute deriving JsonConverterAttribute makes its converter itself, naming no type.
+            var inner = attribute.ConverterType is { } converterType
+                ? (JsonConverter)Activator.CreateInstance(converterType)!
+                : attribute.CreateConverter(typeToConvert)
+                    ?? throw new InvalidOperationException($"{attribute.GetType().Name} on {typeToConvert.Name} makes no converter.");
             if (inner is JsonConverterFactory factory)
             {
                 inner = factory.CreateConverter(typeToConvert, options)!;
             }
-            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire, Accepts(typeToConvert, declared.Wire))!;
+            var accepts = Describe(typeToConvert, declared.Wire, options).Tokens;
+            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire, accepts)!;
         }
 
-        private static readonly HashSet<Type> Strings = [typeof(Guid), typeof(DateOnly), typeof(TimeOnly), typeof(TimeSpan), typeof(DateTimeOffset), typeof(Uri)];
-
-        private static JsonTokenType[] Accepts(Type value, Type wire) => (Nullable.GetUnderlyingType(wire) ?? wire) switch
-        {
-            var w when Strings.Contains(w) => [JsonTokenType.String],
-            var w => Type.GetTypeCode(w) switch
-            {
-                TypeCode.Boolean => [JsonTokenType.True, JsonTokenType.False],
-                TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32 or TypeCode.Int64
-                    or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal => [JsonTokenType.Number],
-                TypeCode.String or TypeCode.Char or TypeCode.DateTime => [JsonTokenType.String],
-                _ => throw new InvalidOperationException(
-                    $"{value.Name} is a value object written as {wire.Name}, which isn't one JSON value. A value object is one JSON scalar: a string, number, bool, Guid or date (LEVEE104)."),
-            },
-        };
-
-        private sealed class Checked<T>(JsonConverter<T> inner, Type wire, JsonTokenType[] accepts) : JsonConverter<T>
+        private sealed class Checked<T>(JsonConverter<T> inner, Type wire, JsonTokenType[] accepts) : JsonConverter<T>, IValueObjectWire
         {
             public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
                 accepts.Contains(reader.TokenType)
@@ -96,6 +116,42 @@ public static class LeveeJson
 
             public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) => inner.Write(writer, value, options);
         }
+    }
+
+    private static readonly Dictionary<Type, string> Formats = new()
+    {
+        [typeof(Guid)] = "uuid", [typeof(DateOnly)] = "date", [typeof(TimeOnly)] = "time", [typeof(TimeSpan)] = "duration",
+        [typeof(DateTimeOffset)] = "date-time", [typeof(DateTime)] = "date-time", [typeof(Uri)] = "uri",
+    };
+
+    /// <summary>
+    /// What a value object's wire is, once: the JSON tokens its converter is handed and the schema every client is shown, so
+    /// the two can't disagree. One JSON scalar; an enum is written by name, as every contract enum is.
+    /// </summary>
+    private static (JsonTokenType[] Tokens, JsonObject Schema) Describe(Type value, Type wire, JsonSerializerOptions json)
+    {
+        var w = Nullable.GetUnderlyingType(wire) ?? wire;
+        if (w.IsEnum)
+        {
+            var names = json.GetJsonSchemaAsNode(w, new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true }) as JsonObject ?? [];
+            names["type"] = "string";
+            return ([JsonTokenType.String], names);
+        }
+        if (Formats.TryGetValue(w, out var format))
+        {
+            return ([JsonTokenType.String], new JsonObject { ["type"] = "string", ["format"] = format });
+        }
+        return Type.GetTypeCode(w) switch
+        {
+            TypeCode.String or TypeCode.Char => ([JsonTokenType.String], new JsonObject { ["type"] = "string" }),
+            TypeCode.Boolean => ([JsonTokenType.True, JsonTokenType.False], new JsonObject { ["type"] = "boolean" }),
+            TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32 or TypeCode.Int64
+                or TypeCode.UInt64 => ([JsonTokenType.Number], new JsonObject { ["type"] = "integer" }),
+            TypeCode.Single or TypeCode.Double or TypeCode.Decimal => ([JsonTokenType.Number], new JsonObject { ["type"] = "number" }),
+            _ => throw new InvalidOperationException(
+                $"{value.Name} is a value object written as {wire.Name}, which isn't one JSON value. A value object is one JSON scalar: a string, "
+                + "number, bool, enum, Guid or date (LEVEE104)."),
+        };
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
@@ -117,7 +173,7 @@ public static class LeveeJson
                     || context.PropertyInfo?.CustomConverter is { } wrapped && !BuiltIn(wrapped)))
                 {
                     // Whether the member may be null is the member's: a converter-backed reference has no shape of its own to say so.
-                    node = WireSchema(declared, json, underlying is not null || context.PropertyInfo is { IsGetNullable: true } || AllowsNull(node));
+                    node = WireSchema(underlying ?? context.TypeInfo.Type, declared, json, underlying is not null || context.PropertyInfo is { IsGetNullable: true } || AllowsNull(node));
                 }
                 else if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
                 {
@@ -132,7 +188,7 @@ public static class LeveeJson
                         if (members[member.Name] is JsonObject written && written["type"] is null
                             && (Nullable.GetUnderlyingType(member.PropertyType) ?? member.PropertyType).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false)
                                 is [ValueObjectAttribute skipped]
-                            && WireSchema(skipped, json, Nullable.GetUnderlyingType(member.PropertyType) is not null || member.IsGetNullable) is JsonObject filled)
+                            && WireSchema(Nullable.GetUnderlyingType(member.PropertyType) ?? member.PropertyType, skipped, json, Nullable.GetUnderlyingType(member.PropertyType) is not null || member.IsGetNullable) is JsonObject filled)
                         {
                             if (member.AttributeProvider?.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true)
                                 is [System.ComponentModel.DescriptionAttribute { Description: { Length: > 0 } memberText }, ..])
@@ -169,13 +225,9 @@ public static class LeveeJson
         node is JsonObject o && o["type"] is JsonArray types && types.Any(t => t?.GetValue<string>() == "null");
 
     /// <summary>The schema of what a value object's converter writes, with its format and pattern, and null if the member allows it.</summary>
-    private static JsonNode WireSchema(ValueObjectAttribute declared, JsonSerializerOptions json, bool nullable)
+    private static JsonObject WireSchema(Type value, ValueObjectAttribute declared, JsonSerializerOptions json, bool nullable)
     {
-        var schema = json.GetJsonSchemaAsNode(declared.Wire, new JsonSchemaExporterOptions { TreatNullObliviousAsNonNullable = true });
-        if (schema is not JsonObject wire)
-        {
-            return schema;
-        }
+        var wire = Describe(value, declared.Wire, json).Schema;
         if (declared.Format is { } format)
         {
             wire["format"] = format;
@@ -184,9 +236,13 @@ public static class LeveeJson
         {
             wire["pattern"] = pattern;
         }
-        if (nullable && wire["type"] is JsonValue single && single.GetValue<string>() is { } only)
+        if (nullable)
         {
-            wire["type"] = new JsonArray(only, "null");
+            wire["type"] = new JsonArray(wire["type"]!.GetValue<string>(), "null");
+            if (wire["enum"] is JsonArray names)
+            {
+                names.Add(null);
+            }
         }
         return wire;
     }

@@ -94,7 +94,13 @@ internal sealed class CurrentOperation
     public OperationContext? Context { get; internal set; }
 }
 
-/// <summary>What a unit of work may see and do. A null <see cref="Key"/> is platform scope, only ever for a declared platform operation.</summary>
+/// <summary>
+/// Relations a Levee package installs and answers for (Oxbow's queue), by schema-qualified name: their owner's, so the
+/// isolation check leaves exactly these alone, never a whole prefix an app's table could share.
+/// </summary>
+internal sealed record OwnedRelations(IReadOnlyList<string> Names);
+
+/// <summary>What a unit of work may see and do. A null <see cref="Key"/> is platform scope, or no scope at all when <see cref="Unscoped"/>.</summary>
 /// <param name="Key">The scope row-level security holds the operation to; null when it's every scope's or none's.</param>
 /// <param name="ReadOnly">Whether its transaction is read-only, as its contract declares.</param>
 public sealed record WorkScope(string? Key, bool ReadOnly)

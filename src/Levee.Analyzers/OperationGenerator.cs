@@ -474,8 +474,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } shapeless)
             {
-                Report(shapeless.Wire is { } wire
-                    ? $"its {what}'s {shapeless.Path} is a value object written as {wire}, which isn't one JSON value, so its converter decides a shape no schema shows. Fix: a value object is one JSON scalar: [ValueObject(typeof(string))] (or a number, bool, Guid, DateOnly, DateTimeOffset); a value with members of its own is a record the serializer writes, with no converter"
+                Report(shapeless.OnMember
+                    ? $"its {what}'s {shapeless.Path} has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes"
+                    : shapeless.Wire is { } wire
+                    ? $"its {what}'s {shapeless.Path} is a value object written as {wire}, which isn't one JSON value, so its converter decides a shape no schema shows. Fix: a value object is one JSON scalar: [ValueObject(typeof(string))] (or a number, bool, enum, Guid, DateOnly, DateTimeOffset); a value with members of its own is a record the serializer writes, with no converter"
                     : $"its {what}'s {shapeless.Path} is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
                 return null;
             }
@@ -666,18 +668,32 @@ public sealed class OperationGenerator : IIncrementalGenerator
         "System.Guid", "System.DateOnly", "System.TimeOnly", "System.TimeSpan", "System.DateTime", "System.DateTimeOffset", "System.Uri",
     ];
 
-    private static (string Path, string? Wire)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    private static (string Path, string? Wire, bool OnMember)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
     {
-        // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't.
+        // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
+        // does a library's attribute deriving JsonConverterAttribute, which makes its converter itself.
         static bool Converted(ISymbol symbol) =>
-            symbol.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConverterAttribute"
-                && (a.ConstructorArguments.FirstOrDefault().Value as ITypeSymbol)?.ContainingAssembly?.Name != "System.Text.Json");
+            symbol.GetAttributes().Any(a => Derives(a.AttributeClass, "System.Text.Json.Serialization.JsonConverterAttribute")
+                && !(a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConverterAttribute"
+                    && (a.ConstructorArguments.FirstOrDefault().Value as ITypeSymbol)?.ContainingAssembly?.Name == "System.Text.Json"));
+        static bool Derives(INamedTypeSymbol? type, string name)
+        {
+            for (var t = type; t is not null; t = t.BaseType)
+            {
+                if (t.ToDisplayString() == name)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
         static ITypeSymbol Unwrapped(ITypeSymbol t) => t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : t;
         static AttributeData? ValueObject(ITypeSymbol t) => Unwrapped(t).GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
         static bool Declared(ITypeSymbol t) => ValueObject(t) is not null;
-        static (string, string?)? NotScalar(ITypeSymbol t, string at) =>
-            ValueObject(t)?.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol wire && !ScalarWires.Contains(Unwrapped(wire).ToDisplayString())
-                ? (at, Unwrapped(wire).ToDisplayString())
+        static (string, string?, bool)? NotScalar(ITypeSymbol t, string at) =>
+            ValueObject(t)?.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol wire
+                && Unwrapped(wire) is { TypeKind: not TypeKind.Enum } scalar && !ScalarWires.Contains(scalar.ToDisplayString())
+                ? (at, scalar.ToDisplayString(), false)
                 : null;
         if (!seen.Add(type))
         {
@@ -708,7 +724,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (Converted(named) && !Declared(named))
         {
-            return (path.Length == 0 ? named.Name : $"{path} ({named.Name})", null);
+            return (path.Length == 0 ? named.Name : $"{path} ({named.Name})", null, false);
         }
         foreach (var member in named.GetMembers())
         {
@@ -717,9 +733,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 continue;
             }
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
-            if (Converted(member) && !Declared(memberType))
+            if (Converted(member))
             {
-                return (at, null);
+                return (at, null, true);
             }
             if (Shapeless(memberType, seen, at) is { } found)
             {

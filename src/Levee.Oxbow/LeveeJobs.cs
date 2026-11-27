@@ -5,7 +5,7 @@ using Oxbow;
 
 namespace Levee.Oxbow;
 
-public static class LeveeOxbowServiceCollectionExtensions
+public static partial class LeveeOxbowServiceCollectionExtensions
 {
     /// <summary>
     /// Oxbow, enlisted in Levee's unit of work: every insert through the scoped <see cref="IOxbowClient"/> joins the current
@@ -16,6 +16,7 @@ public static class LeveeOxbowServiceCollectionExtensions
     public static IOxbowBuilder AddLeveeOxbow(this IServiceCollection services, Action<OxbowOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
+        services.AddSingleton(sp => OxbowTables(sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<OxbowOptions>>().Value));
         return services.AddOxbow(o =>
             {
                 o.RequireAmbientTransaction = true;
@@ -28,6 +29,16 @@ public static class LeveeOxbowServiceCollectionExtensions
             })
             .AddTransactionAccessor<LeveeTransactionAccessor>();
     }
+
+    /// <summary>The tables Oxbow's own migrations create, as configured: what it installs, read from its DDL rather than guessed by prefix.</summary>
+    private static OwnedRelations OxbowTables(OxbowOptions options) => new(OxbowSchema.GetMigrations(0, OxbowSchema.LatestVersion, options.Schema, options.TablePrefix)
+        .SelectMany(m => CreatedTable().Matches(m.Sql).Select(t => t.Groups[1].Value.Contains('.', StringComparison.Ordinal)
+            ? t.Groups[1].Value : $"{options.Schema}.{t.Groups[1].Value}"))
+        .Distinct(StringComparer.Ordinal)
+        .ToArray());
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"create\s+(?:unlogged\s+)?table\s+(?:if\s+not\s+exists\s+)?([a-z0-9_.]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex CreatedTable();
 
     /// <summary>
     /// <see cref="IJobs"/>: an operation enqueued as a job, authorized as its caller, run later through the pipeline for them.

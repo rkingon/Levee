@@ -105,7 +105,7 @@ public sealed class PolicyAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// A value that's never a grant: one of Error's factories, a throw, or only those through a conditional, a switch or
+    /// A value that's never a grant: one of Error's factories, a static readonly Error, a throw, or only those through a conditional, a switch or
     /// a completed task. A policy that returns nothing else grants no scope, so it needn't read one.
     /// </summary>
     private static bool Refuses(IOperation value)
@@ -117,6 +117,9 @@ public sealed class PolicyAnalyzer : DiagnosticAnalyzer
         return value switch
         {
             IThrowOperation => true,
+            // A refusal made once and returned every time: an Error held where nothing can swap it for null.
+            IFieldReferenceOperation { Field: { IsStatic: true, IsReadOnly: true, NullableAnnotation: NullableAnnotation.NotAnnotated,
+                Type: { Name: "Error", ContainingNamespace: { Name: "Levee", ContainingNamespace.IsGlobalNamespace: true } } } } => true,
             IInvocationOperation { TargetMethod: { IsStatic: true, ContainingType: { Name: "Error", ContainingNamespace: { Name: "Levee", ContainingNamespace.IsGlobalNamespace: true } } } } => true,
             IInvocationOperation { TargetMethod: { Name: "FromResult", ContainingType.Name: "ValueTask" or "Task" }, Arguments.Length: 1 } wrap => Refuses(wrap.Arguments[0].Value),
             IObjectCreationOperation { Type.Name: "ValueTask", Arguments.Length: 1 } wrap => Refuses(wrap.Arguments[0].Value),

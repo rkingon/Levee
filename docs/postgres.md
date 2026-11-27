@@ -30,11 +30,13 @@ what `LeveeSchema.Grants(role)` prints. The owner also revokes what every role g
 `revoke create on schema public from public` and `revoke temporary on database <db> from public`. The grants are an
 allow-list, not a blanket:
 
-- exactly the tables row-level security holds, each with a Levee policy (`Isolation` for one scope's rows, `Shared` for
-  rows every scope reads and only platform operations write), in whatever schema they are. A table without one isn't
-  reachable at all: raw SQL that names it, mapped or not, qualified or not, is denied by Postgres. `Grants` resets the
-  role to that list (anything granted it before is revoked) and records the role, so a table a later migration
-  isolates is granted as its policy is made, whichever runs first;
+- exactly the tables row-level security holds, each with a policy of this installation's (`Isolation` for one scope's
+  rows, `Shared` for rows every scope reads and only platform operations write, each calling this schema's
+  `levee_scope()` or `levee_platform()`), in whatever schema they are. A table without one isn't reachable at all: raw
+  SQL that names it, mapped or not, qualified or not, is denied by Postgres. A second installation's tables, and its
+  audit, are its own role's. `Grants` resets the role to that list (anything granted it before, in any schema, is
+  revoked) and records the role, so a table a later migration isolates is granted as its policy is made, whichever runs
+  first;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
