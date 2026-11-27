@@ -57,6 +57,25 @@
   before the app's own narrowing, which a blanket grant would undo.
 
 ### Generator and analyzers
+- LEVEE021 (new): a principal is made only where the app composes (Composition, a Host, a Tool), and a process sends
+  through its `ProcessContext`, never a `Dispatcher` it holds.
+- LEVEE112 (new): one process per input across the composed app, or a queued run would go to whichever DI resolves.
+- LEVEE113 (new): an access policy reads `AccessRequest.Scope`; one that grants by the access word alone lets any caller
+  into any scope. `dotnet levee new`'s policy grants `anyone` only at platform scope.
+- LEVEE020 follows reflection into Levee's types through `Type` locals and fields, `Type.GetType`, `GetTypeInfo`, the
+  reflection extensions and activators, and judges an `[UnsafeAccessor]` by its target; it refuses reading `[Operation]` by
+  reflection and a `dynamic` call on the `Dispatcher`.
+- LEVEE005 refuses reflecting on the container and the DI extensions to locate services, outside where the app composes.
+- LEVEE004 refuses SQL naming `levee_signals`: a change signal is raised through `IChangeSignals`. Its migration
+  exemption covers only SQL handed to the `MigrationBuilder`.
+- LEVEE003 refuses Visual Basic's `DateAndTime` clock, and NodaTime's `SystemClock.Instance` outside where the app composes.
+- LEVEE018 refuses holding a separate context in every role; Composition and a Host name it only as a registration's type
+  argument.
+- LEVEE104 checks the members System.Text.Json writes: `[JsonIgnore]` left out, `[JsonInclude]` fields and non-public
+  properties in. LEVEE108 refuses a `Default` on a set (`Many`) port.
+- LEVEE015 allows an adapter's extension only in the registration shape, called to register. LEVEE006 exempts .NET's
+  generators only by their output's path shape, and refuses a TestSupport project that's a test project or an executable.
+- The generated registration adds a closed generic helper as constructed.
 - LEVEE104 leaves System.Text.Json's own converters alone (`JsonStringEnumConverter` on an enum): the schema shows what
   they write.
 - The generated registration finds Application's own classes its handlers and processes take, at any depth (a store, a
