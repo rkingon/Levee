@@ -153,10 +153,19 @@ public sealed class TrialTests
     [InlineData("typeof(Dispatcher).GetMethod(\"SendJsonAsync\", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)", true)]
     [InlineData("d.GetType().GetMethod(\"SendFromClientAsync\")", true)]
     [InlineData("typeof(Program).GetMethod(\"Main\")", false)]
+    [InlineData("System.Reflection.IntrospectionExtensions.GetTypeInfo(typeof(Dispatcher)).GetDeclaredMethod(\"SendJsonAsync\")", true)]
+    [InlineData("System.Reflection.RuntimeReflectionExtensions.GetRuntimeMethods(typeof(Dispatcher))", true)]
+    [InlineData("System.Type.GetType(\"Levee.Dispatcher, Levee\")!.GetMethods()", true)]
+    [InlineData("System.Activator.CreateInstance(typeof(OperationContext))", true)]
+    [InlineData("System.Reflection.IntrospectionExtensions.GetTypeInfo(typeof(Dispatcher)).DeclaredMethods", true)]
+    [InlineData("((System.Func<object>)(() => { var t = typeof(int); t = typeof(Dispatcher); return t.GetFields(); }))()", true)]
+    [InlineData("Held.GetMethods()", true)]
+    [InlineData("Mine.GetMethods()", false)]
     public async Task Levees_own_types_are_called_not_reflected_into(string lookup, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true),
-            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} public static object? Find(Dispatcher d) => {lookup}; }}",
+            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} public static object? Find(Dispatcher d) => {lookup}; "
+            + "static readonly System.Type Held = typeof(Dispatcher); static readonly System.Type Mine = typeof(Program); }",
             "App.Host", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));

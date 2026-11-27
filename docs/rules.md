@@ -430,6 +430,15 @@ app.MapPost("/v1/notes", (CreateNoteBody body, Dispatcher d, ...) => d.SendAsync
 ``` Declare the operation, and let `AddLeveeOperations` (or `AddLeveeTestOperations`) register
 it.
 
+Reflection is refused where the analyzer can name the Levee type statically: a lookup (`Type`'s `GetMethod`,
+`GetField`, `GetMembers` and the rest, `System.Reflection.TypeExtensions`' and `RuntimeReflectionExtensions`' of them,
+`TypeInfo`'s `GetDeclaredMethod` and `DeclaredMethods`) or an instance made (`Activator.CreateInstance`,
+`RuntimeHelpers.GetUninitializedObject`) on `typeof(T)`, `x.GetType()` of one, `Type.GetType("Levee....")`, its
+`GetTypeInfo()`, or a local, or a field initialized in the same file, holding one; and an `[UnsafeAccessor]` onto one.
+It's static analysis: a type reached through a parameter, a field set elsewhere, a name built at run time or an assembly's
+`GetTypes()` isn't seen. Those are deliberate, and the [trust model](decisions.md#trust-model) answers them, not the
+build.
+
 ## LEVEE101: Every operation has a handler
 
 ```csharp

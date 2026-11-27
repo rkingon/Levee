@@ -106,4 +106,17 @@ public sealed class Alpha2AuditTests
         var error = Assert.Single(test.Errors, e => e.Id == "LEVEE112");
         Assert.Contains("Fake", error.GetMessage(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"SendJsonAsync\")] static extern object Send(Dispatcher d);", true)]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Method, Name = \"Run\")] static extern void Run([System.Runtime.CompilerServices.UnsafeAccessorType(\"Levee.Worker, Levee\")] object w);", true)]
+    [InlineData("[System.Runtime.CompilerServices.UnsafeAccessor(System.Runtime.CompilerServices.UnsafeAccessorKind.Field, Name = \"_items\")] static extern ref int[] Items(System.Collections.Generic.List<int> list);", false)]
+    public async Task An_unsafe_accessor_into_Levee_is_reflection_by_another_name(string accessor, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true),
+            $"using Levee;\npublic static class Program {{ public static void Main() {{ }} {accessor} }}", "App.Host",
+            GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
+    }
 }

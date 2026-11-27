@@ -48,6 +48,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
             start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+            start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnSeparateContextHeld(c)), OperationKind.VariableDeclarator, OperationKind.AnonymousFunction,
                 OperationKind.LocalFunction);
             if (role != Role.Tool)
@@ -80,6 +81,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (clock)
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.WallClock, context.Operation.Syntax.GetLocation(), $"{property.ContainingType!.Name}.{property.Name}"));
+        }
+        else if (ReflectionProperties.Contains(property.Name) && owner is "System.Type" or "System.Reflection.TypeInfo"
+            && Denoted(((IPropertyReferenceOperation)context.Operation).Instance, 0) is { } levee)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, context.Operation.Syntax.GetLocation(), property.Name, levee));
         }
         // An operation's type, read from its descriptor, is what turns a name into an input to send.
         else if (owner == "Levee.OperationDescriptor" && property.Name is "InputType" or "ResultType")
@@ -477,37 +483,113 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static readonly ImmutableHashSet<string> DataSourceMembers = ImmutableHashSet.Create(
         "CreateConnection", "OpenConnection", "OpenConnectionAsync", "CreateCommand", "CreateBatch");
 
+    // Type's lookups (and System.Reflection.TypeExtensions' of the same names), RuntimeReflectionExtensions', TypeInfo's, and
+    // what makes an instance from a Type.
     private static readonly ImmutableHashSet<string> ReflectionMembers = ImmutableHashSet.Create(
-        "GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetMember", "GetMembers",
-        "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "InvokeMember", "GetRuntimeMethod", "GetRuntimeMethods");
+        "GetMethod", "GetMethods", "GetProperty", "GetProperties", "GetField", "GetFields", "GetMember", "GetMembers", "GetEvent", "GetEvents",
+        "GetConstructor", "GetConstructors", "GetNestedType", "GetNestedTypes", "GetInterface", "GetInterfaces", "GetDefaultMembers", "FindMembers",
+        "InvokeMember", "GetRuntimeMethod", "GetRuntimeMethods", "GetRuntimeProperty", "GetRuntimeProperties", "GetRuntimeField", "GetRuntimeFields",
+        "GetRuntimeEvent", "GetRuntimeEvents", "GetDeclaredMethod", "GetDeclaredMethods", "GetDeclaredProperty", "GetDeclaredField", "GetDeclaredEvent",
+        "GetDeclaredNestedType", "CreateInstance", "GetUninitializedObject");
+
+    private static readonly ImmutableHashSet<string> ReflectionProperties = ImmutableHashSet.Create(
+        "DeclaredMembers", "DeclaredMethods", "DeclaredProperties", "DeclaredFields", "DeclaredConstructors", "DeclaredEvents", "DeclaredNestedTypes",
+        "TypeInitializer");
 
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
         if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && Reflected(invocation) is { } levee)
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, invocation.Syntax.GetLocation(), invocation.TargetMethod.Name, levee.Name));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, invocation.Syntax.GetLocation(), invocation.TargetMethod.Name, levee));
             return;
         }
         OnCall(context, role, invocation.TargetMethod);
     }
 
-    /// <summary>The Levee type a reflection lookup is made on: typeof(T), or x.GetType() of one, directly or as an extension's receiver.</summary>
-    private static INamedTypeSymbol? Reflected(IInvocationOperation invocation)
+    /// <summary>The Levee type a reflection lookup is made on, or an instance made from: its receiver, an extension's, or the Type an activator takes.</summary>
+    private static string? Reflected(IInvocationOperation invocation)
     {
-        var receiver = invocation.Instance ?? (invocation.TargetMethod.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null);
-        while (receiver is IConversionOperation conversion)
+        var method = invocation.TargetMethod;
+        if (method.ContainingType.ToDisplayString() is "System.Activator" or "System.Runtime.CompilerServices.RuntimeHelpers")
         {
-            receiver = conversion.Operand;
+            return method.TypeArguments.Select(t => LeveeType(t)).FirstOrDefault(t => t is not null)
+                ?? Denoted(invocation.Arguments.FirstOrDefault(a => a.Value.Type?.ToDisplayString() == "System.Type")?.Value, 0);
         }
-        var type = receiver switch
+        return Denoted(invocation.Instance ?? (method.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null), 0);
+    }
+
+    /// <summary>
+    /// The Levee type a Type-valued expression statically names: typeof(T); x.GetType() of one; Type.GetType("Levee..."); its
+    /// GetTypeInfo(); or a local, or a field initialized in the same file, that holds one. What it can't follow (a parameter, a
+    /// field set elsewhere, a name built at run time) is the trust model's.
+    /// </summary>
+    private static string? Denoted(IOperation? value, int depth)
+    {
+        while (value is IConversionOperation conversion)
         {
-            ITypeOfOperation typeOf => typeOf.TypeOperand,
-            IInvocationOperation { TargetMethod.Name: "GetType", Instance: { } instance } => instance.Type,
-            _ => null,
-        };
-        return type is INamedTypeSymbol named && named.ContainingAssembly?.Name is { } assembly
-            && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)) ? named : null;
+            value = conversion.Operand;
+        }
+        switch (value)
+        {
+            case ITypeOfOperation typeOf:
+                return LeveeType(typeOf.TypeOperand);
+            case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: false }, Instance: { } instance, Arguments.Length: 0 }:
+                return LeveeType(instance.Type);
+            case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: true } named } byName when named.ContainingType.ToDisplayString() == "System.Type":
+                return byName.Arguments.FirstOrDefault()?.Value.ConstantValue.Value is string name && name.Split(',')[0].Trim() is var full
+                    && full.StartsWith("Levee.", StringComparison.Ordinal) ? full.Substring(full.LastIndexOfAny(['.', '+']) + 1) : null;
+            case IInvocationOperation { TargetMethod.Name: "GetTypeInfo" or "AsType" } info:
+                return Denoted(info.Instance ?? info.Arguments.FirstOrDefault()?.Value, depth);
+            case ILocalReferenceOperation local when depth < 4:
+                var root = value;
+                while (root.Parent is not null)
+                {
+                    root = root.Parent;
+                }
+                return root.Descendants()
+                    .Select(o => o switch
+                    {
+                        IVariableDeclaratorOperation d when SymbolEqualityComparer.Default.Equals(d.Symbol, local.Local) => d.Initializer?.Value,
+                        ISimpleAssignmentOperation { Target: ILocalReferenceOperation target } a when SymbolEqualityComparer.Default.Equals(target.Local, local.Local) => a.Value,
+                        _ => null,
+                    })
+                    .Select(v => v is null ? null : Denoted(v, depth + 1))
+                    .FirstOrDefault(t => t is not null);
+            case IFieldReferenceOperation field when depth < 4 && value.SemanticModel is { } model:
+                return field.Field.DeclaringSyntaxReferences
+                    .Where(r => r.SyntaxTree == model.SyntaxTree)
+                    .Select(r => (r.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax)?.Initializer?.Value)
+                    .Select(v => v is null ? null : Denoted(model.GetOperation(v), depth + 1))
+                    .FirstOrDefault(t => t is not null);
+            default:
+                return null;
+        }
+    }
+
+    private static string? LeveeType(ITypeSymbol? type) =>
+        type is INamedTypeSymbol named && named.ContainingAssembly?.Name is { } assembly
+            && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)) ? named.Name : null;
+
+    /// <summary>An [UnsafeAccessor] onto one of Levee's types: a call into what it keeps internal, with no lookup to see.</summary>
+    private static void OnUnsafeAccessor(SymbolAnalysisContext context)
+    {
+        var method = (IMethodSymbol)context.Symbol;
+        if (!method.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorAttribute"))
+        {
+            return;
+        }
+        static string? Named(ImmutableArray<AttributeData> attributes) =>
+            attributes.Where(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorTypeAttribute")
+                .Select(a => a.ConstructorArguments.FirstOrDefault().Value as string)
+                .Select(n => n?.Split(',')[0].Trim())
+                .FirstOrDefault(n => n?.StartsWith("Levee.", StringComparison.Ordinal) == true) is { } full ? full.Substring(full.LastIndexOfAny(['.', '+']) + 1) : null;
+        var target = method.Parameters.Select(p => LeveeType(p.Type) ?? Named(p.GetAttributes())).FirstOrDefault(t => t is not null)
+            ?? LeveeType(method.ReturnType) ?? Named(method.GetReturnTypeAttributes());
+        if (target is not null && method.Locations.FirstOrDefault() is { IsInSource: true } location)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, location, $"[UnsafeAccessor] {method.Name}", target));
+        }
     }
 
     private static void OnCall(OperationAnalysisContext context, Role role, IMethodSymbol method)
