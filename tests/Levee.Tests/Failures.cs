@@ -1139,3 +1139,26 @@ public sealed class SchemaTests
         Assert.Empty((System.Text.Json.Nodes.JsonObject)schema["properties"]!["to"]!);
     }
 }
+
+public interface ILabelled
+{
+    string Label { get; }
+}
+
+public sealed record Labelled([property: Personal] string Label, List<int> Counts) : ILabelled;
+
+public sealed record Labels(ILabelled Item, List<int> Counts);
+
+public sealed class NumbersAsStringsTests
+{
+    [Fact]
+    public void Numbers_written_as_strings_keep_both_their_format_and_every_mark()
+    {
+        var options = LeveeJson.Create(o => o.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.WriteAsString);
+
+        var audited = LeveeJson.Redact(new Labels(new Labelled("Example label", [1]), [7]), typeof(Labels), options);
+
+        Assert.DoesNotContain("Example label", audited, StringComparison.Ordinal);
+        Assert.Contains("\"counts\":[\"7\"]", audited, StringComparison.Ordinal);
+    }
+}

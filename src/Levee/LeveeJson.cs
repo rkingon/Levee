@@ -141,7 +141,7 @@ public static class LeveeJson
             // collection, is the serializer's alone, so there the member is left to it.
             else if (MayMarkAtRunTime(info, property) && property.Get is { } get && json.ReferenceHandler is null
                 && !((property.NumberHandling ?? info.NumberHandling ?? json.NumberHandling) is { } handling && handling.HasFlag(JsonNumberHandling.WriteAsString)
-                    && !OwnTypeConverterNumbers.Contains(Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType)))
+                    && HoldsNumbers(property.PropertyType)))
             {
                 var provider = property.AttributeProvider;
                 property.Get = owner =>
@@ -158,6 +158,14 @@ public static class LeveeJson
     private static bool MayMarkAtRunTime(JsonTypeInfo info, JsonPropertyInfo property) =>
         info.Type.IsInterface
         || (property.AttributeProvider is System.Reflection.PropertyInfo { GetMethod: { IsVirtual: true, IsFinal: false } } && !info.Type.IsSealed);
+
+    /// <summary>A collection of numbers: what number handling formats that this converter can't reproduce (a scalar it can).</summary>
+    private static bool HoldsNumbers(Type type) =>
+        type != typeof(string) && (type.IsArray ? type.GetElementType() : type.GetInterfaces().Prepend(type)
+            .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEnumerable<>))?.GetGenericArguments()[0]) is { } element
+        && (OwnTypeConverterNumbers.Contains(Nullable.GetUnderlyingType(element) ?? element)
+            || (element.IsGenericType && element.GetGenericTypeDefinition() == typeof(KeyValuePair<,>)
+                && OwnTypeConverterNumbers.Contains(Nullable.GetUnderlyingType(element.GetGenericArguments()[1]) ?? element.GetGenericArguments()[1])));
 
     private static readonly HashSet<Type> OwnTypeConverterNumbers =
     [
