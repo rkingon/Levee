@@ -591,9 +591,10 @@ public sealed record FindHomes([property: Description("The area's five-digit zip
 ```
 
   A member's `[Description]` (System.ComponentModel's) is its description in every schema: the catalog's and each MCP
-  tool's. The contract wire is Levee's: `LeveeJson.Create` takes no converter or type resolver, and `LeveeOptions.Json`
-  only options it made, so a value's JSON is its value object's own (on the type, where the build sees it) and a .NET
-  type's is System.Text.Json's. On the way in, a value object's converter is handed only the JSON its `[ValueObject]`
+  tool's. The contract wire is Levee's, one and unconfigurable (`LeveeJson.Options`): strict, with
+  numbers as numbers, so a value's JSON is its value object's own (on the type, where the build sees it) and a .NET
+  type's is System.Text.Json's. A contract can't loosen it either: `[JsonNumberHandling]`,
+  `[JsonUnmappedMemberHandling(Skip)]` and `[JsonExtensionData]` are refused, in the build and on the wire. On the way in, a value object's converter is handed only the JSON its `[ValueObject]`
   says it writes, so a converter that would take anything can't make its schema a lie.
 
 ## LEVEE105: Operations with effects declare their idempotency

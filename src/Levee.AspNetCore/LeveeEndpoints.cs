@@ -46,7 +46,7 @@ public static class LeveeEndpointRouteBuilderExtensions
         }
         group.MapGet("", async (HttpContext http, Dispatcher dispatcher, LeveeOptions options) => await Identify(http) is { Failure: { } failure }
             ? Fail(failure, http, options)
-            : Results.Json(dispatcher.Catalog.All.Where(d => !d.Internal).Select(d => View(d, dispatcher.Catalog.Refusals, options.Json)), options.Json));
+            : Results.Json(dispatcher.Catalog.All.Where(d => !d.Internal).Select(d => View(d, dispatcher.Catalog.Refusals, LeveeJson.Options)), LeveeJson.Options));
         group.MapPost("{name}", async (string name, HttpContext http, Dispatcher dispatcher, LeveeOptions options) =>
         {
             var identified = await Identify(http);
@@ -63,7 +63,7 @@ public static class LeveeEndpointRouteBuilderExtensions
                 body.Position = 0;
                 try
                 {
-                    input = await JsonSerializer.DeserializeAsync<JsonElement>(body, options.Json, http.RequestAborted);
+                    input = await JsonSerializer.DeserializeAsync<JsonElement>(body, LeveeJson.Options, http.RequestAborted);
                 }
                 catch (JsonException e)
                 {
@@ -71,7 +71,7 @@ public static class LeveeEndpointRouteBuilderExtensions
                 }
             }
             var result = await dispatcher.SendFromClientAsync(name, input, caller, http.RequestAborted);
-            return result.IsSuccess ? Results.Json(result.Value, options.Json) : Fail(result.Error, http, options);
+            return result.IsSuccess ? Results.Json(result.Value, LeveeJson.Options) : Fail(result.Error, http, options);
         });
         group.MapGet("{name}/events", async (string name, string? input, HttpContext http, Dispatcher dispatcher, LeveeOptions options) =>
         {
@@ -86,7 +86,7 @@ public static class LeveeEndpointRouteBuilderExtensions
                 try
                 {
                     // As a call's body is read: by the app's own wire options.
-                    parsed = JsonSerializer.Deserialize<JsonElement>(input, options.Json);
+                    parsed = JsonSerializer.Deserialize<JsonElement>(input, LeveeJson.Options);
                 }
                 catch (JsonException e)
                 {
@@ -235,7 +235,7 @@ public static class LeveeEndpointRouteBuilderExtensions
     }
 
     private static SseItem<string> Failure(Error error, HttpContext http, LeveeOptions options) =>
-        new(JsonSerializer.Serialize(Problem(error, http), options.Json), "error");
+        new(JsonSerializer.Serialize(Problem(error, http), LeveeJson.Options), "error");
 
     private static OperationView View(OperationDescriptor d, IReadOnlyList<string> refusals, JsonSerializerOptions json) => new(
         d.Name, d.Summary, d.Access, d.Effects, d.Idempotency, d.ReadOnly, d.Streams,
@@ -252,7 +252,7 @@ public static class LeveeEndpointRouteBuilderExtensions
         return values;
     }
 
-    private static IResult Fail(Error error, HttpContext http, LeveeOptions options) => LeveeProblems.Result(error, http, options.Json);
+    private static IResult Fail(Error error, HttpContext http, LeveeOptions options) => LeveeProblems.Result(error, http, LeveeJson.Options);
 
     private static ProblemView Problem(Error error, HttpContext http) => LeveeProblems.Problem(error, http);
 }

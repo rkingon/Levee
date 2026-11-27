@@ -59,14 +59,12 @@ public sealed class OptionsConverterTests
     }
 
     [Fact]
-    public void The_contract_wire_takes_no_converter_but_a_value_objects_own()
+    public void The_contract_wire_is_one_and_closed()
     {
-        var refused = Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(j => j.Converters.Add(new Loud())));
-
-        Assert.Contains("put the converter on the value's own type", refused.Message, StringComparison.Ordinal);
-        Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(j => j.TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()));
-        Assert.Throws<ArgumentException>(() => new LeveeOptions { Json = new JsonSerializerOptions(JsonSerializerDefaults.Web) });
-        Assert.Same(LeveeJson.Options, new LeveeOptions().Json);
+        Assert.True(LeveeJson.Options.IsReadOnly);
+        Assert.Throws<InvalidOperationException>(() => LeveeJson.Options.Converters.Add(new Loud()));
+        Assert.Null(typeof(LeveeJson).GetMethod("Create", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static));
+        Assert.Null(typeof(LeveeOptions).GetProperty("Json"));
     }
 }
 

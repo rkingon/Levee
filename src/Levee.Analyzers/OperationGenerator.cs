@@ -723,6 +723,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, Numbers);
         }
+        // Skip is 0: members it doesn't know are dropped, not refused.
+        if (named.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonUnmappedMemberHandlingAttribute"
+            && a.ConstructorArguments.FirstOrDefault().Value is 0))
+        {
+            return (here, "skips members it doesn't know ([JsonUnmappedMemberHandling(Skip)]), so a misspelt field is dropped, not refused. Fix: drop it; the wire refuses what a contract doesn't declare");
+        }
         if (NotScalar(named, here) is { } declaredOtherwise)
         {
             return declaredOtherwise;
@@ -746,6 +752,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, Numbers);
             }
+            if (member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonExtensionDataAttribute"))
+            {
+                return (at, "takes every member it doesn't declare ([JsonExtensionData]), which no schema shows. Fix: declare each member it takes");
+            }
             if (Converted(member))
             {
                 return (at, "has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes");
@@ -753,6 +763,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
             if (Shapeless(memberType, seen, at) is { } found)
             {
                 return found;
+            }
+        }
+        // An interface is written with the members of every interface it extends.
+        foreach (var extended in named.TypeKind == TypeKind.Interface ? named.Interfaces : [])
+        {
+            if (Shapeless(extended, seen, path) is { } inExtended)
+            {
+                return inExtended;
             }
         }
         return named.BaseType is { SpecialType: not SpecialType.System_Object } baseType ? Shapeless(baseType, seen, path) : null;

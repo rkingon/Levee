@@ -979,8 +979,6 @@ public class Settings
 
     public int Count { get; init; }
 
-    [System.Text.Json.Serialization.JsonExtensionData]
-    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
 }
 
 public sealed record Configured(Settings Settings);
@@ -1012,7 +1010,6 @@ public sealed class FourteenthAuditFixTests
         {
             Level = Level.High,
             Count = 7,
-            Extra = new() { ["note"] = System.Text.Json.JsonSerializer.SerializeToElement("kept") },
         });
 
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(settings, LeveeJson.Options), LeveeJson.Redact(settings, typeof(Configured)));
@@ -1096,16 +1093,6 @@ public sealed class FifteenthAuditFixTests
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(tallies, LeveeJson.Options), LeveeJson.Redact(tallies, typeof(Tallies)));
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(shows, LeveeJson.Options), LeveeJson.Redact(shows, typeof(Shows)));
     }
-
-    [Fact]
-    public void Preserved_references_redact_as_the_serializer_writes_them()
-    {
-        var options = LeveeJson.Create(o => o.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.Preserve);
-        var shared = new Shown();
-        var both = new[] { shared, shared };
-
-        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(both, options), LeveeJson.Redact(both, typeof(Shown[]), options));
-    }
 }
 
 [Operation("probe.tally", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
@@ -1156,8 +1143,6 @@ public sealed class NumbersAsStringsTests
     [Fact]
     public void Numbers_are_numbers_on_the_wire_and_marks_hold_through_an_interface()
     {
-        Assert.Throws<InvalidOperationException>(() => LeveeJson.Create(o => o.NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.WriteAsString));
-
         var audited = LeveeJson.Redact(new Labels(new Labelled("Example label", [1]), [7]), typeof(Labels));
 
         Assert.DoesNotContain("Example label", audited, StringComparison.Ordinal);

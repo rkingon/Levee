@@ -99,3 +99,6 @@ static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, strin
 static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
 *REMOVED*Levee.IUnitOfWork.Scope.get -> Levee.WorkScope!
 *REMOVED*Levee.IUnitOfWorkFactory.BeginAsync(Levee.WorkScope! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.IUnitOfWork!>!
+*REMOVED*Levee.LeveeOptions.Json.get -> System.Text.Json.JsonSerializerOptions!
+*REMOVED*Levee.LeveeOptions.Json.set -> void
+*REMOVED*static Levee.LeveeJson.Create(System.Action<System.Text.Json.JsonSerializerOptions!>? configure = null) -> System.Text.Json.JsonSerializerOptions!

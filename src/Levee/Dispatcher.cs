@@ -80,7 +80,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -141,7 +141,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -159,7 +159,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             JsonElement json;
             try
             {
-                json = JsonSerializer.SerializeToElement(item, descriptor.ResultType, options.Json);
+                json = JsonSerializer.SerializeToElement(item, descriptor.ResultType, LeveeJson.Options);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -258,14 +258,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.Streams, $"{descriptor.Name} streams: subscribe to it.");
         }
-        var operation = OperationCatalog.Deserialize(descriptor, input, options.Json, e => LogInputRefused(log, e, descriptor.Name));
+        var operation = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
         }
         // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
         var result = await RunAsync(descriptor, operation.Value, principal,
-            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, options.Json), pinned, ct);
+            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, LeveeJson.Options), pinned, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
@@ -394,7 +394,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return found.Error;
         }
-        var operation = OperationCatalog.Deserialize(found.Value, input, options.Json, e => LogInputRefused(log, e, found.Value.Name));
+        var operation = OperationCatalog.Deserialize(found.Value, input, LeveeJson.Options, e => LogInputRefused(log, e, found.Value.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
@@ -625,7 +625,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
-    private string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), options.Json);
+    private static string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), LeveeJson.Options);
 
     /// <summary>
     /// The input for an outcome, which is told after the commit: an input that can't be serialized (a getter that throws) is a
@@ -674,17 +674,6 @@ public sealed class OperationFailedException(Error error, Exception inner) : Exc
 
 public sealed class LeveeOptions
 {
-    private JsonSerializerOptions _json = LeveeJson.Options;
-
-    /// <summary>The contract wire: Levee's own options, or ones <see cref="LeveeJson.Create"/> made.</summary>
-    public JsonSerializerOptions Json
-    {
-        get => _json;
-        set => _json = value is not null && LeveeJson.IsLevees(value)
-            ? value
-            : throw new ArgumentException("Contract JSON is Levee's: set options LeveeJson.Create made, so every schema says what the wire carries.", nameof(value));
-    }
-
     /// <summary>
     /// A handler failing with a code its operation doesn't declare is a bug, answered <c>internal</c>, rather than only
     /// logged. For tests, where every path an assertion takes is checked against the contract; production keeps the code.

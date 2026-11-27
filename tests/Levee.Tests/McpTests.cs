@@ -18,7 +18,7 @@ public sealed class McpTests
     {
         var services = DispatcherTests.Services(new Store(), new Outcomes());
         var dispatcher = services.GetRequiredService<Dispatcher>();
-        var tools = OperationTool.For(services.GetRequiredService<OperationCatalog>(), services.GetRequiredService<LeveeOptions>(),
+        var tools = OperationTool.For(services.GetRequiredService<OperationCatalog>(),
             mcp ?? new LeveeMcpOptions { Principal = _ => ValueTask.FromResult<Principal?>(Ada) });
         return ((name, input, ct) => dispatcher.SendFromClientAsync(name, input, caller ?? Ada, ct), tools);
     }
@@ -65,7 +65,7 @@ public sealed class McpTests
             OperationDescriptor.Create<Crash, Unit>("a_b.c", "", "member", Effects.Read, Idempotency.Safe, platform: true),
         ]);
 
-        var clash = Assert.Throws<InvalidOperationException>(() => OperationTool.For(catalog, new LeveeOptions(), new LeveeMcpOptions()));
+        var clash = Assert.Throws<InvalidOperationException>(() => OperationTool.For(catalog, new LeveeMcpOptions()));
 
         Assert.Contains("a_b_c", clash.Message, StringComparison.Ordinal);
     }

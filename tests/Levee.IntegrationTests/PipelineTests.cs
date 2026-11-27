@@ -1010,6 +1010,25 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
     }
 
+    [Theory]
+    [InlineData("insert on reach_inherited.levee_audit", "reach_inherited.levee_audit")]
+    [InlineData("truncate on reach_inherited.held", "reach_inherited.held")]
+    public async Task Grants_fail_on_what_the_role_reaches_through_a_role_it_belongs_to(string privilege, string named)
+    {
+        var suffix = named.EndsWith("audit", StringComparison.Ordinal) ? "a" : "t";
+        await postgres.ExecuteAsync($"create schema if not exists reach_inherited; create role reach_app_{suffix}; create role reach_group_{suffix}; grant reach_group_{suffix} to reach_app_{suffix};");
+        if (await postgres.CountAsync("select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'reach_inherited' and p.proname = 'levee_scope'") == 0)
+        {
+            await postgres.ExecuteAsync(LeveeSchema.Create("reach_inherited") + "create table reach_inherited.held (id int, tenant text);"
+                + LeveeSchema.Isolation("reach_inherited.held", "tenant", schema: "reach_inherited"));
+        }
+        await postgres.ExecuteAsync($"grant usage on schema reach_inherited to reach_group_{suffix}; grant {privilege} to reach_group_{suffix};");
+
+        var refused = await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(LeveeSchema.Grants($"reach_app_{suffix}", "reach_inherited")));
+
+        Assert.Contains(named, refused.MessageText, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task A_table_named_like_oxbows_is_checked_as_the_apps()
     {

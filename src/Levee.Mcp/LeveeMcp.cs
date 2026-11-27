@@ -76,7 +76,7 @@ public static class LeveeMcpBuilderExtensions
             var catalog = mcp.Catalog ?? services.GetService<OperationCatalog>()
                 ?? throw new InvalidOperationException("No catalog to project: register Levee (AddLeveeOperations), or set LeveeMcpOptions.Catalog.");
             options.ToolCollection ??= [];
-            foreach (var tool in OperationTool.For(catalog, services.GetService<LeveeOptions>() ?? new LeveeOptions(), mcp))
+            foreach (var tool in OperationTool.For(catalog, mcp))
             {
                 options.ToolCollection.Add(tool);
             }
@@ -85,7 +85,7 @@ public static class LeveeMcpBuilderExtensions
     }
 }
 
-internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, LeveeOptions levee, LeveeMcpOptions mcp) : McpServerTool
+internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, LeveeMcpOptions mcp) : McpServerTool
 {
     public override Tool ProtocolTool => tool;
 
@@ -93,16 +93,16 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
 
     public OperationDescriptor Descriptor => descriptor;
 
-    private readonly HashSet<string> _inputs = LeveeJson.Schema(descriptor.InputType, levee.Json)["properties"] is System.Text.Json.Nodes.JsonObject properties
+    private readonly HashSet<string> _inputs = LeveeJson.Schema(descriptor.InputType, LeveeJson.Options)["properties"] is System.Text.Json.Nodes.JsonObject properties
         ? properties.Select(p => p.Key).ToHashSet(StringComparer.OrdinalIgnoreCase)
         : [];
 
     private bool Takes(string input) => _inputs.Contains(input);
 
-    public static List<OperationTool> For(OperationCatalog catalog, LeveeOptions levee, LeveeMcpOptions mcp)
+    public static List<OperationTool> For(OperationCatalog catalog, LeveeMcpOptions mcp)
     {
         var tools = catalog.All.Where(d => !d.Internal && !d.Streams && (mcp.Include?.Invoke(d) ?? true))
-            .Select(d => new OperationTool(d, Describe(d, levee, mcp.BoundInputs), levee, mcp))
+            .Select(d => new OperationTool(d, Describe(d, mcp.BoundInputs), mcp))
             .ToList();
         if (tools.GroupBy(t => t.ProtocolTool.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } clash)
         {
@@ -116,9 +116,9 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         return tools;
     }
 
-    private static Tool Describe(OperationDescriptor d, LeveeOptions levee, IReadOnlyCollection<string> bound)
+    private static Tool Describe(OperationDescriptor d, IReadOnlyCollection<string> bound)
     {
-        var schema = LeveeJson.Schema(d.InputType, levee.Json);
+        var schema = LeveeJson.Schema(d.InputType, LeveeJson.Options);
         if (schema is JsonObject root)
         {
             (root["properties"] as JsonObject)?.ToList().Where(p => bound.Contains(p.Key, StringComparer.OrdinalIgnoreCase)).ToList().ForEach(p => ((JsonObject)root["properties"]!).Remove(p.Key));
@@ -217,7 +217,7 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
             }
             merged[name] = value;
         }
-        var result = await send(descriptor.Name, JsonSerializer.SerializeToElement(merged, levee.Json), ct);
+        var result = await send(descriptor.Name, JsonSerializer.SerializeToElement(merged, LeveeJson.Options), ct);
         if (!result.IsSuccess)
         {
             return Failed(result.Error);
@@ -246,14 +246,14 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
         };
     }
 
-    private CallToolResult Failed(Error error) => new()
+    private static CallToolResult Failed(Error error) => new()
     {
         IsError = true,
         Content =
         [
             new TextContentBlock
             {
-                Text = JsonSerializer.Serialize(ProblemView.From(error, Activity.Current?.TraceId.ToHexString() ?? ActivityTraceId.CreateRandom().ToHexString()), levee.Json),
+                Text = JsonSerializer.Serialize(ProblemView.From(error, Activity.Current?.TraceId.ToHexString() ?? ActivityTraceId.CreateRandom().ToHexString()), LeveeJson.Options),
             },
         ],
     };

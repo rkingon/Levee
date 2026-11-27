@@ -10,16 +10,14 @@ namespace Levee;
 /// <summary>The wire format. Strict: unknown members and missing required parameters are refused.</summary>
 public static class LeveeJson
 {
-    // Before Options, which registers itself here as it's made.
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<JsonSerializerOptions, object> Made = [];
-
+    /// <summary>
+    /// The contract wire, the only one: strict (unknown members refused, nullability and required parameters respected, every
+    /// member written, numbers as numbers), enums by name, and a value's own JSON its value object's. Nothing configures it:
+    /// every schema Levee shows is this wire's, so a setting changed would make each of them a promise the wire breaks.
+    /// </summary>
     public static JsonSerializerOptions Options { get; } = Create();
 
-    /// <summary>
-    /// The strict defaults, for an app that sets what the wire leaves open (naming, depth). A value's own JSON (a typed id) is
-    /// its value object's, <c>[JsonConverter]</c> with <c>[ValueObject]</c> on its type, never a converter added here.
-    /// </summary>
-    public static JsonSerializerOptions Create(Action<JsonSerializerOptions>? configure = null)
+    private static JsonSerializerOptions Create()
     {
         var o = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {
@@ -31,39 +29,12 @@ public static class LeveeJson
             NumberHandling = JsonNumberHandling.Strict,
             // An API's JSON, never embedded in HTML: '+' in a timestamp reads as '+'.
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Closed } },
         };
-        configure?.Invoke(o);
-        // Strict is the wire's, not the callback's: what it leaves loosened, every schema would misstate.
-        if (o.UnmappedMemberHandling != JsonUnmappedMemberHandling.Disallow || !o.RespectNullableAnnotations || !o.RespectRequiredConstructorParameters
-            || o.DefaultIgnoreCondition != JsonIgnoreCondition.Never)
-        {
-            throw new InvalidOperationException(
-                "Contract JSON is Levee's, and strict: unknown members refused, nullability and required parameters respected, every member written. "
-                + "Fix: leave those as LeveeJson.Create sets them; the callback is for what the wire leaves open (naming, depth, references).");
-        }
-        // The contract wire is Levee's: a value's own JSON is its value object's ([JsonConverter] with [ValueObject]), which
-        // the build sees and the schema says. A converter or a resolver handed in here would be neither.
-        // How numbers are written is the wire's too: a number the schema says is a number is one, both ways.
-        if (o.NumberHandling != JsonNumberHandling.Strict)
-        {
-            throw new InvalidOperationException(
-                "Contract JSON is Levee's: number handling changes what every schema says a number is. Fix: leave it strict; a value that must travel "
-                + "as a string (an id past 2^53) is a value object, [ValueObject(typeof(string))] with its converter.");
-        }
-        if (o.Converters.Count > 0 || o.TypeInfoResolver is not null)
-        {
-            throw new InvalidOperationException(
-                "Contract JSON is Levee's: a converter or a type resolver in its options rewrites what every schema says. Fix: put the converter on the "
-                + "value's own type, [JsonConverter(typeof(...))] with [ValueObject(typeof(T))] saying what it writes; a .NET type keeps the JSON "
-                + "System.Text.Json gives it.");
-        }
-        // Levee's own, after the callback, so none can remove them: enums by name, and a value object's converter handed only the
-        // JSON its [ValueObject] says it writes.
+        // A value object's converter is handed only the JSON its [ValueObject] says it writes.
         o.Converters.Add(new ValueObjectWire());
         o.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
-        o.TypeInfoResolver = new DefaultJsonTypeInfoResolver { Modifiers = { Closed } };
         o.MakeReadOnly();
-        Made.AddOrUpdate(o, Made);
         return o;
     }
 
@@ -74,6 +45,18 @@ public static class LeveeJson
     /// </summary>
     private static void Closed(JsonTypeInfo info)
     {
+        if (info.UnmappedMemberHandling == JsonUnmappedMemberHandling.Skip)
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name} skips members it doesn't know ([JsonUnmappedMemberHandling(Skip)]), so a misspelt field is dropped, not refused. "
+                + "Fix: drop it; the wire refuses what a contract doesn't declare (LEVEE104).");
+        }
+        if (info.Properties.FirstOrDefault(p => p.IsExtensionData) is { } extension)
+        {
+            throw new InvalidOperationException(
+                $"{info.Type.Name}.{extension.Name} takes every member it doesn't declare ([JsonExtensionData]), which no schema shows. "
+                + "Fix: declare each member it takes (LEVEE104).");
+        }
         if (info.NumberHandling is { } typeNumbers && typeNumbers != JsonNumberHandling.Strict)
         {
             throw new InvalidOperationException(
@@ -112,8 +95,6 @@ public static class LeveeJson
 
     private interface IValueObjectWire;
 
-    /// <summary>Whether <paramref name="options"/> are Levee's own, made by <see cref="Create"/>.</summary>
-    internal static bool IsLevees(JsonSerializerOptions options) => Made.TryGetValue(options, out _);
 
     /// <summary>
     /// What a value object's schema promises (a string, a number), held on the way in: JSON of another kind is refused before
