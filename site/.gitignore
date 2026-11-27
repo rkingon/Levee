@@ -1,0 +1,6 @@
+dist/
+.astro/
+node_modules/
+
+# Generated from ../docs and ../README.md on every dev and build; edit those instead.
+src/content/docs/
