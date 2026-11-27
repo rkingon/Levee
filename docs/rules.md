@@ -370,9 +370,19 @@ dispatched as the system. Work as the database's owner is a Tool's; Composition 
 to configure the context with.
 
 A separate bounded context's context (`[SeparateContext]`: identity's, for the library that serves it) is outside every
-operation, so the app's own code never holds it: a field, a property, a parameter or a return of it outside Composition,
-a Host or a Tool fails the build. Only the library's registration names it. See
+operation, so the app's own code never holds it, in any role: a field, a property, a parameter, a local, a return of it,
+or resolving it from the container (`GetRequiredService<IdentityDb>()`) fails the build, in Composition, a Host and a Tool
+too. Only the library's registration names it, as a type argument; EF's design-time factory for it is `dotnet ef`'s. See
 [postgres.md](postgres.md#outside-an-operation).
+
+```csharp
+// Wrong: in Composition, a Host or a Tool as anywhere
+var identity = provider.GetRequiredService<IdentityDb>();
+
+// Right: named for the library to use
+services.AddDbContext<IdentityDb>(o => o.UseNpgsql(identityConnectionString));
+services.AddOpenIddict().AddCore(o => o.UseEntityFrameworkCore().UseDbContext<IdentityDb>());
+```
 
 ## LEVEE019: Aggregate roots live in Domain
 

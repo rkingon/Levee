@@ -47,10 +47,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
-            if (!Roles.Composes(role))
-            {
-                start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
-            }
+            start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnSeparateContextHeld(c)), OperationKind.VariableDeclarator, OperationKind.AnonymousFunction,
+                OperationKind.LocalFunction);
             if (role != Role.Tool)
             {
                 start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Property);
@@ -291,8 +290,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
         // A context of its own is a connection of its own; EF's design-time factory (dotnet ef) is the one exception.
-        else if (role != Role.Tool && Derives(type, "Microsoft.EntityFrameworkCore.DbContext")
-            && context.ContainingSymbol.ContainingType?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") != true)
+        else if (role != Role.Tool && Derives(type, "Microsoft.EntityFrameworkCore.DbContext") && !DesignTime(context.ContainingSymbol.ContainingType))
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.SideConnection, context.Operation.Syntax.GetLocation(), $"new {type!.Name}"));
         }
@@ -359,11 +357,15 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 || receiver.AllInterfaces.Any(i => i.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"));
     }
 
-    /// <summary>A separate bounded context's DbContext held by the app's own code: only the library it serves, registered where the app composes, uses it.</summary>
+    /// <summary>
+    /// A separate bounded context's DbContext held by the app's own code, in any role: only the library it serves uses it. Where
+    /// the app composes, it's named as a registration's type argument (<c>AddDbContext&lt;T&gt;</c>, <c>UseDbContext&lt;T&gt;</c>,
+    /// <c>typeof(T)</c>), never held.
+    /// </summary>
     private static void OnSeparateContext(SymbolAnalysisContext context)
     {
         var symbol = context.Symbol;
-        if (symbol.IsImplicitlyDeclared || symbol.ContainingType is not { } owner || Separate(owner) is not null
+        if (symbol.IsImplicitlyDeclared || symbol.ContainingType is not { } owner || Separate(owner) is not null || DesignTime(owner)
             || symbol.Locations.FirstOrDefault() is not { IsInSource: true } location || Known.IsLeveeGenerated(location.SourceTree))
         {
             return;
@@ -381,6 +383,22 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
+    /// <summary>A local, or a lambda's or local function's parameter or return, holding a separate bounded context's DbContext.</summary>
+    private static void OnSeparateContextHeld(OperationAnalysisContext context)
+    {
+        var (name, types) = context.Operation switch
+        {
+            IVariableDeclaratorOperation local => (local.Symbol.Name, new[] { local.Symbol.Type }),
+            IAnonymousFunctionOperation lambda => ("a lambda", lambda.Symbol.Parameters.Select(p => p.Type).Append(lambda.Symbol.ReturnType).ToArray()),
+            ILocalFunctionOperation function => (function.Symbol.Name, function.Symbol.Parameters.Select(p => p.Type).Append(function.Symbol.ReturnType).ToArray()),
+            _ => ("", []),
+        };
+        if (context.ContainingSymbol.ContainingType is { } owner && Separate(owner) is null && !DesignTime(owner) && types.Select(Separate).FirstOrDefault(t => t is not null) is { } separate)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SeparateContextReach, context.Operation.Syntax.GetLocation(), $"{owner.Name}: {name}", separate.Name));
+        }
+    }
+
     /// <summary>A DbContext marked as a separate bounded context's, or one wrapped (Task&lt;T&gt;, Lazy&lt;T&gt;, IDbContextFactory&lt;T&gt;).</summary>
     private static INamedTypeSymbol? Separate(ITypeSymbol? type) => type switch
     {
@@ -390,6 +408,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         IArrayTypeSymbol array => Separate(array.ElementType),
         _ => null,
     };
+
+    /// <summary>EF's design-time factory: dotnet ef's to call, by reflection, to make a context for its tooling.</summary>
+    private static bool DesignTime(INamedTypeSymbol? type) => type?.AllInterfaces.Any(i => i.Name == "IDesignTimeDbContextFactory") == true;
 
     private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is
         "FromServicesAttribute" or "FromKeyedServicesAttribute" or "InjectAttribute");
@@ -499,6 +520,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
         if (role != Role.Tool && method.Name == "Run" && method.ContainingType.ToDisplayString() == "Levee.EntityFrameworkCore.LeveeOwner")
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.OwnerRun, context.Operation.Syntax.GetLocation()));
+            return;
+        }
+        // Resolving it is holding it, wherever the app composes too.
+        if (LocatorMembers.Contains(method.Name) && IsLocator(method)
+            && (method.TypeArguments.Select(Separate).FirstOrDefault(c => c is not null)
+                ?? (context.Operation as IInvocationOperation)?.Arguments.Select(a => (a.Value as ITypeOfOperation)?.TypeOperand).Select(Separate).FirstOrDefault(c => c is not null)) is { } resolved)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SeparateContextReach, context.Operation.Syntax.GetLocation(), $"{method.Name}<{resolved.Name}>", resolved.Name));
             return;
         }
         var made = method.TypeArguments.FirstOrDefault() as INamedTypeSymbol;

@@ -98,7 +98,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} reaches {1}, a separate bounded context's store ([SeparateContext]), from the app's own code: its data is outside every operation, unscoped and unaudited. Fix: leave {1} to the library it serves (registered in Composition or the Host); what the app needs of that context is an operation of its own, or a port the context's adapter serves through the unit of work");
+        "{0} reaches {1}, a separate bounded context's store ([SeparateContext]), from the app's own code: its data is outside every operation, unscoped and unaudited. Fix: leave {1} to the library it serves, and name it only as a registration's type argument in Composition or the Host (AddDbContext<{1}>, UseDbContext<{1}>), never as a parameter, field, property or local, nor resolved from the container; what the app needs of that context is an operation of its own, or a port the context's adapter serves through the unit of work");
 
     public static readonly DiagnosticDescriptor OwnerRun = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",

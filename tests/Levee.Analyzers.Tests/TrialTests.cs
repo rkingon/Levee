@@ -79,21 +79,34 @@ public sealed class TrialTests
 
     private const string Identity = """
         namespace Microsoft.EntityFrameworkCore { public class DbContextOptions { } public class DbContext { public DbContext(DbContextOptions o) { } } }
+        namespace Microsoft.EntityFrameworkCore.Design { public interface IDesignTimeDbContextFactory<T> { T CreateDbContext(string[] args); } }
         namespace Levee.EntityFrameworkCore { [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class SeparateContextAttribute(string library) : System.Attribute; }
         [Levee.EntityFrameworkCore.SeparateContext("OpenIddict")]
         public sealed class IdentityDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o) { public IdentityDb Self() => this; }
         public sealed class AppDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o);
+        public static class Ef { public static void AddDbContext<T>(this Microsoft.Extensions.DependencyInjection.IServiceCollection services) { } }
+
         """;
 
     [Theory]
     [InlineData("Adapter", "public sealed class Clients(IdentityDb db) { public int Count => 0; }", true)]
     [InlineData("Adapter", "public sealed class Notes(AppDb db) { public int Count => 0; }", false)]
-    [InlineData("Composition", "public static class Wiring { public static System.Type Store(IdentityDb? db) => typeof(IdentityDb); }", false)]
-    [InlineData("Host", "public static class Program { public static void Main(IdentityDb? db) { } }", false)]
+    [InlineData("Composition", "internal static class Wiring { public static System.Type Store(Microsoft.Extensions.DependencyInjection.IServiceCollection s) { s.AddDbContext<IdentityDb>(); return typeof(IdentityDb); } }", false)]
+    [InlineData("Composition", "internal static class Wiring { public static System.Type Store(IdentityDb? db) => typeof(IdentityDb); }", true)]
+    [InlineData("Composition", "internal static class Wiring { public static object Seed(System.IServiceProvider sp) => Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService<IdentityDb>(sp); }", true)]
+    [InlineData("Composition", "internal static class Wiring { public static object? Seed(System.IServiceProvider sp) => sp.GetService(typeof(IdentityDb)); }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { } public static void Run(IdentityDb? db) { } }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { IdentityDb? db = null; } }", true)]
+    [InlineData("Host", "public static class Program { public static void Main() { System.Func<IdentityDb, int> count = db => 0; } }", true)]
+    [InlineData("Tool", "internal static class Migrate { public static void Run(IdentityDb db) { } }", true)]
+    [InlineData("Tool", "internal sealed class Design : Microsoft.EntityFrameworkCore.Design.IDesignTimeDbContextFactory<IdentityDb> { public IdentityDb CreateDbContext(string[] args) => null!; }", false)]
     public async Task A_separate_bounded_contexts_store_is_left_to_the_library_it_serves(string role, string declaration, bool refused)
     {
-        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Host"), Identity + declaration, "App." + role, GeneratorTests.Levee);
+        var exe = role is "Host" or "Tool";
+        var program = exe && !declaration.Contains("Main(", StringComparison.Ordinal) ? "\npublic static class Program { public static void Main() { } }" : "";
+        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: exe), Identity + declaration + program, "App." + role, GeneratorTests.Levee);
 
+        Assert.Empty(output.Errors.Where(e => e.Id.StartsWith("CS", StringComparison.Ordinal)));
         Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
     }
 
