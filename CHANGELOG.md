@@ -9,21 +9,26 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   (`[OperationMetadata]`) and one scope: the input's (`IScopedOperation`), the caller's (`CallerScoped`, `IScopedPrincipal`)
   or every scope (`Platform`). `Internal` operations never reach a projection. Subscriptions (`ISubscription<TItem>`).
 - **The dispatcher.** Scope, authorize (`IAccessPolicy`), unit of work, admit (`IAdmission`), handler, audit, commit, for
-  every call, job and subscription. `IOperationOutcome` is told how each call ended, cancellations included, and how each subscription opened.
+  every call, job and subscription. `IOperationOutcome` is told how each call ended, cancellations included, and how each subscription opened,
+  within `LeveeOptions.OutcomeTimeout`, never failing the operation. A principal's scope is read once per call.
   `OperationContext.Now` at the store's precision.
 - **Failures.** `Result<T>` and `Error`, made only by its factories, with a closed `ErrorKind`: `internal` is the
   dispatcher's alone, for a bug, logged once under its trace. `Fields`, `RetryAfter`, `Transient`. `LeveeErrors` for
-  Levee's own codes. `ProblemView`, the one wire shape for a failure. `RefuseUndeclaredErrors` for tests.
+  Levee's own codes (among them `store.stale`, `store.invalid_value`, `caller.unconfirmed`). Input its own type refuses is
+  `input.invalid`; a result is serialized before the commit. `ProblemView`, the one wire shape for a failure. `RefuseUndeclaredErrors` for tests.
 - **Ports and adapters.** `[Port]` (one adapter, a `SelectedBy` setting, or a `Many` set), `[Adapter]` with lifetimes,
   `IAdapters<TPort>`, repositories as ports; only the chosen adapter is registered. `IFlush`, `IAmbientTransaction`.
 - **Personal data and secrets.** `[Secret]` (write-only, never stored unsealed) and `[Personal]` (redacted in the audit
-  and outcomes), at any depth of an input: nested records, collections, dictionary values under any key, derived types,
-  and a mark on an abstract or interface member holding for the property that implements it.
+  and outcomes). Redaction is the serializer's own pass: each marked member is written as its marker wherever the
+  serializer writes it (nested records, collections, nullable values, interfaces, derived and fallback types), a mark on
+  an abstract or interface member holding for the property that implements it, and a value its own converter writes whole
+  marked whole when its type carries a mark. `LeveeJson.FindSecretIn` finds a secret in a value the same way.
   Inputs are typed all the way down (LEVEE104 refuses `object`, raw JSON, `dynamic`, non-generic collections, the app's
   own included), so no member hides from either. A subscription's input, which travels in its URL, holds no `[Secret]`.
 - **The strict wire.** `LeveeJson`: unknown members and missing required members refused; schemas for every contract.
 - **Jobs.** `IJobs`: an operation enqueued in its caller's transaction, authorized as the caller, run as a `JobPrincipal`
-  in the caller's scope; `IJobPrincipals` restores the app's own principal.
+  in the scope it was authorized in; `IJobPrincipals` restores the app's own principal, and a run restored as another
+  subject or scope is cancelled.
 
 ### Generator and analyzers (shipped in `Levee`)
 - Roles: Kernel, Contracts, Domain, Application, Adapter, Infrastructure, Composition, Host, Client, Projection, Tool,
@@ -43,7 +48,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
   security, COMMIT never cancelled by the caller, store failures classified (undeclared writes, scope violations,
   conflicts, constraints, contention, an unreachable store).
 - `LeveeSchema`: the scope functions, the append-only audit added to only through `levee_audit_write` (stamped by the
-  database), isolation policies and the runtime role's grants, qualified by schema.
+  database), isolation policies (`Isolation`, and `Shared` for tables every scope reads) and the runtime role's grants,
+  qualified by schema.
 - The app's context refuses commands outside a transaction its unit of work began (EF's connection probe aside); a second
   context, a context the guard can't reach and a retrying execution strategy are refused before any operation runs;
   `LeveeOwner.Run()` for a Tool's owner work.
@@ -54,7 +60,8 @@ The first release: the keystone, for feedback from the apps migrating onto it. E
 
 ### Levee.AspNetCore
 - `MapLeveeOperations`: the catalog (`GET /ops`, with schemas, errors and refusals), calls (`POST /ops/{name}`) and
-  subscriptions over SSE (keep-alive, the caller rechecked, an `error` event to end). Failures as
+  subscriptions over SSE (keep-alive, the caller rechecked in the subject and scope it opened with, an `error` event to
+  end). Failures as
   `application/problem+json`; `LeveeProblems` for an app's own routes.
 
 ### Levee.Mcp

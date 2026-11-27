@@ -139,14 +139,16 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   is `effects.undeclared`, refused by Postgres.
 - Every operation declares one scope (LEVEE106): its input's (`IScopedOperation`), its caller's (`CallerScoped = true`, from
   a principal that is an `IScopedPrincipal`: an API key issued to one tenant), or every scope (`Platform = true`). The
-  dispatcher refuses a missing or blank scope key. A job runs in the scope its enqueuer carried. `ScopeKey` sets `levee.scope` for the
+  dispatcher refuses a missing or blank scope key. A caller-scoped job runs in the scope its enqueuer was authorized in; any other job, in the scope its input names. `ScopeKey` sets `levee.scope` for the
   transaction, and `LeveeSchema.Isolation(table, column)` is the RLS policy that holds a table to it (`Shared(table)` for one every scope
   reads); a table the app's context maps without a policy, or a view it maps that reads one, fails before the first operation. Platform scope
   (`levee.platform`) sees every row, so the access policy decides who may run a platform operation
   (`AccessRequest.Operation.Platform`).
 - Every write is audited in the operation's own transaction (`levee_audit`, append-only, `[Secret]` and `[Personal]`
   inputs redacted, a mark on an abstract or interface member holding for the property that implements it (an explicit
-  implementation returning another property doesn't carry it: mark that one): an append-only record can never forget personal data, so it never holds it). Denial logs name the
+  implementation returning another property doesn't carry it: mark that one): an append-only record can never forget personal data, so it never holds it).
+  A mark only the value's own type carries is seen when the member is written through an interface or is virtual, and not
+  when the app's options set a `ReferenceHandler`: mark the member where the contract declares it. Denial logs name the
   operation and the reason, not the caller.
   `[Secret]` is property-only: on a positional record it's `[property: Secret]`, and a bare one doesn't compile.
 - A job is an operation: `jobs.EnqueueAsync(new CreateNote(...))` is authorized as the caller, commits or rolls back

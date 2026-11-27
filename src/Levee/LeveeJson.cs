@@ -38,6 +38,12 @@ public static class LeveeJson
             TreatNullObliviousAsNonNullable = true,
             TransformSchemaNode = (context, node) =>
             {
+                // A converter of the app's writes the value its own way (a typed id as a string): the contract's shape isn't the
+                // wire's, so the schema promises no shape at all rather than the wrong one.
+                if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
+                {
+                    node = new JsonObject();
+                }
                 if (Marked(context.PropertyInfo?.AttributeProvider, context.PropertyInfo?.DeclaringType, typeof(SecretAttribute)) && node is JsonObject obj)
                 {
                     obj["writeOnly"] = true;
@@ -47,6 +53,8 @@ public static class LeveeJson
         };
         return (options ?? Options).GetJsonSchemaAsNode(type, exporter);
     }
+
+    private static bool BuiltIn(JsonConverter converter) => converter.GetType().Assembly == typeof(JsonSerializer).Assembly;
 
     /// <summary>
     /// <paramref name="value"/> as the audit keeps it: every <see cref="SecretAttribute"/> and <see cref="PersonalAttribute"/>
@@ -128,7 +136,12 @@ public static class LeveeJson
             }
             // Written by a contract another type may stand behind (an interface, a base the serializer falls back to): the value's
             // own type may mark the member.
-            else if ((info.Type.IsInterface || (!info.Type.IsSealed && !info.Type.IsValueType)) && property.Get is { } get)
+            // Only where the value's own type could mark it (behind an interface, or a member it overrides), and only where writing it
+            // as the serializer would is in this converter's reach: a configured reference handler, or number handling over a
+            // collection, is the serializer's alone, so there the member is left to it.
+            else if (MayMarkAtRunTime(info, property) && property.Get is { } get && json.ReferenceHandler is null
+                && !((property.NumberHandling ?? info.NumberHandling ?? json.NumberHandling) is { } handling && handling.HasFlag(JsonNumberHandling.WriteAsString)
+                    && !OwnTypeConverterNumbers.Contains(Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType)))
             {
                 var provider = property.AttributeProvider;
                 property.Get = owner =>
@@ -141,6 +154,16 @@ public static class LeveeJson
             }
         }
     }
+
+    private static bool MayMarkAtRunTime(JsonTypeInfo info, JsonPropertyInfo property) =>
+        info.Type.IsInterface
+        || (property.AttributeProvider is System.Reflection.PropertyInfo { GetMethod: { IsVirtual: true, IsFinal: false } } && !info.Type.IsSealed);
+
+    private static readonly HashSet<Type> OwnTypeConverterNumbers =
+    [
+        typeof(int), typeof(long), typeof(short), typeof(byte), typeof(sbyte), typeof(uint), typeof(ulong), typeof(ushort), typeof(float),
+        typeof(double), typeof(decimal),
+    ];
 
     private static JsonConverter Marker(Type type, string mark, string member) =>
         (JsonConverter)Activator.CreateInstance(typeof(MarkerConverter<>).MakeGenericType(type), mark, member)!;
@@ -187,7 +210,7 @@ public static class LeveeJson
                 Wrote(mark, member);
                 writer.WriteStringValue(mark);
             }
-            else if (value is null)
+            else if (value is null && Resolve(options) is not { HandleNull: true })
             {
                 writer.WriteNullValue();
             }
@@ -197,10 +220,12 @@ public static class LeveeJson
             }
             else
             {
-                var converter = inner is JsonConverterFactory factory ? factory.CreateConverter(typeof(T), options) : inner ?? options.GetConverter(typeof(T));
-                ((JsonConverter<T>)converter!).Write(writer, value, options);
+                Resolve(options).Write(writer, value!, options);
             }
         }
+
+        private JsonConverter<T> Resolve(JsonSerializerOptions options) =>
+            (JsonConverter<T>)(inner is JsonConverterFactory factory ? factory.CreateConverter(typeof(T), options)! : inner ?? options.GetConverter(typeof(T)));
 
         private static bool IsNumber(Type type) => (Nullable.GetUnderlyingType(type) ?? type) is var t
             && (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte) || t == typeof(sbyte) || t == typeof(uint)
@@ -223,17 +248,23 @@ public static class LeveeJson
     private static string? CarriedMark(Type type, HashSet<Type> seen)
     {
         type = Nullable.GetUnderlyingType(type) ?? type;
+        // An array carries what its elements do; it has no members of its own to mark.
+        if (type.IsArray)
+        {
+            return type.GetElementType() is { } element ? CarriedMark(element, seen) : null;
+        }
         if (type.IsPrimitive || type.IsEnum || type == typeof(string) || !seen.Add(type))
         {
             return null;
         }
+        // Every member, its mark and what its own type carries both counted: a [Personal] member holding a [Secret] is a secret.
+        var members = type.GetProperties(Everything)
+            .Where(p => p.GetIndexParameters().Length == 0 && (p.GetMethod?.IsPublic == true || p.IsDefined(typeof(JsonIncludeAttribute), inherit: true)))
+            .SelectMany(p => new string?[] { Mark(p, type), CarriedMark(p.PropertyType, seen) })
+            .Concat(type.GetFields(Everything).Where(f => f.IsDefined(typeof(JsonIncludeAttribute), inherit: false) || (f.IsPublic && !f.IsStatic)).Select(f => CarriedMark(f.FieldType, seen)))
+            .Concat((type.IsGenericType ? type.GetGenericArguments() : []).Select(a => CarriedMark(a, seen)));
         string? strongest = null;
-        var parts = type.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
-            .Where(p => p.GetIndexParameters().Length == 0)
-            .Select(p => Mark(p, type) ?? CarriedMark(p.PropertyType, seen))
-            .Concat((type.IsGenericType ? type.GetGenericArguments() : []).Select(a => CarriedMark(a, seen)))
-            .Append(type.IsArray && type.GetElementType() is { } element ? CarriedMark(element, seen) : null);
-        foreach (var mark in parts)
+        foreach (var mark in members)
         {
             if (mark == "[secret]")
             {
@@ -272,12 +303,12 @@ public static class LeveeJson
         {
             return true;
         }
-        if (owner is null || owner.IsInterface || property.GetMethod is not { } getter)
+        if (owner is null || owner.IsInterface || owner.IsArray || property.GetMethod is not { } getter)
         {
             return false;
         }
         // The getter the value's own type runs for this member: an interface's, mapped to its implementation; a base's, to its
-        // override.
+        // override (by its virtual slot: a member of the same name that hides it is another member).
         var runs = getter;
         if (property.DeclaringType is { IsInterface: true } through && through.IsAssignableFrom(owner))
         {
@@ -288,8 +319,9 @@ public static class LeveeJson
                 runs = map.TargetMethods[at];
             }
         }
-        else if (owner != property.DeclaringType
-            && owner.GetProperties(Everything).Where(p => p.Name == property.Name && p.GetIndexParameters().Length == 0)
+        else if (owner != property.DeclaringType && getter.IsVirtual
+            && owner.GetProperties(Everything).Where(p => p.Name == property.Name && p.GetIndexParameters().Length == 0
+                    && p.GetMethod is { } g && Same(g.GetBaseDefinition(), getter.GetBaseDefinition()))
                 .OrderByDescending(p => Depth(p.DeclaringType)).FirstOrDefault() is { GetMethod: { } own })
         {
             runs = own;

@@ -1005,3 +1005,137 @@ public sealed class FourteenthAuditFixTests
         Assert.Equal(System.Text.Json.JsonSerializer.Serialize(settings, LeveeJson.Options), LeveeJson.Redact(settings, typeof(Configured)));
     }
 }
+
+public sealed record Credential([property: Secret] string Token);
+
+[System.Text.Json.Serialization.JsonConverter(typeof(VaultConverter))]
+public sealed record Vault([property: Personal] Credential Owner);
+
+public sealed class VaultConverter : System.Text.Json.Serialization.JsonConverter<Vault>
+{
+    public override Vault Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        new(new Credential(reader.GetString()!));
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Vault value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Owner.Token);
+}
+
+[System.Text.Json.Serialization.JsonConverter(typeof(HolderConverter))]
+public sealed class FieldHolder
+{
+    [System.Text.Json.Serialization.JsonInclude] internal Credential? Kept = null;
+}
+
+public sealed class HolderConverter : System.Text.Json.Serialization.JsonConverter<FieldHolder>
+{
+    public override FieldHolder Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => new();
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, FieldHolder value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Kept?.Token);
+}
+
+public sealed record Counts(int[] Values, byte[] Raw);
+
+public record Tallies
+{
+    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString)]
+    public List<int> Values { get; init; } = [];
+
+    [System.Text.Json.Serialization.JsonConverter(typeof(AbsentConverter))]
+    public string? Note { get; init; }
+}
+
+public sealed class AbsentConverter : System.Text.Json.Serialization.JsonConverter<string?>
+{
+    public override bool HandleNull => true;
+
+    public override string? Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => reader.GetString();
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, string? value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value ?? "absent");
+}
+
+public record Shown
+{
+    public string Name { get; init; } = "visible";
+}
+
+public sealed record Hiding : Shown
+{
+    [Personal] public new string Name { get; init; } = "hidden";
+}
+
+public sealed record Shows(Shown Item);
+
+public sealed class FifteenthAuditFixTests
+{
+    [Fact]
+    public void A_secret_below_a_personal_member_of_an_opaque_value_is_a_secret()
+    {
+        Assert.Equal("Vault", LeveeJson.FindSecret(typeof(Vault)));
+        Assert.DoesNotContain("tok", LeveeJson.Redact(new Vault(new Credential("tok_live")), typeof(Vault)), StringComparison.Ordinal);
+        Assert.Equal("FieldHolder", LeveeJson.FindSecret(typeof(FieldHolder)));
+    }
+
+    [Fact]
+    public void Arrays_redact_as_their_elements()
+    {
+        var counts = new Counts([1, 2], [3]);
+
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(counts, LeveeJson.Options), LeveeJson.Redact(counts, typeof(Counts)));
+    }
+
+    [Fact]
+    public void Unmarked_members_redact_as_the_serializer_writes_them()
+    {
+        var tallies = new Tallies { Values = [1, 2] };
+        var shows = new Shows(new Hiding());
+
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(tallies, LeveeJson.Options), LeveeJson.Redact(tallies, typeof(Tallies)));
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(shows, LeveeJson.Options), LeveeJson.Redact(shows, typeof(Shows)));
+    }
+
+    [Fact]
+    public void Preserved_references_redact_as_the_serializer_writes_them()
+    {
+        var options = LeveeJson.Create(o => o.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.Preserve);
+        var shared = new Shown();
+        var both = new[] { shared, shared };
+
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(both, options), LeveeJson.Redact(both, typeof(Shown[]), options));
+    }
+}
+
+[Operation("probe.tally", "member", Platform = true, Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record Tally(int[] Values, byte[] Raw) : IOperation<Unit>;
+
+internal sealed class TallyHandler : IOperationHandler<Tally, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Tally operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
+}
+
+public sealed class ArrayWriteTests
+{
+    [Fact]
+    public async Task A_write_with_arrays_commits_with_its_audit()
+    {
+        var store = new Store();
+        var dispatcher = DispatcherTests.Services(store, new Outcomes()).GetRequiredService<Dispatcher>();
+
+        var result = await dispatcher.SendAsync(new Tally([1, 2], [3]), new Member("ada", "acme", Admin: true), CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.Error?.Message);
+        Assert.Contains("[1,2]", Assert.Single(store.Audited).Input, StringComparison.Ordinal);
+    }
+}
+
+public sealed class SchemaTests
+{
+    [Fact]
+    public void A_value_its_own_converter_writes_promises_no_shape()
+    {
+        var schema = LeveeJson.Schema(typeof(Mailing));
+
+        Assert.Empty((System.Text.Json.Nodes.JsonObject)schema["properties"]!["to"]!);
+    }
+}

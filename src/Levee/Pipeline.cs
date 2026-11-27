@@ -53,8 +53,8 @@ public sealed record WorkScope(string? Key, bool ReadOnly)
 public sealed record AccessRequest(Principal Principal, OperationDescriptor Operation, IOperation Input, WorkScope Scope);
 
 /// <summary>
-/// The app's authorization, asked once per operation before its unit of work opens. Required: a host without one fails to
-/// start. Handlers never check permissions.
+/// The app's authorization, asked once per operation before its unit of work opens. Required: without one, resolving the
+/// dispatcher fails, at the first operation. Handlers never check permissions.
 /// </summary>
 public interface IAccessPolicy
 {
