@@ -149,15 +149,18 @@ public sealed class OperationCatalog
         }
         // Every contract proven against the wire where the catalog is made (a host's start, the generated catalog test), not
         // when a caller first meets it: one the wire refuses would otherwise fail its calls, and every listing of the catalog.
-        Prove(list.SelectMany(o => new[] { o.InputType, o.ResultType }.Distinct().Select(type => (o.Name, type))));
+        Prove(list.Select(o => (o.Name, o.InputType)));
+        Prove(list.Select(o => (o.Name, o.ResultType)), inputs: false);
         _byName = list.ToFrozenDictionary(o => o.Name, StringComparer.Ordinal);
         _byType = list.ToFrozenDictionary(o => o.InputType);
         All = list;
     }
 
-    internal static void Prove(IEnumerable<(string Operation, Type Contract)> contracts)
+    /// <param name="contracts">Each contract type, by the operation it belongs to.</param>
+    /// <param name="inputs">Read from callers, so also proven to keep every value read; a result is only proven readable.</param>
+    internal static void Prove(IEnumerable<(string Operation, Type Contract)> contracts, bool inputs = true)
     {
-        var refused = contracts.Select(c => (c.Operation, c.Contract, Problem: Unwired(c.Contract))).Where(c => c.Problem is not null).ToList();
+        var refused = contracts.Select(c => (c.Operation, c.Contract, Problem: Unwired(c.Contract, inputs))).Where(c => c.Problem is not null).ToList();
         if (refused.Count > 0)
         {
             throw new InvalidOperationException(string.Join(Environment.NewLine,
@@ -165,12 +168,12 @@ public sealed class OperationCatalog
         }
     }
 
-    private static string? Unwired(Type type)
+    private static string? Unwired(Type type, bool input)
     {
         try
         {
             LeveeJson.Schema(type);
-            return Unconstructible(type);
+            return Unconstructible(type) ?? LeveeJson.Unreadable(type, input);
         }
         catch (InvalidOperationException e)
         {

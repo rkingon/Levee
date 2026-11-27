@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,7 +18,16 @@ public static class LeveeJson
     /// </summary>
     public static JsonSerializerOptions Options { get; } = Create();
 
-    private static JsonSerializerOptions Create()
+    // The wire again, but a value object's converter stands aside, taking its token and making a blank value: what proves a
+    // contract readable proves the wire, not each converter's own rules (a zip's pattern), which its token check already holds.
+    private static readonly Lazy<JsonSerializerOptions> Proof = new(() => Create(proving: true));
+
+    [ThreadStatic]
+    private static Queue<JsonNode>? _proven;
+
+    private static Queue<JsonNode> Proven => _proven ??= new();
+
+    private static JsonSerializerOptions Create(bool proving = false)
     {
         var o = new JsonSerializerOptions(JsonSerializerDefaults.Web)
         {
@@ -33,7 +43,7 @@ public static class LeveeJson
             TypeInfoResolver = new ClosedResolver(),
         };
         // A value object's converter is handed only the JSON its [ValueObject] says it writes.
-        o.Converters.Add(new ValueObjectWire());
+        o.Converters.Add(new ValueObjectWire(proving));
         o.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));
         o.MakeReadOnly();
         return o;
@@ -126,7 +136,7 @@ public static class LeveeJson
     /// What a value object's schema promises (a string, a number), held on the way in: JSON of another kind is refused before
     /// its converter sees it, so a converter that would take anything can't make the schema a lie.
     /// </summary>
-    private sealed class ValueObjectWire : JsonConverterFactory
+    private sealed class ValueObjectWire(bool proving) : JsonConverterFactory
     {
         public override bool CanConvert(Type typeToConvert) =>
             typeToConvert.GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false) is [ValueObjectAttribute]
@@ -146,17 +156,36 @@ public static class LeveeJson
                 inner = factory.CreateConverter(typeToConvert, options)!;
             }
             var accepts = Describe(typeToConvert, declared.Wire, options).Tokens;
-            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire, accepts)!;
+            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared, accepts, proving)!;
         }
 
-        private sealed class Checked<T>(JsonConverter<T> inner, Type wire, JsonTokenType[] accepts) : JsonConverter<T>, IValueObjectWire
+        private sealed class Checked<T>(JsonConverter<T> inner, ValueObjectAttribute declared, JsonTokenType[] accepts, bool proving) : JsonConverter<T>, IValueObjectWire
         {
-            public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-                accepts.Contains(reader.TokenType)
-                    ? inner.Read(ref reader, typeToConvert, options)
-                    : throw new JsonException($"{typeof(T).Name} is written as {wire.Name}, not {reader.TokenType}.");
+            public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            {
+                if (!accepts.Contains(reader.TokenType))
+                {
+                    throw new JsonException($"{typeof(T).Name} is written as {declared.Wire.Name}, not {reader.TokenType}.");
+                }
+                if (!proving)
+                {
+                    return inner.Read(ref reader, typeToConvert, options);
+                }
+                Proven.Enqueue(JsonNode.Parse(ref reader)!);
+                return (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
+            }
 
-            public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options) => inner.Write(writer, value, options);
+            // Proving, it writes back the token it read, as a converter faithful to its wire would: members are written in the
+            // order they're read.
+            public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
+            {
+                if (proving)
+                {
+                    (Proven.TryDequeue(out var token) ? token : null)?.WriteTo(writer);
+                    return;
+                }
+                inner.Write(writer, value, options);
+            }
 
             // A dictionary keyed by the value object: its key is the converter's own, as System.Text.Json would ask it.
             public override T ReadAsPropertyName(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
@@ -201,6 +230,138 @@ public static class LeveeJson
                 $"{value.Name} is a value object written as {wire.Name}, which isn't one JSON value. A value object is one JSON scalar: a string, "
                 + "number, bool, enum, Guid or date (LEVEE104)."),
         };
+    }
+
+    /// <summary>
+    /// Why the wire can't read what <paramref name="type"/>'s schema promises, or null: a document made from the schema (every
+    /// member, a value of the kind each says) read back by the wire. What the reader refuses there it refuses from every caller.
+    /// </summary>
+    internal static string? Unreadable(Type type, bool input = true)
+    {
+        var schema = Schema(type);
+        var sample = Sample(schema, schema, depth: 0);
+        Proven.Clear();
+        try
+        {
+            var read = sample.Deserialize(type, Proof.Value);
+            // An input writes back what it read: a member read into nothing (a constructor parameter named otherwise, a member
+            // with no setter) is a caller's value silently dropped.
+            if (input && JsonSerializer.SerializeToNode(read, type, Proof.Value) is var written && !Same(sample, written))
+            {
+                return $"what its schema says, {sample?.ToJsonString(Options) ?? "null"}, reads back as {written?.ToJsonString(Options) ?? "null"}: a caller's value "
+                    + "would be dropped, not refused. Fix: every member it shows is one it reads: a public constructor whose parameters are named as "
+                    + "its members (a positional record's), and no member it only writes (LEVEE104).";
+            }
+            return null;
+        }
+        catch (Exception e) when (e is JsonException or NotSupportedException
+            || e is InvalidOperationException && e.TargetSite?.DeclaringType?.Assembly == typeof(JsonSerializer).Assembly)
+        {
+            return $"what its schema says, {sample?.ToJsonString(Options) ?? "null"}, doesn't read back: {e.Message} Fix: a type the wire reads back as it "
+                + "writes it: a public constructor whose parameters are named as its members (a positional record's), a concrete collection "
+                + "(List<T>, T[]), a subtype with a discriminator ([JsonDerivedType(typeof(T), \"name\")]) (LEVEE104).";
+        }
+        // The type's own rules refusing a made-up value (an email that isn't one): the wire got as far as the type.
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Whether two documents say the same, a time the same instant however its offset is written.</summary>
+    private static bool Same(JsonNode? a, JsonNode? b) => (a, b) switch
+    {
+        (JsonObject x, JsonObject y) => x.Count == y.Count && x.All(p => y.ContainsKey(p.Key) && Same(p.Value, y[p.Key])),
+        (JsonArray x, JsonArray y) => x.Count == y.Count && x.Zip(y).All(p => Same(p.First, p.Second)),
+        (JsonValue x, JsonValue y) when x.TryGetValue<string>(out var s) && y.TryGetValue<string>(out var t) =>
+            s == t || DateTimeOffset.TryParse(s, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var u)
+                && DateTimeOffset.TryParse(t, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var v) && u == v,
+        _ => JsonNode.DeepEquals(a, b),
+    };
+
+    /// <summary>A value of what <paramref name="schema"/> describes: every member, the first branch, the first name, a value of each kind.</summary>
+    private static JsonNode? Sample(JsonNode? schema, JsonNode root, int depth, StrongBox<int>? seed = null)
+    {
+        if (schema is not JsonObject node || depth > 16)
+        {
+            return null;
+        }
+        // Each value its own, so one read into the wrong member, or computed from others, shows.
+        seed ??= new StrongBox<int>(0);
+        if (node["$ref"]?.GetValue<string>() is { } pointer)
+        {
+            return Sample(Resolve(root, pointer), root, depth + 1, seed);
+        }
+        if (node["const"] is { } constant)
+        {
+            return constant.DeepClone();
+        }
+        if (node["enum"] is JsonArray names)
+        {
+            return names.FirstOrDefault(n => n is not null)?.DeepClone();
+        }
+        if ((node["anyOf"] ?? node["oneOf"]) is JsonArray branches)
+        {
+            return branches.Select(b => Sample(b, root, depth + 1, seed)).FirstOrDefault(b => b is not null);
+        }
+        var kind = node["type"] switch
+        {
+            JsonValue single => single.GetValue<string>(),
+            JsonArray kinds => kinds.Select(k => k?.GetValue<string>()).FirstOrDefault(k => k != "null"),
+            // A polymorphic branch names its members and leaves the kind to its parent.
+            _ when node["properties"] is not null => "object",
+            _ => null,
+        };
+        switch (kind)
+        {
+            case "object":
+                var value = new JsonObject();
+                foreach (var (name, member) in node["properties"] as JsonObject ?? [])
+                {
+                    if (Sample(member, root, depth + 1, seed) is { } sampled)
+                    {
+                        value[name] = sampled;
+                    }
+                }
+                return value;
+            case "array":
+                return node["items"] is { } items && Sample(items, root, depth + 1, seed) is { } item ? new JsonArray(item) : [];
+            case "string":
+                return (node["format"]?.GetValue<string>()) switch
+                {
+                    "uuid" => "00000000-0000-0000-0000-000000000001",
+                    "date" => "2000-01-01",
+                    "date-time" => "2000-01-01T00:00:00+00:00",
+                    "time" => "00:00:00",
+                    "duration" => "00:00:01",
+                    "uri" => "https://example.com/",
+                    // Valid base64 too, which a byte[] travels as; a single character where only one fits.
+                    _ => node["maxLength"]?.GetValue<int>() is < 4 ? "x" : Convert.ToBase64String([(byte)++seed.Value]),
+                };
+            // Not a default: a value read into nothing comes back as one, and shows.
+            case "integer" or "number":
+                return ++seed.Value;
+            case "boolean":
+                return true;
+            default:
+                return null;
+        }
+    }
+
+    private static JsonNode? Resolve(JsonNode root, string pointer)
+    {
+        JsonNode? at = root;
+        foreach (var segment in pointer.TrimStart('#').Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var key = segment.Replace("~1", "/", StringComparison.Ordinal).Replace("~0", "~", StringComparison.Ordinal);
+            at = at switch
+            {
+                JsonObject o => o[key],
+                JsonArray a when int.TryParse(key, System.Globalization.CultureInfo.InvariantCulture, out var i) && i < a.Count => a[i],
+                _ => null,
+            };
+        }
+        return at;
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>

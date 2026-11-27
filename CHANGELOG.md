@@ -38,8 +38,9 @@
   converter goes on a `[ValueObject]` type, never a member, and a `[ValueObject]` has one. A contract can't loosen the wire
   (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, any `[JsonIgnore]`: a member off
   the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. The catalog proves every
-  contract against the wire where it's made (a host's start, the generated catalog test), both ways (its schema, and a
-  constructor the reader can call for every type it carries), naming each it refuses, so none fails only when a caller,
+  contract against the wire where it's made (a host's start, the generated catalog test), both ways: a document made from its schema is read by the wire and, for an input, written
+  back as it was, so a shape the reader refuses, or a caller's value read into nothing (a constructor parameter named
+  otherwise, a member it only writes), is refused by operation name, so none fails only when a caller,
   or a listing of the catalog, first meets it. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.

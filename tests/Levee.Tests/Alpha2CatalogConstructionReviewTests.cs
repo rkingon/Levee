@@ -36,3 +36,68 @@ public sealed class Alpha2CatalogConstructionReviewTests
         Assert.Contains("review.quote", failure.Message, StringComparison.Ordinal);
     }
 }
+
+public sealed class CatalogReadProofTests
+{
+    public sealed record Counts(System.Collections.ObjectModel.ReadOnlyCollection<int> Values);
+    public sealed record CountsList(List<int> Values);
+
+    [JsonDerivedType(typeof(Square))]
+    public abstract record Shape;
+    public sealed record Square(int Side) : Shape;
+    public sealed record Draw(Shape Shape);
+
+    [JsonDerivedType(typeof(Circle), "circle")]
+    public abstract record NamedShape;
+    public sealed record Circle(int Radius) : NamedShape;
+    public sealed record DrawNamed(NamedShape Shape);
+
+    public sealed record Money
+    {
+        public int Amount { get; }
+        public Money(int value) => Amount = value;
+    }
+    public sealed record Pay(Money Money);
+    public sealed record Amount(int Value);
+    public sealed record PayAmount(Amount Money);
+
+    public sealed record Order(int Quantity, int Price)
+    {
+        public int Total => Quantity * Price;
+    }
+
+    [Theory]
+    [InlineData(typeof(Counts))]
+    [InlineData(typeof(Draw))]
+    [InlineData(typeof(Pay))]
+    [InlineData(typeof(Order))]
+    public void A_contract_whose_schema_doesnt_read_back_is_refused_by_operation(Type contract)
+    {
+        var refused = Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("review.read", contract)]));
+
+        Assert.Contains($"review.read's {contract.Name}", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(typeof(CountsList))]
+    [InlineData(typeof(DrawNamed))]
+    [InlineData(typeof(PayAmount))]
+    public void Its_readable_counterpart_is_accepted(Type contract) => OperationCatalog.Prove([("review.read", contract)]);
+}
+
+public sealed class CatalogProofValueObjectTests
+{
+    [ValueObject(typeof(int)), JsonConverter(typeof(QtyJson))]
+    public readonly record struct Qty(int Value);
+
+    public sealed class QtyJson : JsonConverter<Qty>
+    {
+        public override Qty Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new(reader.GetInt32());
+        public override void Write(Utf8JsonWriter writer, Qty value, JsonSerializerOptions options) => writer.WriteNumberValue(value.Value);
+    }
+
+    public sealed record Line(int Sku, Qty Quantity, Qty Backordered, string Note);
+
+    [Fact]
+    public void Value_objects_anywhere_in_an_input_prove_as_the_wire_carries_them() => OperationCatalog.Prove([("review.line", typeof(Line))]);
+}
