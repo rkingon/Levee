@@ -35,7 +35,9 @@
   `LeveeOptions.Json` takes only options it made: a value's JSON is its value object's own, a .NET type's is
   System.Text.Json's. A converter on a member, or on a type with no `[ValueObject]`, is refused as the wire meets it, and
   so is a `[ValueObject]` with no converter. Numbers are strict both ways (Web's reading of a number from a string is
-  off) and `NumberHandling` isn't the app's to change: a value that travels as a string is a value object. A value
+  off) and `NumberHandling` isn't the app's to change, on the options or as `[JsonNumberHandling]` on a type or member:
+  a value that travels as a string is a value object. The `Create` callback can't loosen the strict settings or remove
+  Levee's own converters, which it adds after. A value
   object keyed in a dictionary keeps its converter's property-name methods. A
   value object's schema and the JSON it accepts come from one description of its wire: an enum by name, a nullable one
   with null.
@@ -69,7 +71,8 @@
   or one that owns a table row-level security holds fails before the first operation. The tables Levee.Oxbow installs are left to it by name, not by prefix.
 - `LeveeSchema.Grants` resets the role to its allow-list: it revokes exactly what the role holds, wherever it is (by
   table or column) and the default privileges (per schema and database-wide) that would grant it more, then fails naming
-  anything another role granted that it couldn't take back. It grants only this installation's tables: a second Levee
+  anything another role granted that it couldn't take back, and anything it still reaches in effect (through a role it
+  belongs to, or PUBLIC) beyond this installation's tables. It grants only this installation's tables: a second Levee
   schema's tables and audit stay its own role's. A schema's owner provisions it without rights over anyone else's.
 - **Breaking (schema):** the audit's policies are a read (`levee_scope`) and an insert (`levee_audit_insert`) that takes an
   unscoped operation's record, so an unscoped write commits when the audit's owner is an ordinary role. A database
@@ -120,7 +123,8 @@
 
 ### Levee.Cli
 - `generate operation` takes `--unscoped` and `--caller-scoped` beside `--scoped-by` and `--platform`; `catalog` shows
-  each operation's scope (`input`, `caller`, `unscoped`, `platform`), as `scope` in its JSON.
+  each operation's scope (`input`, `caller`, `unscoped`, `platform`), as `scope` in its JSON, and a generated test
+  asserts all three scope flags.
 - The scaffold's anonymous caller is Levee's `AnonymousPrincipal`, so the dispatcher's 401s hold for it.
 - `dotnet levee check` no longer passes a failed analyzed build: a project whose analyzed build fails on anything but a
   LEVEE rule is named with its errors and its analysis is incomplete, in the verdict and in `--json` (an entry per project,
@@ -137,7 +141,7 @@
 
 ### Generator and analyzers
 - LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
-  is one too; a `[ValueObject]` has its converter.
+  is one too; a `[ValueObject]` has its converter; `[JsonNumberHandling]` other than strict is refused on a contract.
 - LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
   that takes a principal (`Action<Principal>`) as holding one.
 - LEVEE003: a handler holding a port that tells the time (a `[Port]` or delegate answering a date or time at once without
