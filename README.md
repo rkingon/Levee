@@ -39,7 +39,8 @@ dotnet levee db grants app_role --jobs            # what the runtime role needs
 analyzed alone), so one project's errors never hide another's, except that a project failing the generator's rules
 (LEVEE101-111) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
 asks of it. A suppressed rule is listed with its reason and still fails the check: a migration may build with one, but
-it's green only once none is left.
+it's green only once none is left. Partway through a migration, projects that don't compile yet are named and the
+rest still checked.
 
 `generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write) and what the
 scaffolded app's tests check (a summary),

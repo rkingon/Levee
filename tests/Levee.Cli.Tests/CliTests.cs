@@ -303,7 +303,7 @@ public sealed class CheckTests
     {
         const string Output = """
             /app/src/App.Domain/Note.cs(12,19): error LEVEE007: Text can be changed from outside aggregate root Note [/app/src/App.Domain/App.Domain.csproj]
-            /app/src/App.Domain/Note.cs(12,19): error LEVEE007: Text can be changed from outside aggregate root Note [/app/src/App.Domain/App.Domain.csproj]
+            /app/src/App.Domain/Note.cs(12,19): error LEVEE007: Text can be changed from outside aggregate root Note (https://rkingon.github.io/Levee/rules/levee007/) [/app/src/App.Domain/App.Domain.csproj]
             CSC : error LEVEE002: A Domain project may not reference App.Adapters (Adapter) [/app/src/App.Domain/App.Domain.csproj]
             /app/src/App.Domain/Note.cs(3,1): error CS0246: The type or namespace name 'X' could not be found [/app/src/App.Domain/App.Domain.csproj]
             """;
@@ -313,6 +313,18 @@ public sealed class CheckTests
         Assert.Equal(2, findings.Count);
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE007", "App.Domain", "/app/src/App.Domain/Note.cs", 12, "Text can be changed from outside aggregate root Note"), findings[0]);
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE002", "App.Domain", null, null, "A Domain project may not reference App.Adapters (Adapter)"), findings[1]);
+    }
+
+    [Fact]
+    public void Projects_that_dont_compile_are_named_once_each_beside_Levees_findings()
+    {
+        const string Output = """
+            /app/src/App.Host/Program.cs(3,1): error CS0246: The type or namespace name 'X' could not be found [/app/src/App.Host/App.Host.csproj]
+            /app/src/App.Host/Program.cs(4,1): error CS0103: The name 'y' does not exist in the current context [/app/src/App.Host/App.Host.csproj]
+            /app/src/App.Domain/Note.cs(12,19): error LEVEE007: Text can be changed from outside aggregate root Note [/app/src/App.Domain/App.Domain.csproj]
+            """;
+
+        Assert.Equal(["App.Host"], Levee.Cli.Check.Broken(Output));
     }
 
     [Fact]

@@ -44,7 +44,9 @@ internal static partial class Check
         // The generator's rules (LEVEE101-111) run in this pass too: a project they fail is a finding, not a broken app, though
         // the projects that reference it can't compile past it.
         var findings = new ConcurrentBag<Finding>(compiled ? [] : Parse(log));
-        if (!compiled && (findings.IsEmpty || OtherError().IsMatch(log)))
+        // Partway through a migration some projects don't compile yet: the rest are still worth taking stock of.
+        var broken = compiled ? [] : Broken(log);
+        if (!compiled && findings.IsEmpty && broken.Count == 0)
         {
             throw new CliException($"The app doesn't compile, analyzers aside; fix that first:{Environment.NewLine}{log}");
         }
@@ -81,12 +83,22 @@ internal static partial class Check
         if (args.Flag("json"))
         {
             await output.WriteLineAsync(JsonSerializer.Serialize(distinct, LeveeJson.Options));
-            return distinct.Count == 0 ? 0 : 1;
+            return distinct.Count == 0 && broken.Count == 0 ? 0 : 1;
         }
-        if (distinct.Count == 0)
+        if (broken.Count > 0)
+        {
+            await output.WriteLineAsync($"{broken.Count} of {projects.Count} projects don't compile, analyzers aside, so their findings and those of projects that reference them aren't all here: "
+                + string.Join(", ", broken));
+        }
+        if (distinct.Count == 0 && broken.Count == 0)
         {
             await output.WriteLineAsync($"No LEVEE findings in {projects.Count} projects.");
             return 0;
+        }
+        if (distinct.Count == 0)
+        {
+            await output.WriteLineAsync($"No LEVEE findings in the {projects.Count - broken.Count} projects that compile.");
+            return 1;
         }
         var open = distinct.Where(f => f.Suppressed is null).ToList();
         var debt = distinct.Where(f => f.Suppressed is not null).ToList();
@@ -98,7 +110,7 @@ internal static partial class Check
             await WriteAsync(debt, root, output);
         }
         await output.WriteLineAsync($"{open.Count} findings and {debt.Count} suppressed in {distinct.Select(f => f.Project).Distinct().Count()} of {projects.Count} projects.");
-        if (!compiled)
+        if (!compiled && broken.Count == 0)
         {
             await output.WriteLineAsync("A project failed the generator's rules, so the projects that reference it couldn't compile past it: their own findings show once those are fixed.");
         }
@@ -188,10 +200,23 @@ internal static partial class Check
                 Path.GetFileNameWithoutExtension(m.Groups["project"].Value),
                 m.Groups["file"].Value is { Length: > 0 } file && !file.StartsWith("CSC", StringComparison.Ordinal) ? file : null,
                 m.Groups["line"].Success ? int.Parse(m.Groups["line"].Value, System.Globalization.CultureInfo.InvariantCulture) : null,
-                m.Groups["message"].Value.Trim()))
+                HelpLink().Replace(m.Groups["message"].Value, "").Trim()))
             .Distinct();
 
-    [GeneratedRegex(@"\berror (?!LEVEE)[A-Z]+\d+:")]
+    // The compiler adds each rule's help link to its message; the rule's explain hint already names where the long form is.
+    [GeneratedRegex(@"\s*\(https?://[^\s)]+\)\s*$")]
+    private static partial Regex HelpLink();
+
+    /// <summary>The projects a build failed with errors other than Levee's.</summary>
+    internal static List<string> Broken(string buildOutput) =>
+        [.. buildOutput.Split('\n')
+            .Select(line => OtherError().Match(line.Trim()))
+            .Where(m => m.Success)
+            .Select(m => Path.GetFileNameWithoutExtension(m.Groups["project"].Value))
+            .Distinct()
+            .OrderBy(p => p, StringComparer.Ordinal)];
+
+    [GeneratedRegex(@"\berror (?!LEVEE)[A-Z]+\d+:.*\[(?<project>[^\]]+\.csproj)\]$")]
     private static partial Regex OtherError();
 
     [GeneratedRegex(@"^(?:(?<file>[^:(]+(?::[^:(]+)?)(?:\((?<line>\d+),\d+\))?\s*:\s*)?error (?<rule>LEVEE\d+): (?<message>.*?)\s*\[(?<project>[^\]]+\.csproj)\]$")]
