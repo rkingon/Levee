@@ -501,8 +501,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Every port the composition sees, checked against its adapters. In a Host every port must be bound; a test binds
-    /// what it references and fakes the rest. Returns the ports a setting chooses between, to bind at startup.
+    /// Every port the composition sees, checked against its adapters. In a Host every port must be bound; a test or a Tool
+    /// binds what it references. Returns the ports a setting chooses between, to bind at startup.
     /// </summary>
     private static List<(INamedTypeSymbol Port, string Setting, (string Name, int Lifetime)[] Adapters)> Bind(SourceProductionContext context, Compilation compilation, Role role,
         List<IAssemblySymbol> referenced, List<AdapterModel> ownAdapters, out List<(INamedTypeSymbol Port, string[] Names, bool Singleton)> routed)
@@ -547,7 +547,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
             if (mine.Count == 0)
             {
-                if (role is Role.Host or Role.Tool or Role.Composition)
+                // A Tool (a migrator, the role bootstrap) binds what it references, as a test does: its operations are few, and
+                // one that needs an unbound port fails at its first resolution, naming the port.
+                if (role is Role.Host or Role.Composition)
                 {
                         context.ReportDiagnostic(Diagnostic.Create(Descriptors.UnboundPort, location, port.ToDisplayString()));
                 }

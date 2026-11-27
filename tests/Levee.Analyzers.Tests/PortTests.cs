@@ -49,6 +49,18 @@ public sealed class PortTests
             host.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("Host", true)]
+    [InlineData("Tool", false)]
+    public async Task A_tool_binds_the_ports_it_references_not_every_port(string role, bool refused)
+    {
+        var application = await Compile("Application", "namespace App;\n[Port] public interface IMail;", "App.Application");
+        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Tool"), Usings + "public static class Program { public static void Main() { } }", "App.Process",
+            Levee, Di, Configuration, application.Reference());
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE107"));
+    }
+
     [Fact]
     public async Task An_optional_port_falls_back_to_its_default_when_its_setting_is_unset()
     {
