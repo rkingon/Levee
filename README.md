@@ -272,7 +272,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 |---|---|
 | LEVEE001 | A project that references Levee declares its `LeveeRole`. |
 | LEVEE002 | A role references only the roles it may (table above). |
-| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `Guid.CreateVersion7()` with no time; `TimeProvider.System` only where the app composes (Composition, Host, Tool). |
+| LEVEE003 | No `DateTime.Now`/`UtcNow`/`Today` or `DateTimeOffset.Now`/`UtcNow` outside tests; `Guid.CreateVersion7()` with no time; `TimeProvider.System` only where the app composes (Composition, Host, Tool); no `TimeProvider` or `IClock` held by a handler, whose time is `OperationContext.Now`. |
 | LEVEE004 | No `SaveChanges`, transaction control, `Commit`/`Rollback`, or opening or committing Levee's unit of work outside tests: the dispatcher commits. |
 | LEVEE005 | No service location (`GetService`, keyed services, `ActivatorUtilities`) outside where the app composes (Composition, Host, Tool) or tests. |
 | LEVEE006 | A Levee rule is suppressed only beside the code with a reason: `Justification`, or a `// reason` on the pragma. Never project-wide: an assembly attribute, `NoWarn`, a ruleset, or an `.editorconfig` or global config severity fails the build. Not configurable itself. |
@@ -290,7 +290,8 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE018 | No connection of its own (`new NpgsqlConnection`, a data source, a context factory) outside a Tool: data is reached through the operation's unit of work. |
 | LEVEE019 | Aggregate roots live in Domain. |
 | LEVEE020 | Only generated code builds the catalog: no descriptor, catalog or catalog part by hand outside tests. |
-| LEVEE021 | A principal is made only where the app composes (Composition, Host, Tool), and a process sends through its `ProcessContext`, never the `Dispatcher`. |
+| LEVEE021 | A principal is made and held only where the app composes (Composition, Host, Tool): Kernel, Contracts, Domain, Application and adapters act as the caller their context names. A process sends through its `ProcessContext`, never the `Dispatcher`. |
+| LEVEE022 | No SQL names `levee_signals`: a change signal is raised with `IChangeSignals.RaiseAsync` and watched with `WatchAsync`. |
 | LEVEE101–103 | Every operation has exactly one handler, and names are unique (checked where the catalog is built). |
 | LEVEE104 | An operation is a public top-level class with `[Operation(name, access)]` and `IOperation<T>`; names are lowercase and dotted. |
 | LEVEE105 | An operation with effects declares its idempotency. |
@@ -301,7 +302,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE110 | A handler fails only with the codes its operation declares (or Levee's own). |
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
-| LEVEE113 | An access policy reads the scope it authorizes (`AccessRequest.Scope`): it decides who may act in which scope. |
+| LEVEE113 | An access policy reads the key of the scope it authorizes (`AccessRequest.Scope.Key`), not only whether it's the platform's: it decides who may act in which tenant. |
 
 ## Decisions
 

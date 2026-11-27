@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis.Operations;
@@ -10,6 +12,7 @@ namespace Levee.Analyzers;
 /// The role-aware code rules. LEVEE003: no wall clock outside tests (TimeProvider.System only where the app composes). LEVEE004:
 /// nothing saves, controls a transaction, or sets the scope outside tests and Tools: the dispatcher commits. LEVEE005: services
 /// are located only where the app composes. LEVEE018: no connection of its own. LEVEE020: the catalog is the generator's.
+/// LEVEE022: no SQL on the change signals' channel.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class CodeRules : DiagnosticAnalyzer
@@ -26,8 +29,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "CreateAsyncScope", "CreateInstance", "GetServiceOrCreateInstance", "CreateFactory");
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
-        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
-            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade,
+        ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection, Descriptors.HandlerClock,
+            Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade, Descriptors.PrincipalHeld,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -47,11 +50,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
-            start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.TypeOf, OperationKind.DynamicInvocation);
+            start.RegisterOperationAction(c => Known.Unless(c, () => OnByName(c)), OperationKind.DynamicInvocation);
+            start.RegisterSyntaxNodeAction(OnOperationAttributeNamed, SyntaxKind.IdentifierName);
             start.RegisterSymbolAction(OnProcess, SymbolKind.NamedType);
+            start.RegisterSymbolAction(OnHandlerClock, SymbolKind.NamedType);
             if (role is Role.Kernel or Role.Contracts or Role.Domain or Role.Application or Role.Adapter)
             {
                 start.RegisterOperationAction(c => Known.Unless(c, () => OnPrincipalMade(c, role)), OperationKind.ObjectCreation, OperationKind.With);
+                start.RegisterSymbolAction(c => OnPrincipalHeld(c, role), SymbolKind.NamedType);
             }
             start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
             start.RegisterSymbolAction(OnUnsafeAccessor, SymbolKind.Method);
@@ -509,24 +515,32 @@ public sealed class CodeRules : DiagnosticAnalyzer
         "DeclaredMembers", "DeclaredMethods", "DeclaredProperties", "DeclaredFields", "DeclaredConstructors", "DeclaredEvents", "DeclaredNestedTypes",
         "TypeInitializer");
 
-    /// <summary>
-    /// The other ways to a by-name surface: the catalog's names read off [Operation] by reflection, and an operation of a type
-    /// known only at run time handed to the Dispatcher through dynamic.
-    /// </summary>
+    /// <summary>An operation of a type known only at run time, handed to the Dispatcher through dynamic.</summary>
     private static void OnByName(OperationAnalysisContext context)
     {
-        switch (context.Operation)
+        if (context.Operation is IDynamicInvocationOperation { Operation: IDynamicMemberReferenceOperation { Instance.Type: INamedTypeSymbol receiver } member }
+            && IsLevee(receiver, "Dispatcher"))
         {
-            // In an attribute's argument, typeof names the attribute; anywhere else it's the lookup's key.
-            case ITypeOfOperation { TypeOperand: INamedTypeSymbol operand } when IsLevee(operand, "OperationAttribute")
-                && !context.Operation.Syntax.Ancestors().Any(a => a is Microsoft.CodeAnalysis.CSharp.Syntax.AttributeSyntax):
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), "[Operation] is read by reflection"));
-                break;
-            case IDynamicInvocationOperation { Operation: IDynamicMemberReferenceOperation { Instance.Type: INamedTypeSymbol receiver } member }
-                when IsLevee(receiver, "Dispatcher"):
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"Dispatcher.{member.MemberName} is called through dynamic"));
-                break;
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, context.Operation.Syntax.GetLocation(), $"Dispatcher.{member.MemberName} is called through dynamic"));
         }
+    }
+
+    /// <summary>
+    /// OperationAttribute is only ever written on a contract. Named anywhere else (a type argument, as in
+    /// OfType&lt;OperationAttribute&gt;(); a pattern, a cast, typeof, an alias), it's the key of the catalog's names read back
+    /// by reflection, whatever reflection API reads them.
+    /// </summary>
+    private static void OnOperationAttributeNamed(SyntaxNodeAnalysisContext context)
+    {
+        var name = (IdentifierNameSyntax)context.Node;
+        if (name.Identifier.ValueText != "OperationAttribute" || Known.IsLeveeGenerated(name.SyntaxTree)
+            || name.Ancestors().Any(a => a is AttributeSyntax or CrefSyntax)
+            || context.SemanticModel.GetSymbolInfo(name, context.CancellationToken).Symbol is not INamedTypeSymbol type || !IsLevee(type, "OperationAttribute"))
+        {
+            return;
+        }
+        var named = name.Parent is QualifiedNameSyntax qualified && qualified.Right == name ? qualified : (SyntaxNode)name;
+        context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, named.GetLocation(), $"{named} is named outside an attribute, to read [Operation] by reflection"));
     }
 
     /// <summary>A process holding the Dispatcher: whatever it sends steps out of its starter's identity and scope.</summary>
@@ -550,6 +564,40 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
+    /// <summary>
+    /// A handler holding a clock reads a time that isn't its operation's: injected, it's TimeProvider.System in production,
+    /// the wall clock by another name. An adapter's or a process's clock, taken the same way, is theirs to hold.
+    /// </summary>
+    private static void OnHandlerClock(SymbolAnalysisContext context)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        if (!type.AllInterfaces.Any(i => Known.Is(i, "IOperationHandler", 2) || Known.Is(i, "ISubscriptionHandler", 2)))
+        {
+            return;
+        }
+        var held = type.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (Clock(heldType) is { } clock && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.HandlerClock, location, type.Name, clock.Name));
+                return;
+            }
+        }
+    }
+
+    /// <summary>TimeProvider or NodaTime's IClock (or what implements it), or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static INamedTypeSymbol? Clock(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named.OriginalDefinition, "System.TimeProvider")
+            || named.OriginalDefinition.AllInterfaces.Prepend(named.OriginalDefinition).Any(i => i.ToDisplayString() == "NodaTime.IClock") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(Clock).FirstOrDefault(c => c is not null),
+        IArrayTypeSymbol array => Clock(array.ElementType),
+        _ => null,
+    };
+
     /// <summary>Levee's <paramref name="name"/>, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
     private static bool Holds(ITypeSymbol type, string name) => type switch
     {
@@ -568,15 +616,38 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
+    /// <summary>
+    /// A principal held in the core or an adapter, handed over by the container or whoever made it: what holds one sends as
+    /// it, not as the caller its context names, and the process or handler that holds the holder escapes its starter's scope.
+    /// </summary>
+    private static void OnPrincipalHeld(SymbolAnalysisContext context, Role role)
+    {
+        var type = (INamedTypeSymbol)context.Symbol;
+        var held = type.InstanceConstructors.Where(c => !c.IsImplicitlyDeclared).SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
+            .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
+            .Concat(type.GetMembers().OfType<IPropertySymbol>().Select(p => ((ISymbol)p, p.Type)));
+        foreach (var (symbol, heldType) in held)
+        {
+            if (HeldPrincipal(heldType) is { } principal && symbol.Locations.FirstOrDefault() is { IsInSource: true } location && !Known.IsLeveeGenerated(location.SourceTree))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.PrincipalHeld, location, $"{type.Name}.{symbol.Name}", principal.Name, role));
+                return;
+            }
+        }
+    }
+
+    /// <summary>A principal type, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    private static INamedTypeSymbol? HeldPrincipal(ITypeSymbol type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named.OriginalDefinition, "Levee.Principal") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(HeldPrincipal).FirstOrDefault(p => p is not null),
+        IArrayTypeSymbol array => HeldPrincipal(array.ElementType),
+        _ => null,
+    };
+
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
-        if (invocation.TargetMethod.Name is "GetCustomAttribute" or "GetCustomAttributes" or "IsDefined"
-            && invocation.TargetMethod.TypeArguments.Any(t => IsLevee(t as INamedTypeSymbol, "OperationAttribute")))
-        {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, invocation.Syntax.GetLocation(), "[Operation] is read by reflection"));
-            return;
-        }
         if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && OnReflected(context, role, invocation.TargetMethod.Name, Reflected(invocation)))
         {
             return;

@@ -267,8 +267,8 @@ internal static partial class NewApp
                     public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) =>
                         ValueTask.FromResult(request.Operation.Access switch
                         {
-                            // Anyone reads only what's every tenant's; no caller here belongs to a tenant yet.
-                            "anyone" when request.Scope.Platform => null,
+                            // Anyone reads only what's every tenant's (no key: the platform's scope); no caller here belongs to a tenant yet.
+                            "anyone" when request.Scope.Key is null => null,
                             var access => Error.Forbidden("access.unconfigured", $"Nothing grants '{access}' here yet: write it in AccessPolicy."),
                         });
                 }

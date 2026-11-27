@@ -54,12 +54,19 @@ Reading the wall clock makes code untestable and gives one operation several "no
 // Wrong
 var due = DateTimeOffset.UtcNow.AddDays(30);
 
+// Wrong: a handler with a clock of its own, the wall clock in production
+internal sealed class AnnotateHandler(TimeProvider time) : IOperationHandler<Annotate, Annotated> { ... time.GetUtcNow() ... }
+
 // Right, in a handler: the operation's one time, at Postgres's precision
 var due = context.Now.AddDays(30);
 
-// Right, elsewhere
-internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetUtcNow(); }
+// Right, in an adapter or a process
+internal sealed class Lease(TimeProvider time) : ILease { DateTimeOffset Now => time.GetUtcNow(); }
 ```
+
+A handler (`IOperationHandler`, `ISubscriptionHandler`) holds no clock: a `TimeProvider` or NodaTime `IClock` as its
+constructor's parameter, a field or a property is refused, wrapped or not. An operation's handler reads
+`OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,
 and later than every id the operation made before it, which `Guid.CreateVersion7(context.Now)` isn't (every id in one
@@ -99,11 +106,7 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them. SQL naming `levee_signals`, the channel `IChangeSignals` raises change
-signals on (`pg_notify('levee_signals', ...)`, `NOTIFY levee_signals`), is refused the same way: its watchers trust the
-scope the payload names, so a notification of the app's own reaches any tenant's. Raise a signal with
-`IChangeSignals.RaiseAsync` in the operation, which sends it with the transaction, in the operation's scope. The analyzer sees the name as a literal or a constant; a name put
-together at run time from pieces isn't seen, and is the trust model's to answer. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
@@ -211,7 +214,8 @@ a vendor or a framework into it.
 
 Wrong: Application references `Microsoft.Extensions.Caching.Memory`, an HTTP client SDK, or `Microsoft.Extensions.Hosting`.
 Right: Application declares a port for what it needs (`IPlanCache`, `IPayments`), an Adapter implements it with the
-package, and a hosted service or loop lives in Composition or an Adapter, sending operations through the `Dispatcher`.
+package, and a hosted service or loop lives in Composition or the Host, sending operations through the `Dispatcher` as a
+principal it makes there (an adapter can neither make nor hold one: LEVEE021).
 
 Configuration isn't the core's either: Composition binds settings into a plain record, and Application takes the record.
 
@@ -346,13 +350,15 @@ unit of work or audit.
 // Wrong: Application
 internal sealed class JobBroker : IWorkDesk { public Task<Job?> NextAsync(...) { ... } }
 
-// Right: the logic is a handler; Composition implements the shared interface by dispatching
+// Right: the logic is a handler; Composition implements the shared interface by dispatching, as a principal it makes
 [Operation("work.next", "runtime", Internal = true, Platform = true, ...)]
 public sealed record NextJob(...) : IOperation<Job?>;
 
 internal sealed class DispatchedDesk(Dispatcher dispatcher) : IWorkDesk
 {
-    public async Task<Job?> NextAsync(...) => (await dispatcher.SendAsync(new NextJob(...), principal, ct)).Value;
+    private static readonly SystemPrincipal Runtime = new("runtime");
+
+    public async Task<Job?> NextAsync(...) => (await dispatcher.SendAsync(new NextJob(...), Runtime, ct)).Value;
 }
 ```
 
@@ -399,7 +405,8 @@ internal sealed class Ledger(AppDbContext db, IAmbientTransaction ambient) : ILe
 Holding the operation's own connection, from `IAmbientTransaction`, in a field or a record is fine: it's the
 transaction's. Hearing what changed (Postgres `LISTEN`) is Levee's own connection's: raise with `IChangeSignals.RaiseAsync`
 in the operation, and watch with `IChangeSignals.WatchAsync` in a subscription. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
-dispatched as the system: a principal only Composition (or a Host) makes, handed to what sends as it (LEVEE021). Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
+sent as the system by Composition's or the Host's own code, which makes the principal there and hands it to nothing
+(LEVEE021): the adapter takes a shared interface that Composition implements by dispatching, as LEVEE016 shows. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
 to configure the context with.
 
 A separate bounded context's context (`[SeparateContext]`: identity's, for the library that serves it) is outside every
@@ -433,8 +440,9 @@ Sending by name is Levee's projections' alone. A route of the app's that takes a
 JSON (reading the operation's type from its descriptor, `InputType` or `ResultType`, to deserialize it) is a second
 surface beside `MapLeveeOperations`, without the strict wire, the catalog's refusals, problem responses or rechecks. So
 is a contract that sends itself: Kernel, Contracts and Domain never call the `Dispatcher`. So is the same name-to-type map
-read off the contract by reflection (`GetCustomAttribute<OperationAttribute>()`, `typeof(OperationAttribute)` anywhere but
-an attribute's argument), and an operation whose type is known only at run time sent through `dynamic`
+read off the contract by reflection: `OperationAttribute` is only ever written on a contract, so naming it anywhere but an
+attribute (`GetCustomAttribute<OperationAttribute>()`, `GetCustomAttributes(false).OfType<OperationAttribute>()`,
+`a is OperationAttribute`, a cast, `typeof(OperationAttribute)` outside an attribute's argument, an alias) is refused, and an operation whose type is known only at run time sent through `dynamic`
 (`dispatcher.SendAsync((dynamic)operation, ...)`). And so is reflecting into
 Levee's own types (`typeof(Dispatcher).GetMethod("SendJsonAsync", ...)`): what Levee keeps internal is its own. An API of the app's own
 design is a Projection, its routes typed:
@@ -484,8 +492,44 @@ internal sealed class RecountProcess : IProcess<RecountInput>
 ```
 
 A principal is made only in Composition, a Host or a Tool (and tests): constructing one (or a `with` of one) in Kernel,
-Contracts, Domain, Application or an Adapter fails the build. Work that must run as the system (a record that outlives
-the operation's rollback) is sent with the principal Composition makes and hands to what sends as it.
+Contracts, Domain, Application or an Adapter fails the build. Nor is one held there: a constructor's parameter, a field
+or a property of a principal type (`SystemPrincipal`, `Principal`, the app's own, or one wrapped in `Lazy<T>`, `Func<T>`
+or an array) is refused, because what holds one sends as it, and so does whatever holds the holder:
+
+```csharp
+// Wrong: the Host registers a SystemPrincipal; a class of Application's takes it, and the process takes the class
+internal sealed class Escalator(Dispatcher dispatcher, SystemPrincipal system)
+{
+    public Task<Result<int>> TallyAsync(CancellationToken ct) => dispatcher.SendAsync(new TallyAllNotes(), system, ct);
+}
+internal sealed class RecountProcess(Escalator escalator) : IProcess<RecountInput> { ... }
+```
+
+Code in those roles acts as its caller, the one the context it's given names: a handler's `OperationContext.Principal`, a
+subscription's `SubscriptionContext.Principal`, a process's `ProcessContext.SendAsync`. A helper that sends takes the
+principal as a method's argument. Work that must run as the system (a record that outlives the operation's rollback, a
+nightly sweep) is the Host's or Composition's own code: a hosted service, a scheduled trigger, or a Composition class
+implementing a shared interface (LEVEE016's example), which makes the principal and sends through the `Dispatcher`
+there, and hands it to nothing.
+
+## LEVEE022: Change signals go only through IChangeSignals
+
+`IChangeSignals` raises a change signal on Postgres's `levee_signals` channel, with the operation's transaction and in
+its scope, and every watcher trusts the scope the payload names. SQL of the app's own naming the channel
+(`pg_notify('levee_signals', ...)`, `NOTIFY levee_signals`, `LISTEN levee_signals`) names any scope it likes, so its
+notification reaches every tenant's watchers, and a listener of its own hears them all.
+
+```csharp
+// Wrong: a signal by hand, in whatever scope the payload says
+await db.Database.ExecuteSqlAsync($"select pg_notify('levee_signals', {payload})", ct);
+
+// Right: raised in the operation, sent when it commits, in its scope
+await signals.RaiseAsync("notes.changed", note.Id.ToString(), ct);
+```
+
+Watch with `IChangeSignals.WatchAsync` in a subscription's handler. The analyzer sees the channel's name in a literal, a
+constant, a concatenation or an interpolation; a name put together at run time by a call (`string.Join`, configuration)
+isn't seen, and is the trust model's to answer.
 
 ## LEVEE101: Every operation has a handler
 
@@ -682,10 +726,15 @@ internal sealed class ScoreTurn : IProcess<TurnScored> { ... }
 
 An input-scoped operation runs in the scope its input names, and row-level security then holds it to exactly that
 scope: the one the caller picked. So the access policy decides who may act *where*, not only who may act. A policy that
-grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant.
+grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant,
+and so does one that asks only whether the scope is the platform's: `Scope.Platform` is whether there's a key, not which.
 
 ```csharp
 // Wrong: any member, in whatever tenant the input names
+"member" => request.Principal is Member ? null : Error.Forbidden("access.members_only", "Sign in."),
+
+// Wrong: refuses the platform's scope, then grants any member any tenant
+"member" when request.Scope.Platform => Error.Forbidden("access.members_only", "Members act in a tenant."),
 "member" => request.Principal is Member ? null : Error.Forbidden("access.members_only", "Sign in."),
 
 // Right: a member, in their own tenant; the platform's scope only to its operators
@@ -693,6 +742,9 @@ grants by the access word alone (`"member" => request.Principal is Member ? null
 "platform-admin" => request.Scope.Platform && request.Principal is Operator ? null : Error.Forbidden("access.platform", "Operators only."),
 ```
 
-The build refuses a policy (outside tests) that never reads `request.Scope`, in a member access, a property pattern
-(`request is { Scope.Platform: true }`) or a deconstruction, in its own code: a helper of its own that reads it counts,
-one elsewhere doesn't. Reading it is the build's to see; comparing it rightly is the policy's, and the access tests'.
+The build refuses a policy (outside tests) that never reads the scope's `Key`, in a member access
+(`request.Scope.Key`), a property pattern (`request is { Scope.Key: var tenant }`) or a deconstruction that binds it, in its
+own code: a helper of its own that takes the scope and reads `Key` counts, one elsewhere doesn't. Reading only
+`Scope.Platform` doesn't count. A policy that grants nothing (every path returns one of `Error`'s refusals, or throws)
+needn't read it. Reading it is the build's to see; comparing it rightly is the policy's, and the access
+tests'.

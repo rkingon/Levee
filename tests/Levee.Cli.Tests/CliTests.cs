@@ -220,7 +220,7 @@ public sealed class CliTests : IDisposable
         Assert.Contains($"\"version\": \"{Levee.Cli.Cli.Version}\"", Read("Acme.Billing", ".config", "dotnet-tools.json"), StringComparison.Ordinal);
         Assert.False(File.Exists(Path.Combine(_dir, "Acme.Billing", "nuget.config")));
         // LEVEE113: the policy decides by scope from the start.
-        Assert.Contains("request.Scope.Platform", Read("Acme.Billing", "src", "Acme.Billing.Host", "AccessPolicy.cs"), StringComparison.Ordinal);
+        Assert.Contains("request.Scope.Key", Read("Acme.Billing", "src", "Acme.Billing.Host", "AccessPolicy.cs"), StringComparison.Ordinal);
     }
 
     [Fact]
