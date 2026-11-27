@@ -115,6 +115,7 @@ public sealed class FifthAuditTests
     [InlineData("public sealed record Watch(string Topic, [property: Secret] string Key) : ISubscription<int>;", true)]
     [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\npublic sealed record Auth([property: Secret] string Key);", true)]
     [InlineData("public sealed record Watch(string Topic) : ISubscription<int>;", false)]
+    [InlineData("public sealed record Item([property: Secret] string Key);\npublic sealed record Watch(string Topic) : ISubscription<Item>;", false)]
     [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\n[System.Text.Json.Serialization.JsonDerivedType(typeof(KeyAuth), \"key\")] public abstract record Auth;\npublic sealed record KeyAuth([property: Secret] string Key) : Auth;", true)]
     [InlineData("public sealed record Watch(string Topic) : ISubscription<int> { [System.Text.Json.Serialization.JsonIgnore, Secret] public string? Kept { get; init; } }", false)]
     [InlineData("public sealed record Watch(string Topic) : ISubscription<int> { [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.Always), Secret] public string? Kept { get; init; } }", false)]
@@ -125,9 +126,13 @@ public sealed class FifthAuditTests
     [InlineData("public sealed record Auth([property: Secret] string Key);\npublic sealed record Watch(string Topic) : ISubscription<int> { [System.Text.Json.Serialization.JsonInclude] public Auth? Credentials; }", true)]
     public async Task A_subscriptions_input_holds_no_secret(string declaration, bool refused)
     {
-        var output = await Compile("Contracts", $"[Operation(\"topics.watch\", \"member\", Platform = true)] {declaration}");
+        // The attribute goes on the subscription itself, wherever the declaration puts it among its helpers.
+        var attributed = declaration.Replace("public sealed record Watch(", "[Operation(\"topics.watch\", \"member\", Platform = true)] public sealed record Watch(", StringComparison.Ordinal);
+        var output = await Compile("Contracts", attributed);
 
-        Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
+        Assert.True(refused == output.Errors.Any(e => e.Id == "LEVEE104" && e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("is a [Secret]", StringComparison.Ordinal)),
+            string.Join("\n", output.Errors.Select(e => e.GetMessage(System.Globalization.CultureInfo.InvariantCulture))));
+        Assert.DoesNotContain(output.Errors, e => e.Id == "LEVEE104" && !e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("is a [Secret]", StringComparison.Ordinal));
     }
 
     [Fact]

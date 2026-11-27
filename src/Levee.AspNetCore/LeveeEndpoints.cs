@@ -85,7 +85,8 @@ public static class LeveeEndpointRouteBuilderExtensions
             {
                 try
                 {
-                    parsed = JsonDocument.Parse(input).RootElement;
+                    // As a call's body is read: by the app's own wire options.
+                    parsed = JsonSerializer.Deserialize<JsonElement>(input, options.Json);
                 }
                 catch (JsonException e)
                 {

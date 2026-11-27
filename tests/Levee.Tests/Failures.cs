@@ -924,3 +924,84 @@ public sealed class ThirteenthAuditFixTests
         Assert.Equal("card", LeveeJson.FindSecretIn(new Pay(new Payer("4242")), typeof(Pay)));
     }
 }
+
+public interface INamed
+{
+    [Personal] string Email { get; }
+}
+
+public interface IReachableBy
+{
+    string Email { get; }
+}
+
+public sealed class Person : INamed, IReachableBy
+{
+    public string Email { get; init; } = "";
+}
+
+public sealed record ViaSibling(IReachableBy Who);
+
+[System.Text.Json.Serialization.JsonConverter(typeof(EmailAddressConverter))]
+public sealed record EmailAddress([property: Secret] string Value);
+
+public sealed class EmailAddressConverter : System.Text.Json.Serialization.JsonConverter<EmailAddress>
+{
+    public override EmailAddress Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) =>
+        new(reader.GetString()!);
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, EmailAddress value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Value);
+}
+
+public sealed record Mailing(EmailAddress To, IReadOnlyList<EmailAddress> Cc);
+
+public enum Level { Low, High }
+
+public class Settings
+{
+    [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<Level>))]
+    public Level Level { get; init; }
+
+    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString)]
+    public int Count { get; init; }
+
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; init; }
+}
+
+public sealed record Configured(Settings Settings);
+
+public sealed class FourteenthAuditFixTests
+{
+    [Fact]
+    public void A_mark_on_a_sibling_interface_holds_through_the_other()
+    {
+        Assert.DoesNotContain("example.com", LeveeJson.Redact(new ViaSibling(new Person { Email = "ada@example.com" }), typeof(ViaSibling)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_value_its_own_converter_writes_whole_is_marked_whole()
+    {
+        var mailing = new Mailing(new EmailAddress("ada@example.com"), [new EmailAddress("bob@example.com")]);
+
+        var audited = LeveeJson.Redact(mailing, typeof(Mailing));
+
+        Assert.DoesNotContain("example.com", audited, StringComparison.Ordinal);
+        Assert.Equal("EmailAddress", LeveeJson.FindSecret(typeof(EmailAddress)));
+        Assert.NotNull(LeveeJson.FindSecretIn(mailing, typeof(Mailing)));
+    }
+
+    [Fact]
+    public void Redaction_writes_what_the_serializer_would_wherever_nothing_is_marked()
+    {
+        var settings = new Configured(new Settings
+        {
+            Level = Level.High,
+            Count = 7,
+            Extra = new() { ["note"] = System.Text.Json.JsonSerializer.SerializeToElement("kept") },
+        });
+
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(settings, LeveeJson.Options), LeveeJson.Redact(settings, typeof(Configured)));
+    }
+}

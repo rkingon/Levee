@@ -31,6 +31,7 @@ public sealed class ThirdAuditTests
     [InlineData("public sealed record Note(Contact Who) : IOperation<int>;\n[System.Text.Json.Serialization.JsonDerivedType(typeof(Other))] public record Contact;\npublic sealed record Other(object Raw) : Contact;", true)]
     [InlineData("public sealed record Note(Child Who) : IOperation<int>;\npublic record Parent(object Raw);\npublic sealed record Child(object Raw, int N) : Parent(Raw);", true)]
     [InlineData("public sealed record Note(System.Collections.Generic.Dictionary<DateOnly, string> ByDay, int[] Counts) : IOperation<int>;", false)]
+    [InlineData("public sealed record Note(IChild Body) : IOperation<int>;\npublic interface IBase { object Raw { get; } }\npublic interface IChild : IBase;", true)]
     public async Task Untyped_containers_and_included_fields_are_refused(string declaration, bool refused)
     {
         var output = await Compile("Contracts", $"[Operation(\"notes.create\", \"member\", Platform = true)] {declaration}");

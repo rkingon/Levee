@@ -40,7 +40,8 @@ analyzed alone), so one project's errors never hide another's, except that a pro
 (LEVEE101-111) stops those that reference it from compiling until it's fixed: how a consumer sees what adopting Levee
 asks of it.
 
-`generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write, a summary),
+`generate` asks up front for everything the build would otherwise refuse (scope, idempotency of a write) and what the
+scaffolded app's tests check (a summary),
 never overwrites, and writes a handler that answers `not_implemented` until it's written. `db` prints; migrations
 stay the app's.
 

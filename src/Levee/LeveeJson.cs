@@ -81,13 +81,18 @@ public static class LeveeJson
 
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<JsonSerializerOptions, JsonSerializerOptions> Redacting = [];
 
-    /// <summary>The same options, each marked member written as its marker by its own contract.</summary>
+    /// <summary>
+    /// The same options, each marked member written as its marker by its own contract, and each value a converter writes
+    /// whole (a value object's own converter) written as its marker when its type carries one.
+    /// </summary>
     private static JsonSerializerOptions RedactingOf(JsonSerializerOptions json) => Redacting.GetValue(json, o =>
     {
         var redacting = new JsonSerializerOptions(o)
         {
-            TypeInfoResolver = (o.TypeInfoResolver ?? new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()).WithAddedModifier(MarkMembers),
+            TypeInfoResolver = (o.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver()).WithAddedModifier(info => MarkMembers(info, o)),
         };
+        // Ahead of the app's converters and the types' own: an opaque value that carries a mark is written as its marker.
+        redacting.Converters.Insert(0, new OpaqueMarkedFactory(o));
         redacting.MakeReadOnly();
         return redacting;
     });
@@ -100,17 +105,26 @@ public static class LeveeJson
     [ThreadStatic]
     private static string? FoundSecret;
 
-    private static void MarkMembers(System.Text.Json.Serialization.Metadata.JsonTypeInfo info)
+    /// <summary>A value whose contract shows no members (a converter writes it whole) and whose type carries a mark.</summary>
+    private static bool Opaque(Type type, JsonSerializerOptions json) =>
+        CarriedMark(type) is not null && json.GetTypeInfo(type).Kind == JsonTypeInfoKind.None;
+
+    private static void MarkMembers(JsonTypeInfo info, JsonSerializerOptions json)
     {
-        if (info.Kind != System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object)
+        if (info.Kind != JsonTypeInfoKind.Object)
         {
             return;
         }
-        foreach (var property in info.Properties)
+        foreach (var property in info.Properties.Where(p => !p.IsExtensionData))
         {
             if (Mark(property.AttributeProvider, info.Type) is { } mark)
             {
-                property.CustomConverter = (JsonConverter)Activator.CreateInstance(typeof(MarkerConverter<>).MakeGenericType(property.PropertyType), mark, property.Name)!;
+                property.CustomConverter = Marker(property.PropertyType, mark, property.Name);
+            }
+            // The property's own converter writes the value whole: what its type carries can't be told apart, so all of it is.
+            else if (property.CustomConverter is not null && CarriedMark(property.PropertyType) is { } carried)
+            {
+                property.CustomConverter = Marker(property.PropertyType, carried, property.Name);
             }
             // Written by a contract another type may stand behind (an interface, a base the serializer falls back to): the value's
             // own type may mark the member.
@@ -123,10 +137,13 @@ public static class LeveeJson
                     return get(owner!);
                 };
                 property.CustomConverter = (JsonConverter)Activator.CreateInstance(typeof(OwnTypeConverter<>).MakeGenericType(property.PropertyType),
-                    property.CustomConverter, property.Name)!;
+                    property.CustomConverter, property.NumberHandling ?? info.NumberHandling ?? json.NumberHandling, property.Name)!;
             }
         }
     }
+
+    private static JsonConverter Marker(Type type, string mark, string member) =>
+        (JsonConverter)Activator.CreateInstance(typeof(MarkerConverter<>).MakeGenericType(type), mark, member)!;
 
     private static void Wrote(string mark, string member)
     {
@@ -150,7 +167,11 @@ public static class LeveeJson
         }
     }
 
-    private sealed class OwnTypeConverter<T>(JsonConverter? inner, string member) : JsonConverter<T>
+    /// <summary>
+    /// Writes the marker when the value's own type marks the member; otherwise what the serializer would have: the property's
+    /// own converter (resolved from a factory), its number handling, the type's converter.
+    /// </summary>
+    private sealed class OwnTypeConverter<T>(JsonConverter? inner, JsonNumberHandling? numbers, string member) : JsonConverter<T>
     {
         public override bool HandleNull => true;
 
@@ -170,11 +191,57 @@ public static class LeveeJson
             {
                 writer.WriteNullValue();
             }
+            else if (numbers is { } handling && handling.HasFlag(JsonNumberHandling.WriteAsString) && value is IFormattable number && IsNumber(typeof(T)))
+            {
+                writer.WriteStringValue(number.ToString(null, System.Globalization.CultureInfo.InvariantCulture));
+            }
             else
             {
-                ((JsonConverter<T>)(inner ?? options.GetConverter(typeof(T)))).Write(writer, value, options);
+                var converter = inner is JsonConverterFactory factory ? factory.CreateConverter(typeof(T), options) : inner ?? options.GetConverter(typeof(T));
+                ((JsonConverter<T>)converter!).Write(writer, value, options);
             }
         }
+
+        private static bool IsNumber(Type type) => (Nullable.GetUnderlyingType(type) ?? type) is var t
+            && (t == typeof(int) || t == typeof(long) || t == typeof(short) || t == typeof(byte) || t == typeof(sbyte) || t == typeof(uint)
+                || t == typeof(ulong) || t == typeof(ushort) || t == typeof(float) || t == typeof(double) || t == typeof(decimal));
+    }
+
+    private sealed class OpaqueMarkedFactory(JsonSerializerOptions json) : JsonConverterFactory
+    {
+        public override bool CanConvert(Type typeToConvert) => Opaque(typeToConvert, json);
+
+        public override JsonConverter CreateConverter(Type typeToConvert, JsonSerializerOptions options) =>
+            Marker(typeToConvert, CarriedMark(typeToConvert)!, typeToConvert.Name);
+    }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, string?> Carried = new();
+
+    /// <summary>The strongest mark anywhere in <paramref name="type"/>'s own members, by its CLR shape, or null.</summary>
+    private static string? CarriedMark(Type type) => Carried.GetOrAdd(type, t => CarriedMark(t, []));
+
+    private static string? CarriedMark(Type type, HashSet<Type> seen)
+    {
+        type = Nullable.GetUnderlyingType(type) ?? type;
+        if (type.IsPrimitive || type.IsEnum || type == typeof(string) || !seen.Add(type))
+        {
+            return null;
+        }
+        string? strongest = null;
+        var parts = type.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
+            .Where(p => p.GetIndexParameters().Length == 0)
+            .Select(p => Mark(p, type) ?? CarriedMark(p.PropertyType, seen))
+            .Concat((type.IsGenericType ? type.GetGenericArguments() : []).Select(a => CarriedMark(a, seen)))
+            .Append(type.IsArray && type.GetElementType() is { } element ? CarriedMark(element, seen) : null);
+        foreach (var mark in parts)
+        {
+            if (mark == "[secret]")
+            {
+                return mark;
+            }
+            strongest ??= mark;
+        }
+        return strongest;
     }
 
     /// <summary>The first <see cref="SecretAttribute"/> property anywhere in <paramref name="type"/>'s wire shape, or null.</summary>
@@ -209,33 +276,37 @@ public static class LeveeJson
         {
             return false;
         }
-        // Written by a base's contract: the value's own type may override the member and mark it there.
-        if (owner != property.DeclaringType && !property.DeclaringType!.IsInterface
-            && owner.GetProperty(property.Name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public) is { } own
-            && own != property && Attribute.IsDefined(own, mark, inherit: true))
-        {
-            return true;
-        }
-        // Written through an interface: the member the value's own type implements it with may carry the mark.
+        // The getter the value's own type runs for this member: an interface's, mapped to its implementation; a base's, to its
+        // override.
+        var runs = getter;
         if (property.DeclaringType is { IsInterface: true } through && through.IsAssignableFrom(owner))
         {
             var map = owner.GetInterfaceMap(through);
-            var at = Array.FindIndex(map.InterfaceMethods, m => m.MetadataToken == getter.MetadataToken && m.Module == getter.Module);
-            if (at >= 0 && map.TargetMethods[at] is var target
-                && owner.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
-                    .FirstOrDefault(p => p.GetMethod is { } g && g.MetadataToken == target.MetadataToken && g.Module == target.Module) is { } implementation
-                && Attribute.IsDefined(implementation, mark, inherit: true))
+            var at = Array.FindIndex(map.InterfaceMethods, m => Same(m, getter));
+            if (at >= 0)
             {
-                return true;
+                runs = map.TargetMethods[at];
             }
+        }
+        else if (owner != property.DeclaringType
+            && owner.GetProperties(Everything).Where(p => p.Name == property.Name && p.GetIndexParameters().Length == 0)
+                .OrderByDescending(p => Depth(p.DeclaringType)).FirstOrDefault() is { GetMethod: { } own })
+        {
+            runs = own;
+        }
+        // Marked where it's implemented, or on any interface the same implementation serves (a sibling's mark holds too).
+        if (owner.GetProperties(Everything).FirstOrDefault(p => p.GetMethod is { } g && Same(g, runs)) is { } implementation
+            && Attribute.IsDefined(implementation, mark, inherit: true))
+        {
+            return true;
         }
         foreach (var contract in owner.GetInterfaces())
         {
             var map = owner.GetInterfaceMap(contract);
             for (var i = 0; i < map.TargetMethods.Length; i++)
             {
-                if (map.TargetMethods[i].MetadataToken == getter.MetadataToken && map.TargetMethods[i].Module == getter.Module
-                    && contract.GetProperties().FirstOrDefault(p => p.GetMethod == map.InterfaceMethods[i]) is { } declared
+                if (Same(map.TargetMethods[i], runs)
+                    && contract.GetProperties().FirstOrDefault(p => p.GetMethod is { } g && Same(g, map.InterfaceMethods[i])) is { } declared
                     && declared.IsDefined(mark, inherit: false))
                 {
                     return true;
@@ -243,6 +314,21 @@ public static class LeveeJson
             }
         }
         return false;
+    }
+
+    private const System.Reflection.BindingFlags Everything =
+        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+
+    private static bool Same(System.Reflection.MethodInfo a, System.Reflection.MethodInfo b) => a.MetadataToken == b.MetadataToken && a.Module == b.Module;
+
+    private static int Depth(Type? type)
+    {
+        var depth = 0;
+        for (var t = type; t is not null; t = t.BaseType)
+        {
+            depth++;
+        }
+        return depth;
     }
 
     /// <summary>Never written: a bare <c>[JsonIgnore]</c>, or one whose condition is <c>Always</c>.</summary>
@@ -259,6 +345,11 @@ public static class LeveeJson
         if (Nullable.GetUnderlyingType(info.Type) is { } underlying)
         {
             return Find(json.GetTypeInfo(underlying), json, seen);
+        }
+        // Written whole by a converter: what its type carries is all there is to go by.
+        if (info.Kind == JsonTypeInfoKind.None && CarriedMark(info.Type) == "[secret]")
+        {
+            return info.Type.Name;
         }
         if (info.ElementType is { } element)
         {

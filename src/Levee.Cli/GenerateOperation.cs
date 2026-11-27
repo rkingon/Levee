@@ -163,7 +163,7 @@ internal static partial class GenerateOperation
 
     /// <summary>The name's first segment as a folder and namespace: <c>user_profiles.create</c> is UserProfiles.</summary>
     private static string Area(string name) =>
-        string.Concat(name.Split('.')[0].Split('_').Select(w => char.ToUpper(w[0], CultureInfo.InvariantCulture) + w[1..]));
+        string.Concat(name.Split('.')[0].Split('_', StringSplitOptions.RemoveEmptyEntries).Select(w => char.ToUpper(w[0], CultureInfo.InvariantCulture) + w[1..]));
 
     private static string Literal(string value) =>
         "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)

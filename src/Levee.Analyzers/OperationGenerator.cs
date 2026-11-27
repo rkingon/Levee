@@ -468,7 +468,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (streams && errors.Count > 0)
         {
-            Report("a subscription declares no error codes of its handler's: it's refused as it opens, and ends on a recheck or a failure, with Levee's own. Fix: remove Errors");
+            Report("a subscription declares no error codes of its handler's: it's refused as it opens, or ended on a recheck, by the access policy's and admissions' own codes, and by Levee's when it fails. Fix: remove Errors");
             return null;
         }
         if (streams && (effects != 1 || idempotency != 0))
@@ -623,8 +623,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return null;
         }
-        // What the wire carries: public properties, and any field or property [JsonInclude] adds.
-        foreach (var member in named.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        // What the wire carries: public properties, and any field or property [JsonInclude] adds; an interface's, with those it inherits.
+        var declared = named.TypeKind == TypeKind.Interface ? named.AllInterfaces.Prepend(named).SelectMany(i => i.GetMembers()) : named.GetMembers();
+        foreach (var member in declared.Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
         {
             var included = member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
             var memberType = member switch
@@ -702,7 +703,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         // A collection of the app's own (a named List<Leaf>) carries its items by what it derives from and implements.
-        foreach (var carried in Bases(named).Concat(named.AllInterfaces).SelectMany(t => t.TypeArguments))
+        // Only a collection's items travel: an operation's or a subscription's own result types (IOperation<T>) don't.
+        foreach (var carried in Bases(named).Concat(named.AllInterfaces).Where(t => t.ContainingNamespace?.ToDisplayString() is { } ns
+            && (ns == "System.Collections.Generic" || ns.StartsWith("System.Collections.", StringComparison.Ordinal))).SelectMany(t => t.TypeArguments))
         {
             if (SecretIn(carried, seen, path) is { } inItems)
             {
