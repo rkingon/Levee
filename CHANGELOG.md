@@ -1,11 +1,13 @@
 # Changelog
 
-## 0.0.1-alpha.1 (2026-11-26)
-
-The first release: the keystone, for feedback from the apps migrating onto it. Everything may change.
+## Unreleased
 
 ### Documentation
 - The Starlight site includes a NuGet quick start, the guides, and a stable reference page for each build rule. Pages preload their self-hosted fonts to keep text stable on first load.
+
+## 0.0.1-alpha.1 (2026-11-26)
+
+The first release: the keystone, for feedback from the apps migrating onto it. Everything may change.
 
 ### Levee
 - **Operations.** `[Operation(name, access)]` with effects, idempotency, declared errors (`Errors`), metadata
