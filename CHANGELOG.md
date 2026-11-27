@@ -13,6 +13,14 @@
   themselves. In `Levee.AspNetCore`, `OperationView` (the catalog's wire shape); in `Levee.Oxbow`,
   `OperationUnavailableException`.
 
+### Levee.EntityFrameworkCore
+- `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
+  before the app's own narrowing, which a blanket grant would undo.
+
+### Generator and analyzers
+- LEVEE006 leaves .NET's own source generators' output alone (`[GeneratedRegex]` emits a bare `#pragma warning disable`),
+  and holds every other generator's to the rule.
+
 ### Levee.Cli
 - `dotnet levee check` lists every suppressed LEVEE rule with its reason and fails until none is left: a suppression lets
   a migration build, never makes it green.

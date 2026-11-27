@@ -95,7 +95,9 @@ public static class LeveeSchema
     /// <summary>
     /// What the app's runtime role needs in <paramref name="schema"/>, run by the owner: every table's rows (RLS still holds it
     /// to its scope), now and as migrations add tables, and Levee's functions. The audit it reads, and adds to only through
-    /// <c>levee_audit_write</c>, at the transaction's time: it can't change, remove or backdate a record.
+    /// <c>levee_audit_write</c>, at the transaction's time: it can't change, remove or backdate a record. EF's migration
+    /// history is the owner's alone. Run after migrations, and before the app's own narrowing (an append-only table), which
+    /// a blanket grant would undo.
     /// </summary>
     public static string Grants(string role, string schema = "public")
     {
@@ -110,6 +112,11 @@ public static class LeveeSchema
             alter default privileges in schema {schema} grant select, insert, update, delete on tables to {role};
             alter default privileges in schema {schema} grant usage, select on sequences to {role};
             revoke insert, update, delete on {schema}.{AuditTable} from {role};
+            do $levee$ begin
+              if to_regclass('{schema}."__EFMigrationsHistory"') is not null then
+                revoke all on {schema}."__EFMigrationsHistory" from {role};
+              end if;
+            end $levee$;
             """;
     }
 

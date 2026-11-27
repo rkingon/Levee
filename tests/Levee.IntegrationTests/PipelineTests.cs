@@ -406,6 +406,20 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task The_migration_history_is_the_owners_alone()
+    {
+        await postgres.ExecuteAsync("""create table if not exists "__EFMigrationsHistory" ("MigrationId" text primary key, "ProductVersion" text not null);"""
+            + LeveeSchema.Grants("app"));
+        await using var connection = new NpgsqlConnection(postgres.App);
+        await connection.OpenAsync(Ct);
+        await using var forge = new NpgsqlCommand("""insert into "__EFMigrationsHistory" values ('20990101000000_Forged', '10.0.0')""", connection);
+
+        var refused = await Assert.ThrowsAsync<PostgresException>(() => forge.ExecuteNonQueryAsync(Ct));
+
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, refused.SqlState);
+    }
+
+    [Fact]
     public async Task The_app_role_writes_the_audit_only_through_Levee()
     {
         await using var connection = new NpgsqlConnection(postgres.App);

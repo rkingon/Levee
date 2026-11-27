@@ -91,6 +91,22 @@ internal static class Known
     public static bool IsLeveeGenerated(SyntaxTree? tree) =>
         tree?.FilePath.Replace('\\', '/').Contains("Levee.Analyzers.OperationGenerator/") == true;
 
+    // .NET's own source generators, by the assembly whose name heads a generated file's path. Their output silences
+    // warnings wholesale (the regex generator's is a bare #pragma warning disable) and holds none of the app's code.
+    private static readonly string[] FrameworkGenerators =
+    [
+        "System.Text.RegularExpressions.Generator", "System.Text.Json.SourceGeneration", "Microsoft.Extensions.Logging.Generators",
+        "Microsoft.Extensions.Options.SourceGeneration", "Microsoft.Extensions.Configuration.Binder.SourceGeneration",
+        "Microsoft.Interop.LibraryImportGenerator", "Microsoft.Interop.ComInterfaceGenerator", "Microsoft.AspNetCore.Http.RequestDelegateGenerator",
+    ];
+
+    /// <summary>Output of one of .NET's own source generators.</summary>
+    public static bool IsFrameworkGenerated(SyntaxTree? tree)
+    {
+        var path = tree?.FilePath.Replace('\\', '/');
+        return path is not null && FrameworkGenerators.Any(g => path.StartsWith(g + "/", StringComparison.Ordinal) || path.Contains("/" + g + "/"));
+    }
+
     /// <summary>Runs <paramref name="check"/> unless the operation is in Levee's own generated code.</summary>
     public static void Unless(Microsoft.CodeAnalysis.Diagnostics.OperationAnalysisContext context, Action check)
     {

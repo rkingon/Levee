@@ -30,14 +30,14 @@ public sealed class SuppressionAnalyzer : DiagnosticAnalyzer
             {
                 start.RegisterSyntaxNodeAction(c =>
                 {
-                    if (!Known.IsLeveeGenerated(c.Node.SyntaxTree))
+                    if (!Known.IsLeveeGenerated(c.Node.SyntaxTree) && !Known.IsFrameworkGenerated(c.Node.SyntaxTree))
                     {
                         OnAttribute(c);
                     }
                 }, SyntaxKind.Attribute);
                 start.RegisterSyntaxTreeAction(c =>
                 {
-                    if (!Known.IsLeveeGenerated(c.Tree))
+                    if (!Known.IsLeveeGenerated(c.Tree) && !Known.IsFrameworkGenerated(c.Tree))
                     {
                         OnTree(c);
                     }

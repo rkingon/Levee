@@ -46,7 +46,11 @@ what `LeveeSchema.Grants(role)` prints. The owner also revokes what every role g
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
-  record.
+  record;
+- nothing on EF's `__EFMigrationsHistory`: migrations are the owner's.
+
+Run the grants after migrations, then the app's own narrowing (an append-only table, a table only the owner writes): the
+grant on every table would undo a narrowing that came before it.
 
 ## Per operation
 

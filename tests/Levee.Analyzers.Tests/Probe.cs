@@ -53,7 +53,7 @@ internal static class Probe
     /// <param name="Config">Analyzer config keys, as an .editorconfig or .globalconfig sets them.</param>
     /// <param name="Exe">An executable, not a library.</param>
     public sealed record Settings(string Role, IReadOnlyDictionary<string, string>? Properties = null, IReadOnlyList<string>? NoWarn = null,
-        bool Documented = false, IReadOnlyDictionary<string, string>? Config = null, bool Exe = false);
+        bool Documented = false, IReadOnlyDictionary<string, string>? Config = null, bool Exe = false, string? Path = null);
 
     public static async Task<Output> CompileAsync(Settings settings, string source, string assembly = "Probe", params MetadataReference[] references)
     {
@@ -61,7 +61,7 @@ internal static class Probe
                 nullableContextOptions: NullableContextOptions.Enable)
             .WithSpecificDiagnosticOptions((settings.NoWarn ?? []).Select(id => KeyValuePair.Create(id, ReportDiagnostic.Suppress)));
         var parse = CSharpParseOptions.Default.WithDocumentationMode(settings.Documented ? DocumentationMode.Diagnose : DocumentationMode.Parse);
-        var compilation = CSharpCompilation.Create(assembly, [CSharpSyntaxTree.ParseText(source, parse, path: $"{assembly}.cs")],
+        var compilation = CSharpCompilation.Create(assembly, [CSharpSyntaxTree.ParseText(source, parse, path: settings.Path ?? $"{assembly}.cs")],
             [.. Framework, .. references, .. references.Any(r => r.Display?.EndsWith("Levee.dll", StringComparison.Ordinal) == true) ? LeveeDependencies : []],
             compilationOptions);
         var properties = new Dictionary<string, string>(settings.Properties ?? new Dictionary<string, string>());
