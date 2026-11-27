@@ -116,24 +116,78 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Theory]
-    [InlineData(false, 2)]
+    [InlineData(false, 1)]
     [InlineData(true, 0)]
-    public async Task A_process_runs_as_its_starter_in_its_scope_only_if_the_starting_operation_commits(bool refuse, long notes)
+    public async Task A_process_is_queued_only_if_the_operation_that_starts_it_commits(bool refuse, long queued)
+    {
+        using var host = Build();
+        var (acme, ada) = NewTenant();
+
+        var started = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartNoteProcess(acme, "step", refuse), ada, Ct);
+
+        Assert.Equal(!refuse, started.IsSuccess);
+        Assert.Equal(queued, await postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%'", acme));
+    }
+
+    [Fact]
+    public async Task A_process_runs_as_its_starter_in_its_scope()
     {
         using var host = Build(work: true);
         await host.StartAsync(Ct);
         var (acme, ada) = NewTenant();
 
-        await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartNoteProcess(acme, "step", refuse), ada, Ct);
+        await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartNoteProcess(acme, "step", Refuse: false), ada, Ct);
 
-        var deadline = DateTime.UtcNow.AddSeconds(refuse ? 3 : 30);
-        while (await postgres.CountAsync("select count(*) from notes where tenant = $1", acme) < notes && DateTime.UtcNow < deadline)
+        await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state = 'completed'", acme), 1);
+        Assert.Equal(2, await postgres.CountAsync("select count(*) from notes where tenant = $1", acme));
+        Assert.Equal(2, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'notes.create' and subject = $2", acme, ada.Subject));
+        await host.StopAsync(Ct);
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 1)]
+    public async Task A_process_stays_in_the_scope_it_was_started_in_unless_the_platform_started_it(bool platform, long written)
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, _) = NewTenant();
+        var (globex, _) = NewTenant();
+        var system = new SystemPrincipal("cron");
+
+        // The system may act in every tenant; a process it starts from acme's operation still stays in acme.
+        var started = platform
+            ? await dispatcher.SendAsync(new StartPlatformProcess(globex), system, Ct)
+            : await dispatcher.SendAsync(new StartStrayProcess(acme, globex), system, Ct);
+
+        Assert.True(started.IsSuccess, started.IsSuccess ? null : started.Error.Message);
+        await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state in ('completed', 'discarded')", globex), 1);
+        Assert.Equal(written, await postgres.CountAsync("select count(*) from notes where tenant = $1", globex));
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
+    public async Task A_process_that_snoozes_before_its_first_await_runs_again()
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var (acme, ada) = NewTenant();
+
+        await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartEagerSnooze(acme), ada, Ct);
+
+        await Until(() => postgres.CountAsync("select count(*) from notes where tenant = $1", acme), 1);
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from notes where tenant = $1 and text = 'after snooze'", acme));
+        await host.StopAsync(Ct);
+    }
+
+    private static async Task Until(Func<Task<long>> count, long expected)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (await count() < expected && DateTime.UtcNow < deadline)
         {
             await Task.Delay(100, Ct);
         }
-        Assert.Equal(notes, await postgres.CountAsync("select count(*) from notes where tenant = $1", acme));
-        Assert.Equal(notes, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'notes.create' and subject = $2", acme, ada.Subject));
-        await host.StopAsync(Ct);
     }
 
     private static (string Tenant, Member Member) NewTenant()

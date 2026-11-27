@@ -52,6 +52,19 @@ public sealed class PostgresFixture : IAsyncLifetime
         await command.ExecuteNonQueryAsync();
     }
 
+    /// <summary>As the owner: one text value, for a failure's message.</summary>
+    public async Task<string> TextAsync(string sql, params object[] parameters)
+    {
+        await using var connection = new NpgsqlConnection(Owner);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        foreach (var p in parameters)
+        {
+            command.Parameters.AddWithValue(p);
+        }
+        return (await command.ExecuteScalarAsync())?.ToString() ?? "";
+    }
+
     /// <summary>As the owner, past row-level security.</summary>
     public async Task<long> CountAsync(string sql, params object[] parameters)
     {

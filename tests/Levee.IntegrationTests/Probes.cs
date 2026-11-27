@@ -218,6 +218,11 @@ internal sealed class RestoreMembers : IJobPrincipals
         {
             return ValueTask.FromResult<Principal>(job);
         }
+        // The platform's own work stays the platform's.
+        if (job.System)
+        {
+            return ValueTask.FromResult<Principal>(job);
+        }
         // A key whose lookup now finds it issued to another tenant.
         if (job.Subject.StartsWith("moved_", StringComparison.Ordinal))
         {
@@ -310,17 +315,22 @@ internal sealed class StartNoteProcessHandler(IJobs jobs) : IOperationHandler<St
     }
 }
 
-/// <summary>Snoozes once between its steps: the second run starts from the top and finds its first step done.</summary>
+/// <summary>Two steps with a snooze between: each run starts from the top and reads, through an operation, where it was.</summary>
 internal sealed class NoteProcess : IProcess<NoteProcessInput>
 {
     public async Task RunAsync(NoteProcessInput input, ProcessContext context, CancellationToken ct)
     {
-        var written = await context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Tenant, $"{input.Text} {context.Attempt}"), ct);
+        var done = (await context.SendAsync(new ListNotes(input.Tenant), ct)).Value.Count;
+        if (done >= 2)
+        {
+            return;
+        }
+        var written = await context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Tenant, $"{input.Text} {done + 1}"), ct);
         if (!written.IsSuccess)
         {
             throw new InvalidOperationException(written.Error.Message);
         }
-        if (context.Attempt == 1)
+        if (done == 0)
         {
             context.Snooze(TimeSpan.FromMilliseconds(100));
         }
@@ -345,5 +355,81 @@ internal sealed class WatchSignalsHandler(IChangeSignals signals) : ISubscriptio
         {
             yield return change.Key ?? "*";
         }
+    }
+}
+
+/// <summary>Starts, from one tenant's operation, a process that writes into another tenant.</summary>
+[Operation("probe.start_stray_process", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartStrayProcess(string Tenant, string Target) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StartStrayProcessHandler(IJobs jobs) : IOperationHandler<StartStrayProcess, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartStrayProcess operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new StrayInput(operation.Target), new JobOptions(MaxAttempts: 1), ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Starts, as the platform, a process that writes into a tenant.</summary>
+[Operation("probe.start_platform_process", "platform", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Platform = true)]
+public sealed record StartPlatformProcess(string Target) : IOperation<Unit>;
+
+internal sealed class StartPlatformProcessHandler(IJobs jobs) : IOperationHandler<StartPlatformProcess, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartPlatformProcess operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new StrayInput(operation.Target), new JobOptions(MaxAttempts: 1), ct);
+        return Unit.Value;
+    }
+}
+
+public sealed record StrayInput(string Target);
+
+internal sealed class StrayProcess : IProcess<StrayInput>
+{
+    public async Task RunAsync(StrayInput input, ProcessContext context, CancellationToken ct)
+    {
+        var written = await context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Target, "stray"), ct);
+        if (!written.IsSuccess)
+        {
+            throw new InvalidOperationException($"{written.Error.Code}: {written.Error.Message}");
+        }
+    }
+}
+
+/// <summary>Snoozes before its first await, with one attempt: the snooze isn't a failure.</summary>
+[Operation("probe.start_eager_snooze", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartEagerSnooze(string Tenant) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StartEagerSnoozeHandler(IJobs jobs) : IOperationHandler<StartEagerSnooze, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartEagerSnooze operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new EagerSnoozeInput(operation.Tenant), new JobOptions(MaxAttempts: 1), ct);
+        return Unit.Value;
+    }
+}
+
+public sealed record EagerSnoozeInput(string Tenant);
+
+internal sealed class EagerSnoozeProcess : IProcess<EagerSnoozeInput>
+{
+    // A snooze isn't an attempt, so the process remembers it was here: a real one reads that from its own state.
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> Snoozed = new();
+
+    public Task RunAsync(EagerSnoozeInput input, ProcessContext context, CancellationToken ct)
+    {
+        if (Snoozed.TryAdd(input.Tenant, true))
+        {
+            context.Snooze(TimeSpan.FromMilliseconds(100));
+        }
+        return context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Tenant, "after snooze"), ct);
     }
 }

@@ -35,7 +35,7 @@ public sealed class ProcessContext
     /// <summary>The scope it was started in; null for the platform's.</summary>
     public string? Scope { get; }
 
-    /// <summary>Which run this is, from 1: a retry or a snooze runs it again.</summary>
+    /// <summary>Which attempt this is, from 1: a failed run is retried with the next. A snooze isn't an attempt, so a process that snoozes knows where it is from its own state, not from this.</summary>
     public int Attempt { get; }
 
     /// <summary>Sends <paramref name="operation"/> through the pipeline as the process's caller, in its scope: one step, committed on its own.</summary>

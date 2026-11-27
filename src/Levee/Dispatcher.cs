@@ -269,26 +269,35 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
-    /// <summary>A step of a process: as its caller, in the scope it was started in, held to it as a job is.</summary>
-    internal async Task<Result<object?>> SendPinnedAsync(IOperation operation, Principal principal, string? pinned, CancellationToken ct)
+    /// <summary>
+    /// A step of a process, as its caller. One started in a scope stays in it, whatever the step declares (its input's
+    /// scope, its caller's, the platform's): the access policy may let the caller elsewhere, but the process was started
+    /// for that scope alone. One started by the platform may act in any, as the platform could.
+    /// </summary>
+    internal async Task<Result<object?>> SendConfinedAsync(IOperation operation, Principal principal, string? scope, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         if (catalog.Find(operation.GetType()) is not { } descriptor)
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned, ct);
+        return await RunAsync(descriptor, operation, principal, answer: null, scope, ct, confined: scope is not null);
     }
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
         await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, CancellationToken ct)
+        Func<object?, object?>? answer, string? pinned, CancellationToken ct, bool confined = false)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
         var scoped = ScopeOf(descriptor, operation, principal, pinned);
+        if (confined && scoped.IsSuccess && scoped.Value.Key != pinned)
+        {
+            scoped = Error.Forbidden(LeveeErrors.ScopeViolation,
+                $"{descriptor.Name} would run {(scoped.Value.Key is { } key ? $"in {key}" : "across every scope")}, outside the scope its process was started in.");
+        }
         // Redacted once, for the audit and the outcome both. An input built in-process can hold what its own type refuses
         // (null where it's non-nullable): refused here, as the wire would, before any transaction opens.
         string? input = null;

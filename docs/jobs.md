@@ -70,7 +70,13 @@ await jobs.StartAsync(new TurnStarted(turn.Id), null, ct);
 ```
 
 Its state is what its operations commit (a process manager's aggregate): a run that's retried, or one that snoozes
-(`context.Snooze(delay)`) to come back later, starts again from the top and reads where it was. The generated
+(`context.Snooze(delay)`) to come back later, starts again from the top and reads where it was. A snooze isn't an
+attempt, so `context.Attempt` doesn't say where a process is: its state does.
+
+A process started in a scope stays there: every step runs in that scope, whatever the step declares (its input's, its
+caller's, the platform's), even when the access policy would let its caller elsewhere. One the platform started may act
+in any scope, as the platform could. A stored process resolves only to an input type some registered process takes;
+anything else is cancelled, never loaded. The generated
 registration finds a process in Application; its input is stored, so renaming the input type strands runs still queued,
 and it carries no `[Secret]` unless jobs seal their inputs.
 

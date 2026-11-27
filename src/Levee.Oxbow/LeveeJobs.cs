@@ -40,6 +40,9 @@ public static class LeveeOxbowServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(oxbow);
         oxbow.AddWorker<OperationJob, OperationJobWorker>();
         oxbow.AddWorker<ProcessJob, ProcessJobWorker>();
+        var services = oxbow.Services;
+        // Read at first use, once the composition has registered every process.
+        oxbow.Services.AddSingleton(_ => new ProcessInputs(services));
         if (sealSecrets)
         {
             oxbow.AddWorker<SealedOperationJob, SealedOperationJobWorker>();
@@ -109,7 +112,7 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         };
         // The scope the starting operation was authorized in: every step runs there, as a caller-scoped job does.
         var scope = context.Scope.Key;
-        var name = $"{typeof(TInput).FullName}, {typeof(TInput).Assembly.GetName().Name}";
+        var name = ProcessInputs.NameOf(typeof(TInput));
         var stored = JsonSerializer.SerializeToElement(input, levee.Json);
         var insert = new InsertOptions
         {
@@ -206,46 +209,64 @@ internal sealed class SealedOperationJobWorker(Dispatcher dispatcher, IEnumerabl
 /// Runs a process as the caller that started it, in its scope: each step it sends is an operation of its own. A snooze runs
 /// it again later; an exception is a failed run, retried by Oxbow until its attempts run out.
 /// </summary>
-internal sealed class ProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee)
-    : IWorker<ProcessJob>
+internal sealed class ProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
+    ProcessInputs inputs) : IWorker<ProcessJob>
 {
     public Task WorkAsync(Job<ProcessJob> job, CancellationToken cancellationToken) =>
-        Run.ProcessAsync(scopes, dispatcher, principals, levee, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
+        Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
             job.Attempt, cancellationToken);
 }
 
-internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee)
-    : IWorker<SealedProcessJob>
+internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
+    ProcessInputs inputs) : IWorker<SealedProcessJob>
 {
     public Task WorkAsync(Job<SealedProcessJob> job, CancellationToken cancellationToken) =>
-        Run.ProcessAsync(scopes, dispatcher, principals, levee, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
+        Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
             job.Attempt, cancellationToken);
+}
+
+/// <summary>
+/// The inputs of every registered process, by the name a job stores: a stored name resolves to one of these or to nothing,
+/// so no type is ever loaded from what the queue holds.
+/// </summary>
+internal sealed class ProcessInputs(IServiceCollection services)
+{
+    private readonly Lazy<Dictionary<string, Func<IServiceProvider, object, ProcessContext, CancellationToken, Task>>> _runs = new(() =>
+        services
+            .Select(d => d.ServiceType)
+            .Where(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(IProcess<>))
+            .Select(t => t.GenericTypeArguments[0])
+            .Distinct()
+            .ToDictionary(NameOf, input => typeof(Run).GetMethod(nameof(Run.StepAsync), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
+                .MakeGenericMethod(input)
+                .CreateDelegate<Func<IServiceProvider, object, ProcessContext, CancellationToken, Task>>(), StringComparer.Ordinal));
+
+    public static string NameOf(Type input) => $"{input.FullName}, {input.Assembly.GetName().Name}";
+
+    public Type? Find(string name) => _runs.Value.ContainsKey(name) ? Type.GetType(name, throwOnError: false) : null;
+
+    public Func<IServiceProvider, object, ProcessContext, CancellationToken, Task> RunOf(string name) => _runs.Value[name];
 }
 
 internal static class Run
 {
     public static async Task ProcessAsync(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
-        string process, JsonElement input, string subject, bool system, string? scope, int attempt, CancellationToken ct)
+        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, int attempt, CancellationToken ct)
     {
-        await using var services = scopes.CreateAsyncScope();
-        // Only a type some registered process takes: what's stored names a type, and nothing else is loaded from it.
-        var type = Type.GetType(process, throwOnError: false) is { } found
-            && services.ServiceProvider.GetService<IServiceProviderIsService>()?.IsService(typeof(IProcess<>).MakeGenericType(found)) == true
-                ? found
-                : throw new JobCancelException($"No process takes {process}: renamed or removed since it was started.");
+        var type = inputs.Find(process) ?? throw new JobCancelException($"No process takes {process}: renamed or removed since it was started.");
         var job = new JobPrincipal(subject, system, scope);
         var principal = principals.FirstOrDefault() is { } restore ? await restore.RestoreAsync(job, ct) : job;
         if (principal.Subject != subject)
         {
             throw new JobCancelException($"Restored as {principal.Subject}, not {subject}, who started it.");
         }
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendPinnedAsync(operation, principal, scope, token));
+        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendConfinedAsync(operation, principal, scope, token));
         var value = input.Deserialize(type, levee.Json)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");
+        await using var services = scopes.CreateAsyncScope();
         try
         {
-            await (Task)typeof(Run).GetMethod(nameof(StepAsync), System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!
-                .MakeGenericMethod(type).Invoke(null, [services.ServiceProvider, value, context, ct])!;
+            await inputs.RunOf(process)(services.ServiceProvider, value, context, ct);
         }
         catch (ProcessSnoozed snoozed)
         {
@@ -253,9 +274,10 @@ internal static class Run
         }
     }
 
-    private static Task StepAsync<TInput>(IServiceProvider services, TInput input, ProcessContext context, CancellationToken ct)
+    // Awaited inside, so a process that snoozes or throws before its first await fails its task, not its caller.
+    internal static async Task StepAsync<TInput>(IServiceProvider services, object input, ProcessContext context, CancellationToken ct)
         where TInput : notnull =>
-        services.GetRequiredService<IProcess<TInput>>().RunAsync(input, context, ct);
+        await services.GetRequiredService<IProcess<TInput>>().RunAsync((TInput)input, context, ct);
 
     public static async Task OperationAsync(Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, string operation, JsonElement input,
         string subject, bool system, string? scope, CancellationToken ct)
