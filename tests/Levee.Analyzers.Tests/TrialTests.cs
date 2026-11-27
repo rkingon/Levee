@@ -64,6 +64,7 @@ public sealed class TrialTests
     [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))][ValueObject(typeof(string), Pattern = \"^[0-9]{5}$\")] public readonly record struct Zip(string Value);", "Zip? Area", false)]
     [InlineData("public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonConverter(typeof(ZipJson))] Zip Area", true)]
     [InlineData("public readonly record struct Zip(string Value);", "Zip Area", false)]
+    [InlineData("[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<Zip>))] public enum Zip { North, South }", "Zip Area", false)]
     public async Task A_value_written_by_its_own_converter_says_what_it_writes(string zip, string member, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""

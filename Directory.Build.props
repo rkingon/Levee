@@ -27,7 +27,18 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
-  <ItemGroup Condition="'$(IsPackable)' == 'true'">
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-  </ItemGroup>
+  <!--
+    The package's README is read on nuget.org, where the repository's relative docs/ links lead nowhere: packed with each
+    pointing at the same page on the site.
+  -->
+  <Target Name="_LeveePackedReadme" BeforeTargets="_GetPackageFiles" Condition="'$(IsPackable)' == 'true'">
+    <PropertyGroup>
+      <_LeveeReadme>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)README.md'))</_LeveeReadme>
+      <_LeveeReadme>$([System.Text.RegularExpressions.Regex]::Replace($(_LeveeReadme), '\]\(docs/([a-z0-9-]+)\.md', '](https://rkingon.github.io/Levee/$1/'))</_LeveeReadme>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(IntermediateOutputPath)README.md" Lines="$([MSBuild]::Escape($(_LeveeReadme)))" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <None Include="$(IntermediateOutputPath)README.md" Pack="true" PackagePath="\" Visible="false" />
+    </ItemGroup>
+  </Target>
 </Project>

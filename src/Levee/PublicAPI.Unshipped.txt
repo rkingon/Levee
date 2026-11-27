@@ -80,3 +80,13 @@ Levee.ProcessContext.Scope.get -> string?
 Levee.ProcessContext.SendAsync<TResult>(Levee.IOperation<TResult>! operation, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
 Levee.ProcessContext.Snooze(System.TimeSpan delay) -> void
 Levee.OperationContext.NewId() -> System.Guid
+Levee.AnonymousPrincipal
+Levee.AnonymousPrincipal.AnonymousPrincipal() -> void
+Levee.AnonymousPrincipal.Equals(Levee.AnonymousPrincipal? other) -> bool
+override Levee.AnonymousPrincipal.<Clone>$() -> Levee.AnonymousPrincipal!
+override Levee.AnonymousPrincipal.Equals(object? obj) -> bool
+override Levee.AnonymousPrincipal.GetHashCode() -> int
+override Levee.AnonymousPrincipal.ToString() -> string!
+override sealed Levee.AnonymousPrincipal.Equals(Levee.Principal? other) -> bool
+static Levee.AnonymousPrincipal.operator !=(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool
+static Levee.AnonymousPrincipal.operator ==(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool

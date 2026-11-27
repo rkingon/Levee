@@ -464,7 +464,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 return Error.Forbidden(LeveeErrors.ScopeViolation, $"{descriptor.Name}'s caller is now scoped elsewhere than when it was asked for.");
             }
-            return Scoping(descriptor, operation, caller);
+            var scoped = Scoping(descriptor, operation, caller);
+            return !scoped.IsSuccess && principal is AnonymousPrincipal && scoped.Error.Code == LeveeErrors.CallerUnscoped
+                ? Error.Unauthenticated($"{descriptor.Name} runs in its caller's own scope: sign in first.")
+                : scoped;
         }
         catch (Exception e)
         {

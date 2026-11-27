@@ -13,7 +13,7 @@ pipeline: authorize, scope, open the unit of work, run the handler, audit, commi
 | `Levee` | Operations, `Result`/`Error`, `Principal`, the `Dispatcher`, the unit-of-work and job ports, the strict wire (`LeveeJson`). Ships the generator and analyzers. |
 | `Levee.EntityFrameworkCore` | The unit of work on EF Core and Postgres: one transaction per operation, `read only` when declared, scoped by RLS, audited. |
 | `Levee.Oxbow` | `IJobs` on Oxbow: an operation enqueued in its caller's transaction, run later through the pipeline. |
-| `Levee.AspNetCore` | `GET /ops` and `POST /ops/{name}`: the catalog over HTTP, no logic of its own. |
+| `Levee.AspNetCore` | `GET /ops`, `POST /ops/{name}` and, for a subscription, `GET /ops/{name}/events?input={json}` (server-sent events): the catalog over HTTP, no logic of its own. |
 | `Levee.Mcp` | The catalog over MCP: a tool per operation a client may call, through the dispatcher, no logic of its own. |
 | `Levee.Testing` | Postgres for pipeline tests as production has it (Testcontainers): Levee's schema run by the owner, the app's role held to row-level security. Test and TestSupport projects only. |
 | `Levee.Cli` | `dotnet levee`: scaffold an app, generate operations, list the catalog, print the database's SQL. Pinned per app. |
@@ -142,7 +142,9 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 ```
 
 - `Access` is the app's vocabulary; its `IAccessPolicy` decides, once, before the unit of work opens. Checks that need
-  the transaction (a membership row, a lease) are an `IAdmission`.
+  the transaction (a membership row, a lease) are an `IAdmission`. Both live in Composition (or the Host when there's
+  none), where the catalog is composed, so their `[Refuses]` codes reach every client. A caller with no credentials is an
+  `AnonymousPrincipal`, for what anyone may do.
 - An operation declares only reads unless it says otherwise, and runs in a `read only` transaction: an undeclared write
   is `effects.undeclared`, refused by Postgres.
 - Every operation declares one scope (LEVEE106): its input's (`IScopedOperation`), its caller's (`CallerScoped = true`, from

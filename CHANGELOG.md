@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Levee
+- `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope
+  answers it `Unauthenticated` (401), not `scope.caller` (403).
 - `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
   counter in the version's sequence bits, RFC 9562's method 1), where `Guid.CreateVersion7(context.Now)` would order ids
   minted in one operation at random.
@@ -45,6 +47,8 @@
   before the app's own narrowing, which a blanket grant would undo.
 
 ### Generator and analyzers
+- LEVEE104 leaves System.Text.Json's own converters alone (`JsonStringEnumConverter` on an enum): the schema shows what
+  they write.
 - The generated registration finds Application's own classes its handlers and processes take, at any depth (a store, a
   calculation over ports), and registers them scoped; a class that takes a value is configuration, Composition's.
 - **Breaking:** a LEVEE suppression builds only while the app declares it's migrating,
@@ -80,6 +84,9 @@
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
 
 ### Documentation
+- The packed README links each guide to its page on the site, not the repository's `docs/` paths nuget.org can't follow;
+  it names a subscription's route, `GET /ops/{name}/events`.
+- The access policy lives in Composition, where the catalog is composed, so its refusals reach `GET /ops`.
 - Recorded the open proposal for `ProcessContext.StepAsync` in the [decision log](docs/decisions.md#open).
 - The Starlight site includes a NuGet quick start, the guides, and a stable reference page for each build rule. Pages preload their self-hosted fonts to keep text stable on first load.
 

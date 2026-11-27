@@ -183,10 +183,12 @@ public sealed class CallerScopeTests
 
         var mine = await dispatcher.SendAsync(new Mine(), new Key("key_1", "acme"), CancellationToken.None);
         var unscoped = await dispatcher.SendAsync(new Mine(), new SystemPrincipal("cron"), CancellationToken.None);
+        var anonymous = await dispatcher.SendAsync(new Mine(), new AnonymousPrincipal(), CancellationToken.None);
 
         Assert.Equal("acme", mine.Value);
         Assert.Equal(new WorkScope("acme", ReadOnly: true), Assert.Single(_store.Begun));
         Assert.Equal((ErrorKind.Forbidden, LeveeErrors.CallerUnscoped), (unscoped.Error!.Kind, unscoped.Error.Code));
+        Assert.Equal((ErrorKind.Unauthenticated, LeveeErrors.Unauthenticated), (anonymous.Error!.Kind, anonymous.Error.Code));
     }
 
     [Fact]

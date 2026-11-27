@@ -633,8 +633,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// </summary>
     private static string? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
     {
+        // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't.
         static bool Converted(ISymbol symbol) =>
-            symbol.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConverterAttribute");
+            symbol.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConverterAttribute"
+                && (a.ConstructorArguments.FirstOrDefault().Value as ITypeSymbol)?.ContainingAssembly?.Name != "System.Text.Json");
         static bool Declared(ITypeSymbol t) =>
             (t is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : t)
                 .GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");

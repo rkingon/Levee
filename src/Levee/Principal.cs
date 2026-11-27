@@ -6,6 +6,13 @@ namespace Levee;
 /// </summary>
 public abstract record Principal(string Subject);
 
+/// <summary>
+/// A caller with no credentials, for what anyone may do (a customer's status page, a sign-in). The access policy decides
+/// what that is; an operation that runs in its caller's own scope answers it <see cref="ErrorKind.Unauthenticated"/>, since
+/// what it lacks is credentials, not permission.
+/// </summary>
+public sealed record AnonymousPrincipal() : Principal("anonymous");
+
 /// <summary>The platform acting on its own behalf: bootstrapping, periodic work. The access policy still decides what it may do.</summary>
 public sealed record SystemPrincipal(string Subject) : Principal(Subject);
 
