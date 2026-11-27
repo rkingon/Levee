@@ -48,47 +48,71 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
-    public async Task A_signal_reaches_its_scopes_watchers_when_its_operation_commits_and_never_when_it_rolls_back()
+    public async Task A_signal_reaches_its_scopes_subscriptions_when_its_operation_commits_and_never_when_it_rolls_back()
     {
         using var host = Build();
         var dispatcher = host.Services.GetRequiredService<Dispatcher>();
         var (acme, ada) = NewTenant();
         var (globex, hank) = NewTenant();
-        var descriptor = dispatcher.Catalog.Find(typeof(SignalProbe))!;
-        await using var scope = host.Services.CreateAsyncScope();
-        var signals = scope.ServiceProvider.GetRequiredService<IChangeSignals>();
         using var watching = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        var acmeWatch = signals.WatchAsync("notes.changed", new SubscriptionContext(ada, descriptor, new WorkScope(acme, true)), watching.Token)
-            .GetAsyncEnumerator(watching.Token);
-        var globexWatch = signals.WatchAsync("notes.changed", new SubscriptionContext(hank, descriptor, new WorkScope(globex, true)), watching.Token)
-            .GetAsyncEnumerator(watching.Token);
-        async Task<ChangeSignal> Next(IAsyncEnumerator<ChangeSignal> watch)
+        var acmeWatch = (await dispatcher.SubscribeAsync(new WatchSignals(acme), ada, watching.Token)).Value.GetAsyncEnumerator(watching.Token);
+        var globexWatch = (await dispatcher.SubscribeAsync(new WatchSignals(globex), hank, watching.Token)).Value.GetAsyncEnumerator(watching.Token);
+        async Task<string> Next(IAsyncEnumerator<string> watch)
         {
             Assert.True(await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), Ct));
             return watch.Current;
         }
 
-        // The listening connection opens with the first watch: raise until it's heard, then drain what was raised before.
-        var heard = acmeWatch.MoveNextAsync().AsTask();
-        while (!heard.IsCompleted)
-        {
-            Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "warm", Refuse: false), ada, Ct)).IsSuccess);
-            await Task.WhenAny(heard, Task.Delay(200, Ct));
-        }
-        Assert.True(await heard);
+        // A cold listener: nothing has listened in this process before the first watch, and nothing is warmed up.
+        Assert.Equal("ready", await Next(acmeWatch));
+        Assert.Equal("ready", await Next(globexWatch));
+        Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "first", Refuse: false), ada, Ct)).IsSuccess);
         Assert.False((await dispatcher.SendAsync(new SignalProbe(acme, "rolled_back", Refuse: true), ada, Ct)).IsSuccess);
-        Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "committed", Refuse: false), ada, Ct)).IsSuccess);
         Assert.True((await dispatcher.SendAsync(new SignalProbe(globex, "theirs", Refuse: false), hank, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "second", Refuse: false), ada, Ct)).IsSuccess);
 
-        ChangeSignal seen;
-        do
-        {
-            seen = await Next(acmeWatch);
-        }
-        while (seen.Key == "warm");
-        Assert.Equal(new ChangeSignal("notes.changed", "committed", acme), seen);
-        Assert.Equal(new ChangeSignal("notes.changed", "theirs", globex), await Next(globexWatch));
+        Assert.Equal("first", await Next(acmeWatch));
+        Assert.Equal("second", await Next(acmeWatch));
+        Assert.Equal("theirs", await Next(globexWatch));
         await watching.CancelAsync();
+    }
+
+    [Fact]
+    public async Task A_subscription_reads_again_when_the_listening_connection_comes_back()
+    {
+        using var host = Build();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, ada) = NewTenant();
+        using var watching = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var watch = (await dispatcher.SubscribeAsync(new WatchSignals(acme), ada, watching.Token)).Value.GetAsyncEnumerator(watching.Token);
+        Assert.True(await watch.MoveNextAsync());
+
+        // What committed while nothing listened can't be known: the watch is told to read again.
+        await postgres.ExecuteAsync("select pg_terminate_backend(pid) from pg_stat_activity where query = 'listen levee_signals'");
+
+        Assert.True(await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), Ct));
+        Assert.Equal("*", watch.Current);
+        await watching.CancelAsync();
+    }
+
+    [Fact]
+    public async Task A_signal_with_no_key_commits_with_its_operation()
+    {
+        using var host = Build();
+        var (acme, ada) = NewTenant();
+
+        var sent = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new SignalProbe(acme, null, Refuse: false), ada, Ct);
+
+        Assert.True(sent.IsSuccess, sent.IsSuccess ? null : sent.Error.Message);
+    }
+
+    [Fact]
+    public async Task A_watch_outside_a_subscription_is_refused()
+    {
+        using var host = Build();
+        await using var scope = host.Services.CreateAsyncScope();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<IChangeSignals>().WatchAsync("notes.changed", Ct));
     }
 
     [Theory]

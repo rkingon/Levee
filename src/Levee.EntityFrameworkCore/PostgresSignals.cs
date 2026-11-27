@@ -11,7 +11,8 @@ using Npgsql;
 namespace Levee.EntityFrameworkCore;
 
 /// <summary>Signals over Postgres NOTIFY: sent with the operation's transaction, so Postgres delivers them only when it commits.</summary>
-internal sealed partial class PostgresSignals<TContext>(TContext db, SignalHub<TContext> hub, CurrentOperation current) : IChangeSignals
+internal sealed partial class PostgresSignals<TContext>(TContext db, SignalHub<TContext> hub, CurrentOperation current, CurrentSubscription subscription)
+    : IChangeSignals
     where TContext : DbContext
 {
     internal const string Channel = "levee_signals";
@@ -38,15 +39,18 @@ internal sealed partial class PostgresSignals<TContext>(TContext db, SignalHub<T
             throw new InvalidOperationException($"{context.Descriptor.Name} raised {kind} into another scope: only a platform operation names one.");
         }
         // The scope is the transaction's own setting, so a signal can't claim a scope its operation wasn't authorized in.
+        // Typed: a null key or scope is a parameter Postgres can't infer a type for inside json_build_object's variadic any.
         await db.Database.ExecuteSqlAsync(
-            $"select pg_notify({Channel}, json_build_object('kind', {kind}, 'key', {key}, 'scope', coalesce({scope}, nullif(current_setting('levee.scope', true), '')))::text)",
+            $"select pg_notify({Channel}, json_build_object('kind', {kind}::text, 'key', {key}::text, 'scope', coalesce({scope}::text, nullif(current_setting('levee.scope', true), '')))::text)",
             ct).ConfigureAwait(false);
     }
 
-    public IAsyncEnumerable<ChangeSignal> WatchAsync(string kind, SubscriptionContext context, CancellationToken ct)
+    public Task<IAsyncEnumerable<ChangeSignal>> WatchAsync(string kind, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(context);
         Check(kind, key: null);
+        // The scope is the one the dispatcher authorized the subscription in, never one the caller hands over.
+        var context = subscription.Context
+            ?? throw new InvalidOperationException($"{kind} is watched from a subscription's handler, which the dispatcher scopes: there's none streaming here.");
         return hub.WatchAsync(kind, context.Scope, ct);
     }
 
@@ -80,8 +84,8 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
     private readonly Lock _gate = new();
     private Task? _listening;
 
-    /// <summary>Watching starts at the call, not the first read: a subscription that watches, then reads, misses nothing between.</summary>
-    public IAsyncEnumerable<ChangeSignal> WatchAsync(string kind, WorkScope scope, CancellationToken ct)
+    /// <summary>Registered at the call, returned once Levee listens: a caller that watches, then reads, misses nothing between.</summary>
+    public async Task<IAsyncEnumerable<ChangeSignal>> WatchAsync(string kind, WorkScope scope, CancellationToken ct)
     {
         var channel = System.Threading.Channels.Channel.CreateBounded<ChangeSignal>(new BoundedChannelOptions(1024)
         {
@@ -91,7 +95,16 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
         _watchers[channel] = (kind, scope);
         // A watch never read is still let go when its caller stops.
         var stopped = ct.Register(() => _watchers.TryRemove(channel, out _));
-        Start();
+        try
+        {
+            await Start().WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            _watchers.TryRemove(channel, out _);
+            await stopped.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return ReadAsync(channel, stopped, ct);
     }
 
@@ -111,19 +124,20 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
         }
     }
 
-    /// <summary>Resolves once the listening connection is up: for a caller that must not raise before it listens.</summary>
-    internal Task Listening { get; private set; } = Task.CompletedTask;
+    private TaskCompletionSource? _ready;
 
-    private void Start()
+    /// <summary>Starts listening with the first watch; resolves once LISTEN is in effect.</summary>
+    private Task Start()
     {
         lock (_gate)
         {
-            if (_listening is null)
+            if (_ready is null)
             {
-                var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                Listening = ready.Task;
+                _ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var ready = _ready;
                 _listening = Task.Run(() => ListenAsync(ready, _stopping.Token));
             }
+            return _ready.Task;
         }
     }
 
@@ -142,7 +156,11 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
                 {
                     await listen.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
                 }
-                ready.TrySetResult();
+                // Back after a drop: whatever committed while nothing listened is unknown, so every watch reads again.
+                if (!ready.TrySetResult())
+                {
+                    Refresh();
+                }
                 while (!ct.IsCancellationRequested)
                 {
                     await connection.WaitAsync(ct).ConfigureAwait(false);
@@ -157,6 +175,14 @@ internal sealed partial class SignalHub<TContext>(IServiceScopeFactory scopes, I
                 LogDropped(log, e);
                 await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
             }
+        }
+    }
+
+    private void Refresh()
+    {
+        foreach (var (channel, (kind, scope)) in _watchers)
+        {
+            channel.Writer.TryWrite(new ChangeSignal(kind, null, scope.Key));
         }
     }
 

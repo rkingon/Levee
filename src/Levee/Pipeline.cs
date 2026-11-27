@@ -77,6 +77,12 @@ public sealed class SubscriptionContext(Principal principal, OperationDescriptor
 /// The operation running in the current DI scope, set by the dispatcher before admission. How scoped services (the job
 /// queue) know who's asking.
 /// </summary>
+internal sealed class CurrentSubscription
+{
+    /// <summary>The subscription streaming in this DI scope, as the dispatcher authorized it: what a watch is scoped by.</summary>
+    public SubscriptionContext? Context { get; set; }
+}
+
 internal sealed class CurrentOperation
 {
     public OperationContext? Context { get; internal set; }

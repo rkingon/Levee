@@ -35,14 +35,16 @@ internal sealed class WatchNotesHandler(IChangeSignals signals, Dispatcher dispa
 {
     public async IAsyncEnumerable<NoteView> SubscribeAsync(WatchNotes watch, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
     {
-        var changes = signals.WatchAsync("notes.changed", context, ct);
+        var changes = await signals.WatchAsync("notes.changed", ct);   // returns once Levee listens
         foreach (var note in (await dispatcher.SendAsync(new ListNotes(watch.Tenant), context.Principal, ct)).Value)
         {
             yield return note;
         }
         await foreach (var change in changes)
         {
-            if ((await dispatcher.SendAsync(new GetNote(watch.Tenant, Guid.Parse(change.Key!)), context.Principal, ct)) is { IsSuccess: true } read)
+            // A null key is "read again": the listening connection dropped and came back, and what changed meanwhile isn't known.
+            if (change.Key is null) { /* send ListNotes again */ continue; }
+            if ((await dispatcher.SendAsync(new GetNote(watch.Tenant, Guid.Parse(change.Key)), context.Principal, ct)) is { IsSuccess: true } read)
             {
                 yield return read.Value;
             }
@@ -51,7 +53,8 @@ internal sealed class WatchNotesHandler(IChangeSignals signals, Dispatcher dispa
 }
 ```
 
-The listening connection is Levee's, one per process: an app opens none of its own (LEVEE018). A watcher that falls
+A watch is scoped by the subscription the dispatcher authorized, in whose handler it's called; nothing the handler
+passes widens it. The listening connection is Levee's, one per process: an app opens none of its own (LEVEE018). A watcher that falls
 behind loses its oldest signals, not its newest; each is only a reason to read again. A platform operation that changes
 one scope's rows raises into that scope by name; a signal raised by a read-only operation, or outside one, is refused.
 

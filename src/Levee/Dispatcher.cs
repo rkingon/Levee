@@ -218,6 +218,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
         await using var services = scopes.CreateAsyncScope();
+        services.ServiceProvider.GetRequiredService<CurrentSubscription>().Context = context;
         await using var items = descriptor.SubscribeAsync(services.ServiceProvider, subscription, context, ct).GetAsyncEnumerator(ct);
         while (true)
         {

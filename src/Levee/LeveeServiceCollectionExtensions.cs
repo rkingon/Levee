@@ -27,6 +27,7 @@ public static class LeveeServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<Dispatcher>();
         services.AddScoped<CurrentOperation>();
+        services.AddScoped<CurrentSubscription>();
         return services;
     }
 

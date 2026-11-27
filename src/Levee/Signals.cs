@@ -18,9 +18,11 @@ public interface IChangeSignals
     Task RaiseAsync(string kind, string? key, string scope, CancellationToken ct);
 
     /// <summary>
-    /// The signals of <paramref name="kind"/> in the subscription's scope (every scope's, for a platform subscription), as
-    /// they commit. Watching starts at the call: watch, then read what's there, then follow the signals, and nothing that
-    /// commits between is missed.
+    /// The signals of <paramref name="kind"/> in the subscription's own scope (every scope's, for a platform subscription),
+    /// as they commit: called from a subscription's handler, scoped by what the dispatcher authorized it for. It returns once
+    /// Levee is listening, so watch, then read what's there, then follow the signals, and nothing that commits between is
+    /// missed. A signal whose <see cref="ChangeSignal.Key"/> is null means anything of the kind may have changed (the
+    /// listening connection dropped and came back, say): read again.
     /// </summary>
-    IAsyncEnumerable<ChangeSignal> WatchAsync(string kind, SubscriptionContext context, CancellationToken ct);
+    Task<IAsyncEnumerable<ChangeSignal>> WatchAsync(string kind, CancellationToken ct);
 }

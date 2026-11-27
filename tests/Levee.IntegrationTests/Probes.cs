@@ -278,7 +278,7 @@ internal sealed class VendorBusyLaterHandler(IJobs jobs) : IOperationHandler<Ven
 
 /// <summary>Raises a signal, then refuses if told to: the signal must go with it.</summary>
 [Operation("probe.signal", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["probe.refused"])]
-public sealed record SignalProbe(string Tenant, string Key, bool Refuse) : IOperation<Unit>, IScopedOperation
+public sealed record SignalProbe(string Tenant, string? Key, bool Refuse) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
 }
@@ -323,6 +323,27 @@ internal sealed class NoteProcess : IProcess<NoteProcessInput>
         if (context.Attempt == 1)
         {
             context.Snooze(TimeSpan.FromMilliseconds(100));
+        }
+    }
+}
+
+/// <summary>Watches note changes in its tenant: "ready" once Levee listens, then each signal's key, "*" for a read-again.</summary>
+[Operation("probe.watch_signals", "member")]
+public sealed record WatchSignals(string Tenant) : ISubscription<string>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class WatchSignalsHandler(IChangeSignals signals) : ISubscriptionHandler<WatchSignals, string>
+{
+    public async IAsyncEnumerable<string> SubscribeAsync(WatchSignals subscription, SubscriptionContext context,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+    {
+        var changes = await signals.WatchAsync("notes.changed", ct);
+        yield return "ready";
+        await foreach (var change in changes.WithCancellation(ct))
+        {
+            yield return change.Key ?? "*";
         }
     }
 }

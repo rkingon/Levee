@@ -53,7 +53,6 @@ Levee.ValueObjectAttribute.Wire.get -> System.Type!
 Levee.IChangeSignals
 Levee.IChangeSignals.RaiseAsync(string! kind, string? key, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
 Levee.IChangeSignals.RaiseAsync(string! kind, string? key, string! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
-Levee.IChangeSignals.WatchAsync(string! kind, Levee.SubscriptionContext! context, System.Threading.CancellationToken ct) -> System.Collections.Generic.IAsyncEnumerable<Levee.ChangeSignal!>!
 Levee.ChangeSignal
 Levee.ChangeSignal.<Clone>$() -> Levee.ChangeSignal!
 Levee.ChangeSignal.Deconstruct(out string! Kind, out string? Key, out string? Scope) -> void
@@ -90,3 +89,4 @@ override Levee.AnonymousPrincipal.ToString() -> string!
 override sealed Levee.AnonymousPrincipal.Equals(Levee.Principal? other) -> bool
 static Levee.AnonymousPrincipal.operator !=(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool
 static Levee.AnonymousPrincipal.operator ==(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool
+Levee.IChangeSignals.WatchAsync(string! kind, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IAsyncEnumerable<Levee.ChangeSignal!>!>!
