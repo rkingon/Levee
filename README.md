@@ -98,8 +98,9 @@ public interface IHomePrices { Task<Result<HomePrice>> FindAsync(Zip3 area, Canc
 [Adapter("embedded")] internal sealed class EmbeddedHomePrices : IHomePrices { ... }
 ```
 
-`Providers:HomePrices` names the adapter, checked at startup (`AddLeveeOperations(configuration)`): always set, never
-inferred. A port without `SelectedBy` has exactly one adapter; a repository (`IRepository<T>`) is a port without the
+`Providers:HomePrices` names the adapter, checked at startup (`AddLeveeOperations(configuration)`): set, never
+inferred. An optional port names its null object as the fallback, `[Port(SelectedBy = "App:Mail", Default = "none")]`,
+so a deployment that doesn't use it needn't say so; the null object is the domain's own answer to "not here". A port without `SelectedBy` has exactly one adapter; a repository (`IRepository<T>`) is a port without the
 attribute, and only an aggregate root has one. `[Port(Many = true)]` is a set every adapter serves (integrations,
 channels), taken as `IEnumerable<TPort>`; name its adapters (`[Adapter("ecs")]`) and it's routed too: `IAdapters<TPort>`
 gives one by name, made only when asked for (a launcher per workbench). An adapter serving several ports is one instance. An adapter is scoped to the operation unless it says

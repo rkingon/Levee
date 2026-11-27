@@ -144,6 +144,10 @@ internal static class Known
         port.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == PortAttribute)?
             .NamedArguments.FirstOrDefault(a => a.Key == "SelectedBy").Value.Value as string;
 
+    public static string? DefaultAdapter(INamedTypeSymbol port) =>
+        port.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == PortAttribute)?
+            .NamedArguments.FirstOrDefault(a => a.Key == "Default").Value.Value as string;
+
     public static string? AdapterName(INamedTypeSymbol type) =>
         type.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == AdapterAttribute)?
             .ConstructorArguments.FirstOrDefault().Value as string;

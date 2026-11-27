@@ -106,7 +106,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             // An adapter its port's setting didn't choose isn't registered: its dependencies needn't resolve where it isn't used.
             static string? Chosen(AdapterModel a) =>
                 a.Name is not null && !Known.IsMany(a.Port) && Known.SelectedBy(a.Port) is { Length: > 0 } setting
-                    ? $"global::Levee.PortSelection.Wants(configuration, {Literal(setting)}, {Literal(a.Name)})"
+                    ? Known.DefaultAdapter(a.Port) is { } fallback
+                        ? $"global::Levee.PortSelection.Wants(configuration, {Literal(setting)}, {Literal(a.Name)}, {Literal(fallback)})"
+                        : $"global::Levee.PortSelection.Wants(configuration, {Literal(setting)}, {Literal(a.Name)})"
                     : null;
             foreach (var adapter in adapters.GroupBy(a => a.Adapter, SymbolEqualityComparer.Default))
             {
@@ -303,7 +305,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
             var type = port.ToDisplayString(Global);
             var local = "selected_" + Identifier(port.ToDisplayString());
             var lifetimes = string.Join(" ", adapters.Select(a => $"{Literal(a.Name)} => (global::Levee.AdapterLifetime){a.Lifetime},"));
-            source.AppendLine($"            var {local} = global::Levee.PortSelection.Select(configuration, {Literal(setting)}, {Literal(port.ToDisplayString())}, new[] {{ {string.Join(", ", adapters.Select(a => Literal(a.Name)))} }});")
+            var fallback = Known.DefaultAdapter(port) is { } name ? $", {Literal(name)}" : "";
+            source.AppendLine($"            var {local} = global::Levee.PortSelection.Select(configuration, {Literal(setting)}, {Literal(port.ToDisplayString())}, new[] {{ {string.Join(", ", adapters.Select(a => Literal(a.Name)))} }}{fallback});")
                 .AppendLine($"            global::Levee.PortSelection.Bind<{type}>(services, {local}, {local} switch {{ {lifetimes} _ => global::Levee.AdapterLifetime.Scoped }});");
         }
         foreach (var (port, names, singleton) in routed)
@@ -550,7 +553,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 }
                 continue;
             }
-            if (setting is null)
+            if (setting is null && Known.DefaultAdapter(port) is not null)
+            {
+                problem = "it has a Default but no SelectedBy, so there's no setting for it to stand in for. Fix: add [Port(SelectedBy = \"Section:Key\")], or drop Default";
+            }
+            else if (setting is null)
             {
                 problem = mine.Count > 1 ? $"{mine.Count} adapters, and nothing chooses between them. Fix: add [Port(SelectedBy = \"Section:Key\")] and name each [Adapter(\"...\")]; if all serve at once, declare [Port(Many = true)]"
                     : mine[0].Name is { } named ? $"its adapter is named '{named}', but no setting chooses it. Fix: add [Port(SelectedBy = \"Section:Key\")], or drop the name if it's the only adapter there will be" : null;
@@ -566,6 +573,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
             else if (mine.GroupBy(a => a.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1) is { } twice)
             {
                 problem = $"two adapters are named '{twice.Key}'. Fix: give each a distinct name";
+            }
+            else if (Known.DefaultAdapter(port) is { } fallback && !mine.Any(a => a.Name == fallback))
+            {
+                problem = $"its Default '{fallback}' names no adapter. Fix: name one of {string.Join(", ", mine.Select(a => $"'{a.Name}'"))}, or add the adapter it names";
             }
             if (problem is not null)
             {

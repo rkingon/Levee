@@ -49,7 +49,21 @@ public sealed class PortTests
             host.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task An_optional_port_falls_back_to_its_default_when_its_setting_is_unset()
+    {
+        var host = await Host("""[Port(SelectedBy = "Grackle:Mail", Default = "none")] public interface IMail;""",
+            """[Adapter("ses")] internal sealed class SesMail : IMail;""",
+            """[Adapter("none")] internal sealed class NoMail : IMail;""");
+
+        Assert.Empty(host.Errors);
+        Assert.Contains("""global::Levee.PortSelection.Select(configuration, "Grackle:Mail", "App.IMail", new[] { "none", "ses" }, "none")""",
+            host.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
+    }
+
     [Theory]
+    [InlineData("""[Port(SelectedBy = "P", Default = "none")] public interface IPrices;""", "LEVEE108", """[Adapter("a")] internal sealed class A : IPrices;""")]
+    [InlineData("""[Port(Default = "a")] public interface IPrices;""", "LEVEE108", """[Adapter("a")] internal sealed class A : IPrices;""")]
     [InlineData("public interface IPrices;", "LEVEE107")]
     [InlineData("[Port] public interface IPrices;", "LEVEE107", "internal sealed class Unrelated;")]
     [InlineData("[Port] public interface IPrices;", "LEVEE108", "internal sealed class A : IPrices;", "internal sealed class B : IPrices;")]

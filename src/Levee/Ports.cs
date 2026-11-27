@@ -18,6 +18,12 @@ public sealed class PortAttribute : Attribute
     public string? SelectedBy { get; set; }
 
     /// <summary>
+    /// The adapter that serves this port when <see cref="SelectedBy"/> isn't set: for an optional port, its null object
+    /// (<c>"none"</c>), so a deployment that doesn't use it needn't say so.
+    /// </summary>
+    public string? Default { get; set; }
+
+    /// <summary>
     /// A set, not a choice: every adapter serves it, and the application takes them all (<c>IEnumerable&lt;TPort&gt;</c>):
     /// integrations, channels, modules. Whatever routes among them is the application's.
     /// </summary>
@@ -78,14 +84,18 @@ public sealed class Adapters<TPort>(IServiceProvider services, IReadOnlyCollecti
 public static class PortSelection
 {
     /// <returns>The configured adapter's name, one of <paramref name="adapters"/>.</returns>
-    public static string Select(IConfiguration? configuration, string setting, string port, IReadOnlyCollection<string> adapters)
+    public static string Select(IConfiguration? configuration, string setting, string port, IReadOnlyCollection<string> adapters) =>
+        Select(configuration, setting, port, adapters, fallback: null);
+
+    /// <returns>The configured adapter's name, one of <paramref name="adapters"/>; <paramref name="fallback"/> when the setting isn't set.</returns>
+    public static string Select(IConfiguration? configuration, string setting, string port, IReadOnlyCollection<string> adapters, string? fallback)
     {
         ArgumentNullException.ThrowIfNull(adapters);
-        if (configuration is null)
+        if (configuration is null && fallback is null)
         {
             throw new InvalidOperationException($"{port} is chosen by the setting {setting}: pass the configuration to AddLeveeOperations.");
         }
-        var value = configuration[setting]?.Trim();
+        var value = configuration?[setting]?.Trim() is { Length: > 0 } set ? set : fallback;
         return value is not null && adapters.Contains(value)
             ? value
             : throw new InvalidOperationException(
@@ -94,10 +104,14 @@ public static class PortSelection
 
     /// <summary>
     /// Whether <paramref name="adapter"/> is the one <paramref name="setting"/> chooses, or may be: with no configuration or no
-    /// setting, every adapter is registered and <see cref="Select"/> reports the missing setting at startup.
+    /// setting, every adapter is registered and Select reports the missing setting at startup.
     /// </summary>
     public static bool Wants(IConfiguration? configuration, string setting, string adapter) =>
-        configuration?[setting]?.Trim() is not { Length: > 0 } chosen || string.Equals(chosen, adapter, StringComparison.Ordinal);
+        Wants(configuration, setting, adapter, fallback: null);
+
+    /// <summary>As <see cref="Wants(IConfiguration?, string, string)"/>, with <paramref name="fallback"/> chosen when the setting isn't set.</summary>
+    public static bool Wants(IConfiguration? configuration, string setting, string adapter, string? fallback) =>
+        (configuration?[setting]?.Trim() is { Length: > 0 } set ? set : fallback) is not { } chosen || string.Equals(chosen, adapter, StringComparison.Ordinal);
 
     /// <summary>Binds <typeparamref name="TPort"/> to the adapter registered under <paramref name="selected"/>, for as long as that adapter lives.</summary>
     public static void Bind<TPort>(IServiceCollection services, string selected, AdapterLifetime lifetime)

@@ -33,6 +33,8 @@
   still checked.
 
 ### Generator and analyzers
+- `[Port(SelectedBy = "...", Default = "none")]`: an optional port's null object serves when its setting isn't set, so
+  only a deployment that uses the port configures it (LEVEE108 holds the default to an adapter that exists).
 - A `TestSupport` role for what several test projects share (fixtures, fakes, a harness): held to no code rule, like a
   test, and referenced by tests alone.
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
