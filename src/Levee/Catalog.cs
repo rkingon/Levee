@@ -170,12 +170,64 @@ public sealed class OperationCatalog
         try
         {
             LeveeJson.Schema(type);
-            return null;
+            return Unconstructible(type);
         }
         catch (InvalidOperationException e)
         {
             return e.Message;
         }
+    }
+
+    /// <summary>
+    /// The first type the contract carries that the wire can write but not read back: an object with no constructor
+    /// System.Text.Json will call (two public constructors and no [JsonConstructor], an abstract type it declares no
+    /// subtypes of). The schema would promise what every caller's input then fails on.
+    /// </summary>
+    private static string? Unconstructible(Type root)
+    {
+        var seen = new HashSet<Type>();
+        var next = new Stack<Type>([root]);
+        while (next.TryPop(out var type))
+        {
+            if (!seen.Add(type))
+            {
+                continue;
+            }
+            var info = LeveeJson.Options.GetTypeInfo(type);
+            switch (info.Kind)
+            {
+                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
+                    if (info.PolymorphismOptions is { } polymorphic)
+                    {
+                        foreach (var derived in polymorphic.DerivedTypes)
+                        {
+                            next.Push(derived.DerivedType);
+                        }
+                        if (type.IsAbstract || type.IsInterface)
+                        {
+                            break;
+                        }
+                    }
+                    if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
+                    {
+                        return $"{type.Name} has no constructor the wire can call, so a caller's JSON for it is refused. Fix: give it one public constructor "
+                            + "(a positional record's), or mark the one to use [JsonConstructor] (LEVEE104).";
+                    }
+                    foreach (var member in info.Properties)
+                    {
+                        next.Push(member.PropertyType);
+                    }
+                    break;
+                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Enumerable:
+                    next.Push(info.ElementType!);
+                    break;
+                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary:
+                    next.Push(info.KeyType!);
+                    next.Push(info.ElementType!);
+                    break;
+            }
+        }
+        return null;
     }
 
     public IReadOnlyList<OperationDescriptor> All { get; }

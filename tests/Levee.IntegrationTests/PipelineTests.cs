@@ -1022,6 +1022,22 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         Assert.Equal(0, await postgres.CountAsync("select count(*) from information_schema.role_table_grants where grantee = 'atomic_candidate'"));
     }
 
+    [Fact]
+    public async Task Grants_and_the_jobs_beside_them_hold_together_and_leave_a_callers_transaction_its_own()
+    {
+        await postgres.ExecuteAsync("create role together_candidate;");
+
+        // Oxbow's half fails: Levee's half is undone with it.
+        await Assert.ThrowsAsync<PostgresException>(() => postgres.ExecuteAsync(
+            LeveeSchema.Grants("together_candidate", "public", then: "grant select on no_such_queue to together_candidate;")));
+        Assert.Equal("app", await postgres.TextAsync("select public.levee_runtime()"));
+
+        // Inside a caller's transaction it commits nothing of its own: the caller's rollback undoes it.
+        await postgres.ExecuteAsync("begin; create table together_marker (id int);" + LeveeSchema.Grants("together_candidate", "public", then: null) + "rollback;");
+        Assert.Equal("app", await postgres.TextAsync("select public.levee_runtime()"));
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from pg_class where relname = 'together_marker'"));
+    }
+
     [Theory]
     [InlineData("reach_group")]
     [InlineData("pg_read_all_data")]

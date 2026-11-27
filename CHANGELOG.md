@@ -38,8 +38,9 @@
   converter goes on a `[ValueObject]` type, never a member, and a `[ValueObject]` has one. A contract can't loosen the wire
   (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, any `[JsonIgnore]`: a member off
   the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. The catalog proves every
-  contract against the wire where it's made (a host's start, the generated catalog test), naming each it refuses, so
-  none fails only when a caller, or a listing of the catalog, first meets it. A value object's schema and the
+  contract against the wire where it's made (a host's start, the generated catalog test), both ways (its schema, and a
+  constructor the reader can call for every type it carries), naming each it refuses, so none fails only when a caller,
+  or a listing of the catalog, first meets it. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
@@ -80,7 +81,8 @@
   role belongs to no role: a group, or a predefined one such as `pg_read_all_data`, lends it what no ACL shows, so
   `Grants` fails naming it.
   `Grants` is one statement: refused, it changes nothing (the registered role included), whatever the client's autocommit;
-  `dotnet levee db grants` prints Levee's and Oxbow's grants in one transaction. It grants only this installation's tables: a second Levee
+  `dotnet levee db grants --jobs` runs Oxbow's grants inside that same statement, so both hold or neither does, standalone
+  or inside a caller's transaction, which it never commits. It grants only this installation's tables: a second Levee
   schema's tables and audit stay its own role's. A schema's owner provisions it without rights over anyone else's.
 - **Breaking (schema):** the audit's policies are a read (`levee_scope`) and an insert (`levee_audit_insert`) that takes an
   unscoped operation's record, so an unscoped write commits when the audit's owner is an ordinary role. A database
@@ -151,7 +153,8 @@
 - LEVEE104: a converter goes on the value's type, never a member; a library's attribute deriving `JsonConverterAttribute`
   is one too; a `[ValueObject]` has its converter; `[JsonNumberHandling]` other than strict, `[JsonUnmappedMemberHandling(Skip)]` and
   `[JsonExtensionData]` and `[JsonIgnore]` are refused on a contract, through the interfaces a result extends and the subtypes a
-  `[JsonDerivedType]` declares too.
+  `[JsonDerivedType]` declares too; so is a contract type with more than one public
+  constructor and none marked `[JsonConstructor]`, which the wire writes but can't read back.
 - LEVEE113 takes a policy returning a `static readonly Error` as refusing everything; LEVEE021 doesn't count a delegate
   that takes a principal (`Action<Principal>`) as holding one.
 - LEVEE003: a handler holding a port that tells the time (a `[Port]` or delegate answering a date or time at once without

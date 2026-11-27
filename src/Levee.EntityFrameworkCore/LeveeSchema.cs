@@ -130,10 +130,18 @@ public static class LeveeSchema
     /// <c>levee_audit_write</c>, at the transaction's time. Run before any grant of the app's own (Oxbow's, a table with a
     /// policy of its own), which it would revoke.
     /// </summary>
-    public static string Grants(string role, string schema = "public")
+    public static string Grants(string role, string schema = "public") => Grants(role, schema, then: null);
+
+    /// <param name="then">The grants of a package beside Levee (Oxbow's queue), run last in the same statement, after the
+    /// allow-list is checked: both hold or neither does, standalone or inside a caller's transaction.</param>
+    internal static string Grants(string role, string schema, string? then)
     {
         Identifier(role, nameof(role));
         Identifier(schema, nameof(schema));
+        if (then?.Contains("$levee_then$", StringComparison.Ordinal) == true)
+        {
+            throw new ArgumentException("The grants to run after Levee's can't contain $levee_then$.", nameof(then));
+        }
         // One statement, so all or nothing under any client: a refusal leaves the role, and its registration, as they were.
         return $"""
             do $levee$
@@ -239,6 +247,7 @@ public static class LeveeSchema
                 raise exception '{role} reaches more than this installation''s tables allow: %', reached
                   using hint = 'It reaches them through a role it belongs to, or PUBLIC: revoke that role from {role} (or the grant from it). Then run Levee''s grants again.';
               end if;
+            {(then is null ? "" : $"  execute $levee_then${then}$levee_then$;")}
             end $levee$;
             """;
     }

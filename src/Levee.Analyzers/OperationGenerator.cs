@@ -737,6 +737,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, "is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
         }
+        // As System.Text.Json chooses: a public parameterless constructor, the only public one, or the one [JsonConstructor] marks.
+        if (!Converted(named) && !Declared(named) && named.TypeKind is TypeKind.Class or TypeKind.Struct && !named.IsAbstract
+            && named.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public && !c.IsImplicitlyDeclared || c.DeclaredAccessibility == Accessibility.Public && c.Parameters.Length == 0).ToList() is { Count: > 1 } constructors
+            && !constructors.Any(c => c.Parameters.Length == 0)
+            && !named.InstanceConstructors.Any(c => c.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConstructorAttribute")))
+        {
+            return (here, "has more than one public constructor and none marked [JsonConstructor], so the wire can write it but not read it back: a caller's JSON for it is refused. Fix: keep one public constructor (a positional record's), or mark the one to use [JsonConstructor]");
+        }
         if (Declared(named) && !Converted(named))
         {
             return (here, "is a [ValueObject] with no converter of its own, so the serializer writes its members, not the scalar its schema shows. Fix: put the converter that writes it as that scalar on the type, [JsonConverter(typeof(...))] beside [ValueObject]");

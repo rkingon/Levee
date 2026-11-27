@@ -12,4 +12,8 @@
     <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
     <AdditionalFiles Include="PublicAPI.Shipped.txt;PublicAPI.Unshipped.txt" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Levee.Cli" />
+    <InternalsVisibleTo Include="Levee.IntegrationTests" />
+  </ItemGroup>
 </Project>
