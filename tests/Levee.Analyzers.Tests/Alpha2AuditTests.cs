@@ -202,4 +202,19 @@ public sealed class Alpha2AuditTests
         Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
         Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
     }
+
+    [Theory]
+    [InlineData("Application", "typeof(System.IServiceProvider).GetMethod(nameof(System.IServiceProvider.GetService))!.Invoke(services, [typeof(int)])", true)]
+    [InlineData("Application", "services.GetType().GetMethod(\"GetService\")", true)]
+    [InlineData("Adapter", "typeof(Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions).GetMethods()", true)]
+    [InlineData("Application", "System.Type.GetType(\"System.IServiceProvider\")!.GetMethods()", true)]
+    [InlineData("Composition", "typeof(System.IServiceProvider).GetMethod(nameof(System.IServiceProvider.GetService))", false)]
+    [InlineData("Application", "typeof(string).GetMethods()", false)]
+    public async Task Services_are_not_located_by_reflecting_on_the_container(string role, string lookup, bool refused)
+    {
+        var output = await Compile(role, $"internal static class Find {{ public static object? Locate(System.IServiceProvider services) => {lookup}; }}");
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE005"));
+    }
 }

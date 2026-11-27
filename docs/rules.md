@@ -138,7 +138,9 @@ internal sealed class PayHandler(IPayments payments) : IOperationHandler<Pay, Re
 EF's accessor (`db.GetService<T>()`) is the same, and more: it reaches the context's internal services, its connection
 among them, so outside a Tool it's LEVEE018 too.
 
-`IKeyedServiceProvider` and `ActivatorUtilities` are service location by another name. To choose an adapter by
+`IKeyedServiceProvider` and `ActivatorUtilities` are service location by another name, and so is reflecting on what
+locates (`typeof(IServiceProvider).GetMethod("GetService").Invoke(...)`, the DI extension classes, `ActivatorUtilities`),
+seen as LEVEE020 sees reflection into Levee's own types. To choose an adapter by
 configuration, declare `[Port(SelectedBy = "Providers:Payments")]`. To choose one at run
 time by name (per tenant, per request), declare `[Port(Many = true)]`, name the adapters, and take `IAdapters<TPort>`.
 

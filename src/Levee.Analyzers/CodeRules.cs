@@ -85,10 +85,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.WallClock, context.Operation.Syntax.GetLocation(), $"{property.ContainingType!.Name}.{property.Name}"));
         }
-        else if (ReflectionProperties.Contains(property.Name) && owner is "System.Type" or "System.Reflection.TypeInfo"
-            && Denoted(((IPropertyReferenceOperation)context.Operation).Instance, 0) is { } levee)
+        else if (ReflectionProperties.Contains(property.Name) && owner is "System.Type" or "System.Reflection.TypeInfo")
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, context.Operation.Syntax.GetLocation(), property.Name, levee));
+            OnReflected(context, role, property.Name, Denoted(((IPropertyReferenceOperation)context.Operation).Instance, 0));
         }
         // An operation's type, read from its descriptor, is what turns a name into an input to send.
         else if (owner == "Levee.OperationDescriptor" && property.Name is "InputType" or "ResultType")
@@ -507,32 +506,76 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
-        if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && Reflected(invocation) is { } levee)
+        if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && OnReflected(context, role, invocation.TargetMethod.Name, Reflected(invocation)))
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, invocation.Syntax.GetLocation(), invocation.TargetMethod.Name, levee));
             return;
         }
         OnCall(context, role, invocation.TargetMethod);
     }
 
-    /// <summary>The Levee type a reflection lookup is made on, or an instance made from: its receiver, an extension's, or the Type an activator takes.</summary>
-    private static string? Reflected(IInvocationOperation invocation)
+    // What LEVEE005 guards as service location, by the types that do it.
+    private static readonly ImmutableHashSet<string> LocatorTypes = ImmutableHashSet.Create(
+        "System.IServiceProvider", "Microsoft.Extensions.DependencyInjection.IServiceScopeFactory", "Microsoft.Extensions.DependencyInjection.IServiceScope",
+        "Microsoft.Extensions.DependencyInjection.IKeyedServiceProvider", "Microsoft.Extensions.DependencyInjection.ISupportRequiredService",
+        "Microsoft.Extensions.DependencyInjection.ActivatorUtilities", "Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions",
+        "Microsoft.Extensions.DependencyInjection.ServiceProviderKeyedServiceExtensions", "Microsoft.EntityFrameworkCore.Infrastructure.AccessorExtensions");
+
+    /// <summary>
+    /// Reflection into one of Levee's types, anywhere (LEVEE020), or into what locates services, outside where the app composes
+    /// (LEVEE005): the same lookup by another route. True when it reported.
+    /// </summary>
+    private static bool OnReflected(OperationAnalysisContext context, Role role, string member, Denotation? into)
+    {
+        if (into is { Levee: true } levee)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, context.Operation.Syntax.GetLocation(), member, levee.Name));
+            return true;
+        }
+        if (into is { } locator && LocatorTypes.Contains(locator.Full) && !Roles.Composes(role))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.ServiceLocation, context.Operation.Syntax.GetLocation(), $"{member} on {locator.Name}, by reflection,"));
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Of what a variable may hold, the one that tells most: Levee's, then a locator, then any.</summary>
+    private static Denotation? Telling(List<Denotation?> held) =>
+        held.FirstOrDefault(d => d?.Levee == true) ?? held.FirstOrDefault(d => d is { } t && LocatorTypes.Contains(t.Full)) ?? held.FirstOrDefault(d => d is not null);
+
+    /// <summary>A type an expression statically names: its full name, its short one, and whether it's one of Levee's.</summary>
+    private readonly record struct Denotation(string Full, string Name, bool Levee);
+
+    private static Denotation? Of(ITypeSymbol? type) =>
+        type is INamedTypeSymbol named
+            ? new Denotation(named.OriginalDefinition.ToDisplayString(), named.Name,
+                named.ContainingAssembly?.Name is { } assembly && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)))
+            : null;
+
+    /// <summary>A type named by its assembly-qualified or full name, as Type.GetType and [UnsafeAccessorType] take it.</summary>
+    private static Denotation? Of(string? name) =>
+        name?.Split(',')[0].Trim() is { Length: > 0 } full
+            ? new Denotation(full, full.Substring(full.LastIndexOfAny(['.', '+']) + 1), full.StartsWith("Levee.", StringComparison.Ordinal))
+            : null;
+
+    /// <summary>The type a reflection lookup is made on, or an instance made from: its receiver, an extension's, or the Type an activator takes.</summary>
+    private static Denotation? Reflected(IInvocationOperation invocation)
     {
         var method = invocation.TargetMethod;
         if (method.ContainingType.ToDisplayString() is "System.Activator" or "System.Runtime.CompilerServices.RuntimeHelpers")
         {
-            return method.TypeArguments.Select(t => LeveeType(t)).FirstOrDefault(t => t is not null)
+            return method.TypeArguments.Select(Of).FirstOrDefault(t => t is not null)
                 ?? Denoted(invocation.Arguments.FirstOrDefault(a => a.Value.Type?.ToDisplayString() == "System.Type")?.Value, 0);
         }
         return Denoted(invocation.Instance ?? (method.IsExtensionMethod ? invocation.Arguments.FirstOrDefault()?.Value : null), 0);
     }
 
     /// <summary>
-    /// The Levee type a Type-valued expression statically names: typeof(T); x.GetType() of one; Type.GetType("Levee..."); its
+    /// The type a Type-valued expression statically names: typeof(T); x.GetType() of one; Type.GetType("..."); its
     /// GetTypeInfo(); or a local, or a field initialized in the same file, that holds one. What it can't follow (a parameter, a
     /// field set elsewhere, a name built at run time) is the trust model's.
     /// </summary>
-    private static string? Denoted(IOperation? value, int depth)
+    private static Denotation? Denoted(IOperation? value, int depth)
     {
         while (value is IConversionOperation conversion)
         {
@@ -541,12 +584,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
         switch (value)
         {
             case ITypeOfOperation typeOf:
-                return LeveeType(typeOf.TypeOperand);
+                return Of(typeOf.TypeOperand);
             case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: false }, Instance: { } instance, Arguments.Length: 0 }:
-                return LeveeType(instance.Type);
+                return Of(instance.Type);
             case IInvocationOperation { TargetMethod: { Name: "GetType", IsStatic: true } named } byName when named.ContainingType.ToDisplayString() == "System.Type":
-                return byName.Arguments.FirstOrDefault()?.Value.ConstantValue.Value is string name && name.Split(',')[0].Trim() is var full
-                    && full.StartsWith("Levee.", StringComparison.Ordinal) ? full.Substring(full.LastIndexOfAny(['.', '+']) + 1) : null;
+                return Of(byName.Arguments.FirstOrDefault()?.Value.ConstantValue.Value as string);
             case IInvocationOperation { TargetMethod.Name: "GetTypeInfo" or "AsType" } info:
                 return Denoted(info.Instance ?? info.Arguments.FirstOrDefault()?.Value, depth);
             case ILocalReferenceOperation local when depth < 4:
@@ -555,29 +597,23 @@ public sealed class CodeRules : DiagnosticAnalyzer
                 {
                     root = root.Parent;
                 }
-                return root.Descendants()
+                return Telling([.. root.Descendants()
                     .Select(o => o switch
                     {
                         IVariableDeclaratorOperation d when SymbolEqualityComparer.Default.Equals(d.Symbol, local.Local) => d.Initializer?.Value,
                         ISimpleAssignmentOperation { Target: ILocalReferenceOperation target } a when SymbolEqualityComparer.Default.Equals(target.Local, local.Local) => a.Value,
                         _ => null,
                     })
-                    .Select(v => v is null ? null : Denoted(v, depth + 1))
-                    .FirstOrDefault(t => t is not null);
+                    .Select(v => v is null ? null : Denoted(v, depth + 1))]);
             case IFieldReferenceOperation field when depth < 4 && value.SemanticModel is { } model:
-                return field.Field.DeclaringSyntaxReferences
+                return Telling([.. field.Field.DeclaringSyntaxReferences
                     .Where(r => r.SyntaxTree == model.SyntaxTree)
                     .Select(r => (r.GetSyntax() as Microsoft.CodeAnalysis.CSharp.Syntax.VariableDeclaratorSyntax)?.Initializer?.Value)
-                    .Select(v => v is null ? null : Denoted(model.GetOperation(v), depth + 1))
-                    .FirstOrDefault(t => t is not null);
+                    .Select(v => v is null ? null : Denoted(model.GetOperation(v), depth + 1))]);
             default:
                 return null;
         }
     }
-
-    private static string? LeveeType(ITypeSymbol? type) =>
-        type is INamedTypeSymbol named && named.ContainingAssembly?.Name is { } assembly
-            && (assembly == "Levee" || assembly.StartsWith("Levee.", StringComparison.Ordinal)) ? named.Name : null;
 
     /// <summary>An [UnsafeAccessor] onto one of Levee's types: a call into what it keeps internal, with no lookup to see.</summary>
     private static void OnUnsafeAccessor(SymbolAnalysisContext context)
@@ -588,18 +624,16 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             return;
         }
-        static string? Named(ImmutableArray<AttributeData> attributes) =>
-            attributes.Where(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorTypeAttribute")
-                .Select(a => a.ConstructorArguments.FirstOrDefault().Value as string)
-                .Select(n => n?.Split(',')[0].Trim())
-                .FirstOrDefault(n => n?.StartsWith("Levee.", StringComparison.Ordinal) == true) is { } full ? full.Substring(full.LastIndexOfAny(['.', '+']) + 1) : null;
+        static Denotation? Named(ImmutableArray<AttributeData> attributes) =>
+            Of(attributes.FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "System.Runtime.CompilerServices.UnsafeAccessorTypeAttribute")?
+                .ConstructorArguments.FirstOrDefault().Value as string);
         // Its target is the type it constructs (UnsafeAccessorKind.Constructor, 0), or else its first parameter's.
         var target = accessor.ConstructorArguments.FirstOrDefault().Value is 0
-            ? LeveeType(method.ReturnType) ?? Named(method.GetReturnTypeAttributes())
-            : method.Parameters.FirstOrDefault() is { } first ? LeveeType(first.Type) ?? Named(first.GetAttributes()) : null;
-        if (target is not null && method.Locations.FirstOrDefault() is { IsInSource: true } location)
+            ? Named(method.GetReturnTypeAttributes()) ?? Of(method.ReturnType)
+            : method.Parameters.FirstOrDefault() is { } first ? Named(first.GetAttributes()) ?? Of(first.Type) : null;
+        if (target is { Levee: true } levee && method.Locations.FirstOrDefault() is { IsInSource: true } location)
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, location, $"[UnsafeAccessor] {method.Name}", target));
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.Reflected, location, $"[UnsafeAccessor] {method.Name}", levee.Name));
         }
     }
 
