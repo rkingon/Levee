@@ -76,6 +76,7 @@
 - Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
 
 ### Documentation
+- Recorded the open proposal for `ProcessContext.StepAsync` in the [decision log](docs/decisions.md#open).
 - The Starlight site includes a NuGet quick start, the guides, and a stable reference page for each build rule. Pages preload their self-hosted fonts to keep text stable on first load.
 
 ## 0.0.1-alpha.1 (2026-11-26)

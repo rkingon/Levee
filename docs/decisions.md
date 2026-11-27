@@ -127,6 +127,7 @@ Where the apps disagreed before Levee, and what it chose.
 
 | Question | From | Where it stands |
 |---|---|---|
+| Can a process reuse a named step's result after a retry or snooze? | the maintainer | Proposed `ProcessContext.StepAsync` depends on durable steps in Oxbow. Oxbow would save the result in Postgres by job ID and step name, so a restarted process could reuse it without calling the provider again. If the worker crashes after the provider acts but before it saves the result, the call can repeat. |
 | A process that works no queue still checks Oxbow's schema at startup, so it can't start with the database down | B | Oxbow's to offer (a client-only mode); until then, readiness waits on the database. |
 | A transaction opened lazily, for operations that never touch the database | B | Deferred: [benchmarks.md](benchmarks.md) measures what an operation costs today. |
 | The current operation inside `HttpClient` handlers | B | Deferred: B's admission-based workaround holds. |
