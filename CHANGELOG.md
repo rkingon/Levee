@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Levee
+- `IChangeSignals`: change notifications, the store's own. Raised in an operation and delivered when it commits, never if it
+  rolls back; watched by a subscription in its own scope (every scope's for a platform one), from the call, so watching,
+  reading, then following misses nothing. A signal is a kind and a key, a hint to read again. `Levee.EntityFrameworkCore`
+  serves it over one Postgres `LISTEN` connection per process, Levee's own.
 - `[ValueObject(typeof(string), Format = ..., Pattern = ...)]`: a value object written by its own converter says what
   it writes, and every schema (the catalog's, each MCP tool's) shows that, nullable where the member is; a member's
   `[Description]` is its description in every schema. LEVEE104 refuses a contract type written by its own converter

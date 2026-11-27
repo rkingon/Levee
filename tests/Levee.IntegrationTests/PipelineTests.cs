@@ -47,6 +47,50 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         return builder.Build();
     }
 
+    [Fact]
+    public async Task A_signal_reaches_its_scopes_watchers_when_its_operation_commits_and_never_when_it_rolls_back()
+    {
+        using var host = Build();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, ada) = NewTenant();
+        var (globex, hank) = NewTenant();
+        var descriptor = dispatcher.Catalog.Find(typeof(SignalProbe))!;
+        await using var scope = host.Services.CreateAsyncScope();
+        var signals = scope.ServiceProvider.GetRequiredService<IChangeSignals>();
+        using var watching = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var acmeWatch = signals.WatchAsync("notes.changed", new SubscriptionContext(ada, descriptor, new WorkScope(acme, true)), watching.Token)
+            .GetAsyncEnumerator(watching.Token);
+        var globexWatch = signals.WatchAsync("notes.changed", new SubscriptionContext(hank, descriptor, new WorkScope(globex, true)), watching.Token)
+            .GetAsyncEnumerator(watching.Token);
+        async Task<ChangeSignal> Next(IAsyncEnumerator<ChangeSignal> watch)
+        {
+            Assert.True(await watch.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), Ct));
+            return watch.Current;
+        }
+
+        // The listening connection opens with the first watch: raise until it's heard, then drain what was raised before.
+        var heard = acmeWatch.MoveNextAsync().AsTask();
+        while (!heard.IsCompleted)
+        {
+            Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "warm", Refuse: false), ada, Ct)).IsSuccess);
+            await Task.WhenAny(heard, Task.Delay(200, Ct));
+        }
+        Assert.True(await heard);
+        Assert.False((await dispatcher.SendAsync(new SignalProbe(acme, "rolled_back", Refuse: true), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new SignalProbe(acme, "committed", Refuse: false), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new SignalProbe(globex, "theirs", Refuse: false), hank, Ct)).IsSuccess);
+
+        ChangeSignal seen;
+        do
+        {
+            seen = await Next(acmeWatch);
+        }
+        while (seen.Key == "warm");
+        Assert.Equal(new ChangeSignal("notes.changed", "committed", acme), seen);
+        Assert.Equal(new ChangeSignal("notes.changed", "theirs", globex), await Next(globexWatch));
+        await watching.CancelAsync();
+    }
+
     private static (string Tenant, Member Member) NewTenant()
     {
         var tenant = $"t{Guid.NewGuid():N}";

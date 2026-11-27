@@ -360,7 +360,8 @@ internal sealed class Ledger(AppDbContext db, IAmbientTransaction ambient) : ILe
 ```
 
 Holding the operation's own connection, from `IAmbientTransaction`, in a field or a record is fine: it's the
-transaction's. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
+transaction's. Hearing what changed (Postgres `LISTEN`) is Levee's own connection's: raise with `IChangeSignals.RaiseAsync`
+in the operation, and watch with `IChangeSignals.WatchAsync` in a subscription. A record that must survive the operation rolling back (a paid vendor call) is an internal operation,
 dispatched as the system. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
 to configure the context with.
 

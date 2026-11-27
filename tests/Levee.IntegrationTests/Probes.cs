@@ -275,3 +275,19 @@ internal sealed class VendorBusyLaterHandler(IJobs jobs) : IOperationHandler<Ven
         return enqueued.IsSuccess ? Unit.Value : enqueued.Error;
     }
 }
+
+/// <summary>Raises a signal, then refuses if told to: the signal must go with it.</summary>
+[Operation("probe.signal", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["probe.refused"])]
+public sealed record SignalProbe(string Tenant, string Key, bool Refuse) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class SignalProbeHandler(IChangeSignals signals) : IOperationHandler<SignalProbe, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(SignalProbe operation, OperationContext context, CancellationToken ct)
+    {
+        await signals.RaiseAsync("notes.changed", operation.Key, ct);
+        return operation.Refuse ? Error.Validation("probe.refused", "No.") : Unit.Value;
+    }
+}

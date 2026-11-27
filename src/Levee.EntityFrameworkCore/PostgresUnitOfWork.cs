@@ -24,6 +24,8 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<IFlush, EfFlush<TContext>>();
         services.AddScoped<AmbientTransaction>();
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
+        services.AddSingleton<SignalHub<TContext>>();
+        services.AddScoped<IChangeSignals, PostgresSignals<TContext>>();
         services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
         // The guard is on TContext alone: a second context would reach the database around every operation.
         services.AddSingleton<IValidateOptions<OneContext>>(provider =>

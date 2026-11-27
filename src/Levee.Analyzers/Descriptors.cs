@@ -94,7 +94,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor SideConnection = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
-        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; work as the database's owner is a Tool's");
+        "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; to hear what changed (LISTEN), raise and watch IChangeSignals; work as the database's owner is a Tool's");
 
     public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",

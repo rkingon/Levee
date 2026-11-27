@@ -50,3 +50,23 @@ Levee.ValueObjectAttribute.Pattern.get -> string?
 Levee.ValueObjectAttribute.Pattern.set -> void
 Levee.ValueObjectAttribute.ValueObjectAttribute(System.Type! wire) -> void
 Levee.ValueObjectAttribute.Wire.get -> System.Type!
+Levee.IChangeSignals
+Levee.IChangeSignals.RaiseAsync(string! kind, string? key, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+Levee.IChangeSignals.RaiseAsync(string! kind, string? key, string! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+Levee.IChangeSignals.WatchAsync(string! kind, Levee.SubscriptionContext! context, System.Threading.CancellationToken ct) -> System.Collections.Generic.IAsyncEnumerable<Levee.ChangeSignal!>!
+Levee.ChangeSignal
+Levee.ChangeSignal.<Clone>$() -> Levee.ChangeSignal!
+Levee.ChangeSignal.Deconstruct(out string! Kind, out string? Key, out string? Scope) -> void
+Levee.ChangeSignal.Equals(Levee.ChangeSignal? other) -> bool
+Levee.ChangeSignal.Key.get -> string?
+Levee.ChangeSignal.Key.init -> void
+Levee.ChangeSignal.Kind.get -> string!
+Levee.ChangeSignal.Kind.init -> void
+Levee.ChangeSignal.Scope.get -> string?
+Levee.ChangeSignal.Scope.init -> void
+override Levee.ChangeSignal.Equals(object? obj) -> bool
+override Levee.ChangeSignal.GetHashCode() -> int
+override Levee.ChangeSignal.ToString() -> string!
+static Levee.ChangeSignal.operator !=(Levee.ChangeSignal? left, Levee.ChangeSignal? right) -> bool
+static Levee.ChangeSignal.operator ==(Levee.ChangeSignal? left, Levee.ChangeSignal? right) -> bool
+Levee.ChangeSignal.ChangeSignal(string! Kind, string? Key, string? Scope) -> void
