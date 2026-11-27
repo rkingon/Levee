@@ -47,7 +47,8 @@ public static class LeveeJson
                 if (declared is not null && (underlying is not null || !BuiltIn(context.TypeInfo.Converter)
                     || context.PropertyInfo?.CustomConverter is { } wrapped && !BuiltIn(wrapped)))
                 {
-                    node = WireSchema(declared, json, underlying is not null || AllowsNull(node));
+                    // Whether the member may be null is the member's: a converter-backed reference has no shape of its own to say so.
+                    node = WireSchema(declared, json, underlying is not null || context.PropertyInfo is { IsGetNullable: true } || AllowsNull(node));
                 }
                 else if ((context.PropertyInfo?.CustomConverter is { } own && !BuiltIn(own)) || !BuiltIn(context.TypeInfo.Converter))
                 {
@@ -62,8 +63,13 @@ public static class LeveeJson
                         if (members[member.Name] is JsonObject written && written["type"] is null
                             && (Nullable.GetUnderlyingType(member.PropertyType) ?? member.PropertyType).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false)
                                 is [ValueObjectAttribute skipped]
-                            && WireSchema(skipped, json, Nullable.GetUnderlyingType(member.PropertyType) is not null || written["default"] is null) is JsonObject filled)
+                            && WireSchema(skipped, json, Nullable.GetUnderlyingType(member.PropertyType) is not null || member.IsGetNullable) is JsonObject filled)
                         {
+                            if (member.AttributeProvider?.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true)
+                                is [System.ComponentModel.DescriptionAttribute { Description: { Length: > 0 } memberText }, ..])
+                            {
+                                filled["description"] = memberText;
+                            }
                             foreach (var (key, value) in written.ToList())
                             {
                                 filled[key] = value?.DeepClone();

@@ -23,40 +23,36 @@ public sealed class OperationContext(Principal principal, OperationDescriptor de
     public DateTimeOffset Now { get; } = now;
 
     private readonly Lock _ids = new();
-    private long _idMilliseconds = -1;
-    private int _idSequence;
+    private long _idSequence = -1;
 
     /// <summary>
     /// A UUIDv7 at the operation's time, later than every one this operation made before it: ids minted in one operation
-    /// share its one time, so a counter in the version's sequence bits (RFC 9562's method 1) keeps them in creation order.
+    /// share its one time, so a 42-bit counter in the version's sequence bits (RFC 9562's method 1, extended into the
+    /// random bits) keeps them in creation order, and every one carries the operation's own time.
     /// </summary>
     public Guid NewId()
     {
         Span<byte> bytes = stackalloc byte[16];
         System.Security.Cryptography.RandomNumberGenerator.Fill(bytes);
-        long milliseconds;
-        int sequence;
+        long sequence;
         lock (_ids)
         {
-            var now = Now.ToUnixTimeMilliseconds();
-            if (now > _idMilliseconds)
-            {
-                // Started low, so thousands more fit before the sequence runs out.
-                (_idMilliseconds, _idSequence) = (now, bytes[15] & 0x1FF);
-            }
-            else if (++_idSequence > 0xFFF)
-            {
-                (_idMilliseconds, _idSequence) = (_idMilliseconds + 1, 0);
-            }
-            (milliseconds, sequence) = (_idMilliseconds, _idSequence);
+            // Started low and random, so ids of different operations in one millisecond rarely collide in order.
+            _idSequence = _idSequence < 0 ? (bytes[15] | (bytes[14] << 8)) & 0x7FFF : _idSequence + 1;
+            sequence = _idSequence;
         }
+        var milliseconds = Now.ToUnixTimeMilliseconds();
         for (var i = 0; i < 6; i++)
         {
             bytes[i] = (byte)(milliseconds >> (8 * (5 - i)));
         }
-        bytes[6] = (byte)(0x70 | ((sequence >> 8) & 0x0F));
-        bytes[7] = (byte)sequence;
-        bytes[8] = (byte)(0x80 | (bytes[8] & 0x3F));
+        // 12 bits after the version, then 30 after the variant: one counter, high bits first.
+        bytes[6] = (byte)(0x70 | ((sequence >> 38) & 0x0F));
+        bytes[7] = (byte)(sequence >> 30);
+        bytes[8] = (byte)(0x80 | ((sequence >> 24) & 0x3F));
+        bytes[9] = (byte)(sequence >> 16);
+        bytes[10] = (byte)(sequence >> 8);
+        bytes[11] = (byte)sequence;
         return new Guid(bytes, bigEndian: true);
     }
 

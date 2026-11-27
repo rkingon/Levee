@@ -20,6 +20,9 @@ public sealed record LeveePostgresOptions
     /// </summary>
     public bool LeveeSchema { get; init; } = true;
 
+    /// <summary>The schema Levee's objects are in, as production has them (<c>LeveeSchema.Create(schema)</c>): its grants follow.</summary>
+    public string Schema { get; init; } = "public";
+
     /// <summary>The app's schema, run as the owner after Levee's: its migrations (<c>Database.MigrateAsync</c>), given the owner's connection string.</summary>
     public Func<string, CancellationToken, Task>? Migrate { get; init; }
 
@@ -64,13 +67,13 @@ public sealed class LeveePostgres : IAsyncDisposable
                 create role {Quote(role)} login password 'levee' nosuperuser nobypassrls nocreaterole nocreatedb;
                 revoke create on schema public from public;
                 do $$ begin execute format('revoke temporary on database %I from public', current_database()); end $$;
-                {(options.LeveeSchema ? EntityFrameworkCore.LeveeSchema.Sql : "")}
+                {(options.LeveeSchema ? $"create schema if not exists {Quote(options.Schema)};\n{EntityFrameworkCore.LeveeSchema.Create(options.Schema)}" : "")}
                 """, ct).ConfigureAwait(false);
             if (options.Migrate is { } migrate)
             {
                 await migrate(owner, ct).ConfigureAwait(false);
             }
-            await ExecuteAsync(owner, $"{options.Sql}\n{EntityFrameworkCore.LeveeSchema.Grants(role)}\n{options.Grants}", ct).ConfigureAwait(false);
+            await ExecuteAsync(owner, $"{options.Sql}\n{EntityFrameworkCore.LeveeSchema.Grants(role, options.Schema)}\n{options.Grants}", ct).ConfigureAwait(false);
             var app = new NpgsqlConnectionStringBuilder(owner) { Username = role, Password = "levee" }.ConnectionString;
             return new LeveePostgres(container, app);
         }
@@ -98,8 +101,8 @@ public sealed class LeveePostgres : IAsyncDisposable
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
-    private static string Quote(string role) =>
-        System.Text.RegularExpressions.Regex.IsMatch(role, "^[a-z_][a-z0-9_]{0,62}$")
-            ? role
-            : throw new ArgumentException($"\"{role}\" isn't a Postgres identifier.", nameof(role));
+    private static string Quote(string identifier) =>
+        System.Text.RegularExpressions.Regex.IsMatch(identifier, "^[a-z_][a-z0-9_]{0,62}$")
+            ? identifier
+            : throw new ArgumentException($"\"{identifier}\" isn't a Postgres identifier.", nameof(identifier));
 }

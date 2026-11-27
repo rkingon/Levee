@@ -6,8 +6,8 @@
 - `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope
   answers it `Unauthenticated` (401), not `scope.caller` (403).
 - `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
-  counter in the version's sequence bits, RFC 9562's method 1), where `Guid.CreateVersion7(context.Now)` would order ids
-  minted in one operation at random.
+  42-bit counter in the version's sequence bits, RFC 9562's method 1, so every id keeps the operation's own time), where
+  `Guid.CreateVersion7(context.Now)` would order ids minted in one operation at random.
 - Processes: `IProcess<TInput>`, long-running work an operation starts with `IJobs.StartAsync` (inserted in its
   transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation
   it sends through `ProcessContext`, as its starter, in their scope; `Snooze` runs it again later, from the top, reading
@@ -21,7 +21,8 @@
   `Levee.EntityFrameworkCore` serves it over one Postgres `LISTEN` connection per process, Levee's own.
 - `[ValueObject(typeof(string), Format = ..., Pattern = ...)]`: a value object written by its own converter says what
   it writes, and every schema (the catalog's, each MCP tool's) shows that, nullable where the member is; a member's
-  `[Description]` is its description in every schema, a nullable member with a default included. LEVEE104 refuses a contract type written by its own converter
+  `[Description]` is its description in every schema, a nullable member with a default included; a nullable reference
+  value object allows null. LEVEE104 refuses a contract type written by its own converter
   without one.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an
   app's own would keep the transaction and lose what Levee's Postgres unit of work holds (row-level security checked at
@@ -37,7 +38,8 @@
   `OperationUnavailableException`.
 
 ### Levee.Testing
-- `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema.
+- `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema, and `Schema` for one
+  that keeps Levee's objects in a schema of their own, as production does.
 - New: `LeveePostgres.StartAsync`, Postgres for pipeline tests as production has it (Testcontainers): the owner runs
   Levee's schema, the app's migrations and its SQL, and the app connects as a role that owns nothing and doesn't bypass
   row-level security. Referenced from Test and TestSupport projects only.

@@ -26,3 +26,5 @@ static Levee.Testing.LeveePostgresOptions.operator !=(Levee.Testing.LeveePostgre
 static Levee.Testing.LeveePostgresOptions.operator ==(Levee.Testing.LeveePostgresOptions? left, Levee.Testing.LeveePostgresOptions? right) -> bool
 Levee.Testing.LeveePostgresOptions.LeveeSchema.get -> bool
 Levee.Testing.LeveePostgresOptions.LeveeSchema.init -> void
+Levee.Testing.LeveePostgresOptions.Schema.get -> string!
+Levee.Testing.LeveePostgresOptions.Schema.init -> void

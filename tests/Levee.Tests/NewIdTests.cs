@@ -13,6 +13,8 @@ public sealed class NewIdTests
         var ids = Enumerable.Range(0, 10_000).Select(_ => context.NewId()).ToList();
 
         Assert.Equal(ids.Select(Bytes), ids.Select(Bytes).Order(StringComparer.Ordinal));
+        // Past the 12 bits RFC 9562's counter has on its own: the time stays the operation's.
+        Assert.All(ids, id => Assert.Equal(context.Now.ToUnixTimeMilliseconds(), Convert.ToInt64(Bytes(id)[..12], 16)));
         Assert.All(ids, id => Assert.Equal(7, id.Version));
         Assert.All(ids, id => Assert.Equal(0b10, id.Variant >> 2));
     }
