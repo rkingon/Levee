@@ -291,3 +291,38 @@ internal sealed class SignalProbeHandler(IChangeSignals signals) : IOperationHan
         return operation.Refuse ? Error.Validation("probe.refused", "No.") : Unit.Value;
     }
 }
+
+/// <summary>Starts a process that writes a note in two steps, then refuses if told to: the process must go with it.</summary>
+[Operation("probe.start_process", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["probe.refused"])]
+public sealed record StartNoteProcess(string Tenant, string Text, bool Refuse) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+public sealed record NoteProcessInput(string Tenant, string Text);
+
+internal sealed class StartNoteProcessHandler(IJobs jobs) : IOperationHandler<StartNoteProcess, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartNoteProcess operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new NoteProcessInput(operation.Tenant, operation.Text), null, ct);
+        return operation.Refuse ? Error.Validation("probe.refused", "No.") : Unit.Value;
+    }
+}
+
+/// <summary>Snoozes once between its steps: the second run starts from the top and finds its first step done.</summary>
+internal sealed class NoteProcess : IProcess<NoteProcessInput>
+{
+    public async Task RunAsync(NoteProcessInput input, ProcessContext context, CancellationToken ct)
+    {
+        var written = await context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Tenant, $"{input.Text} {context.Attempt}"), ct);
+        if (!written.IsSuccess)
+        {
+            throw new InvalidOperationException(written.Error.Message);
+        }
+        if (context.Attempt == 1)
+        {
+            context.Snooze(TimeSpan.FromMilliseconds(100));
+        }
+    }
+}

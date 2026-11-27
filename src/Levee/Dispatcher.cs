@@ -268,6 +268,17 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
+    /// <summary>A step of a process: as its caller, in the scope it was started in, held to it as a job is.</summary>
+    internal async Task<Result<object?>> SendPinnedAsync(IOperation operation, Principal principal, string? pinned, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (catalog.Find(operation.GetType()) is not { } descriptor)
+        {
+            return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
+        }
+        return await RunAsync(descriptor, operation, principal, answer: null, pinned, ct);
+    }
+
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
         await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
 

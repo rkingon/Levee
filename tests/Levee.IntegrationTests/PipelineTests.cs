@@ -91,6 +91,27 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         await watching.CancelAsync();
     }
 
+    [Theory]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    public async Task A_process_runs_as_its_starter_in_its_scope_only_if_the_starting_operation_commits(bool refuse, long notes)
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var (acme, ada) = NewTenant();
+
+        await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartNoteProcess(acme, "step", refuse), ada, Ct);
+
+        var deadline = DateTime.UtcNow.AddSeconds(refuse ? 3 : 30);
+        while (await postgres.CountAsync("select count(*) from notes where tenant = $1", acme) < notes && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100, Ct);
+        }
+        Assert.Equal(notes, await postgres.CountAsync("select count(*) from notes where tenant = $1", acme));
+        Assert.Equal(notes, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'notes.create' and subject = $2", acme, ada.Subject));
+        await host.StopAsync(Ct);
+    }
+
     private static (string Tenant, Member Member) NewTenant()
     {
         var tenant = $"t{Guid.NewGuid():N}";

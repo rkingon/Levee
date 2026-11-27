@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Levee
+- Processes: `IProcess<TInput>`, long-running work an operation starts with `IJobs.StartAsync` (inserted in its
+  transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation
+  it sends through `ProcessContext`, as its starter, in their scope; `Snooze` runs it again later, from the top, reading
+  where it was. The generated registration finds a process in Application.
 - `IChangeSignals`: change notifications, the store's own. Raised in an operation and delivered when it commits, never if it
   rolls back; watched by a subscription in its own scope (every scope's for a platform one), from the call, so watching,
   reading, then following misses nothing. A signal is a kind and a key, a hint to read again. `Levee.EntityFrameworkCore`

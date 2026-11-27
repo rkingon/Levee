@@ -36,6 +36,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var own = AllTypes(compilation.Assembly.GlobalNamespace).ToList();
         var operations = own.Select(t => Operation(t, context)).Where(o => o is not null).Select(o => o!).ToList();
         var handlers = own.SelectMany(Handled).ToList();
+        var processes = role is Role.Application or Role.Test ? own.SelectMany(Processed).ToList() : [];
         // A contract is Contracts'; the platform's own (internal) operations may sit with the application; a test declares its own.
         if (role is not (Role.Contracts or Role.Application or Role.Test or Role.TestSupport))
         {
@@ -59,7 +60,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             _ => [],
         };
         var registration = "LeveeRegistration_" + Identifier(compilation.AssemblyName ?? "App");
-        var registers = handlers.Count > 0 || adapters.Count > 0;
+        var registers = handlers.Count > 0 || adapters.Count > 0 || processes.Count > 0;
         var refusals = Refusals(own, context);
 
         var source = new StringBuilder()
@@ -100,6 +101,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 var contract = h.Streams ? "ISubscriptionHandler" : "IOperationHandler";
                 source.AppendLine("            global::Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped<"
                     + $"global::Levee.{contract}<{h.Operation.ToDisplayString(Global)}, {h.Result.ToDisplayString(Argument)}>, {h.Handler.ToDisplayString(Global)}>(services);");
+            }
+            foreach (var (process, input) in processes)
+            {
+                source.AppendLine("            global::Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions.AddScoped<"
+                    + $"global::Levee.IProcess<{input.ToDisplayString(Global)}>, {process.ToDisplayString(Global)}>(services);");
             }
             const string Di = "global::Microsoft.Extensions.DependencyInjection.ServiceCollectionServiceExtensions";
             const string Resolve = "global::Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions.GetRequiredService";
@@ -867,6 +873,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
     }
+
+    private static IEnumerable<(INamedTypeSymbol Process, ITypeSymbol Input)> Processed(INamedTypeSymbol type) =>
+        type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsGenericType || type.DeclaredAccessibility == Accessibility.Private
+            ? []
+            : type.AllInterfaces.Where(i => Known.Is(i, "IProcess", 1)).Select(i => (type, i.TypeArguments[0]));
 
     internal static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)
     {

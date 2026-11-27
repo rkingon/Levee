@@ -95,4 +95,22 @@ public sealed class TrialTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
     }
+
+    [Fact]
+    public async Task A_process_in_Application_is_registered_and_held_to_no_rule()
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Application"), """
+            using Levee;
+            namespace App;
+            public sealed record TurnStarted(System.Guid Turn);
+            internal sealed class RunTurn : IProcess<TurnStarted>
+            {
+                public System.Threading.Tasks.Task RunAsync(TurnStarted input, ProcessContext context, System.Threading.CancellationToken ct) => System.Threading.Tasks.Task.CompletedTask;
+            }
+            """, "App.Application", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.Empty(output.Errors);
+        Assert.Contains("AddScoped<global::Levee.IProcess<global::App.TurnStarted>, global::App.RunTurn>(services);", output.Generated("Levee.Assembly.g.cs"),
+            StringComparison.Ordinal);
+    }
 }

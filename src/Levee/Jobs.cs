@@ -11,6 +11,14 @@ public interface IJobs
 {
     /// <returns>The caller's refusal, if the access policy wouldn't let them run it now.</returns>
     Task<Result<Enqueued>> EnqueueAsync(IOperation operation, JobOptions? options, CancellationToken ct);
+
+    /// <summary>
+    /// Starts the <see cref="IProcess{TInput}"/> for <paramref name="input"/>, inserted in the current transaction like a
+    /// job: it runs only if the operation that starts it commits, as that operation's caller, in its scope. Its input is
+    /// stored, so it carries no <see cref="SecretAttribute"/> unless jobs seal their inputs.
+    /// </summary>
+    Task<Enqueued> StartAsync<TInput>(TInput input, JobOptions? options, CancellationToken ct)
+        where TInput : notnull;
 }
 
 /// <summary>

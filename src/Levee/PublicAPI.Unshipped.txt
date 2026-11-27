@@ -70,3 +70,12 @@ override Levee.ChangeSignal.ToString() -> string!
 static Levee.ChangeSignal.operator !=(Levee.ChangeSignal? left, Levee.ChangeSignal? right) -> bool
 static Levee.ChangeSignal.operator ==(Levee.ChangeSignal? left, Levee.ChangeSignal? right) -> bool
 Levee.ChangeSignal.ChangeSignal(string! Kind, string? Key, string? Scope) -> void
+Levee.IJobs.StartAsync<TInput>(TInput input, Levee.JobOptions? options, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Enqueued>!
+Levee.IProcess<TInput>
+Levee.IProcess<TInput>.RunAsync(TInput input, Levee.ProcessContext! context, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
+Levee.ProcessContext
+Levee.ProcessContext.Attempt.get -> int
+Levee.ProcessContext.Principal.get -> Levee.Principal!
+Levee.ProcessContext.Scope.get -> string?
+Levee.ProcessContext.SendAsync<TResult>(Levee.IOperation<TResult>! operation, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
+Levee.ProcessContext.Snooze(System.TimeSpan delay) -> void
