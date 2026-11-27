@@ -82,6 +82,28 @@ The guard is on the context `AddLeveePostgres` names, so another context registe
 in the one context. The guard reaches the context through `DbContextOptions<TContext>`, so a context that configures
 itself in `OnConfiguring` instead fails the host's start too (outside a host, its first transaction), with the fix.
 
+One context is exempt: a separate bounded context's, marked `[SeparateContext]`. A generic subdomain the app doesn't model
+(identity: OpenIddict's applications, authorizations and tokens) keeps its own store, used by the library it serves
+outside every operation, since it's not the product's data and not a tenant's. Its tables are its own (its own schema,
+written by its own role or the owner): the host's start refuses it if it maps a table the app's context maps, and the
+build refuses the app's own code holding it (LEVEE018), so only the library's registration in Composition or the Host
+names it.
+
+```csharp
+[SeparateContext]
+public sealed class IdentityDb(DbContextOptions<IdentityDb> options) : DbContext(options)
+{
+    protected override void OnModelCreating(ModelBuilder model) { model.HasDefaultSchema("identity"); model.UseOpenIddict(); }
+}
+
+// Composition
+services.AddDbContext<IdentityDb>(o => o.UseNpgsql(identityConnectionString));
+services.AddOpenIddict().AddCore(o => o.UseEntityFrameworkCore().UseDbContext<IdentityDb>());
+```
+
+What the app needs of identity (who a client is, for its access policy) comes through an operation or a port, not the
+context.
+
 A retrying execution strategy (`EnableRetryOnFailure`) can't run a transaction its caller began, so it's refused the same
 way: a transient failure answers `Unavailable`, which a client may repeat and a job retries.
 

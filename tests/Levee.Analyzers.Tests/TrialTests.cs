@@ -75,4 +75,24 @@ public sealed class TrialTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE104"));
     }
+
+    private const string Identity = """
+        namespace Microsoft.EntityFrameworkCore { public class DbContextOptions { } public class DbContext { public DbContext(DbContextOptions o) { } } }
+        namespace Levee.EntityFrameworkCore { [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class SeparateContextAttribute : System.Attribute; }
+        [Levee.EntityFrameworkCore.SeparateContext]
+        public sealed class IdentityDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o) { public IdentityDb Self() => this; }
+        public sealed class AppDb(Microsoft.EntityFrameworkCore.DbContextOptions o) : Microsoft.EntityFrameworkCore.DbContext(o);
+        """;
+
+    [Theory]
+    [InlineData("Adapter", "public sealed class Clients(IdentityDb db) { public int Count => 0; }", true)]
+    [InlineData("Adapter", "public sealed class Notes(AppDb db) { public int Count => 0; }", false)]
+    [InlineData("Composition", "public static class Wiring { public static System.Type Store(IdentityDb? db) => typeof(IdentityDb); }", false)]
+    [InlineData("Host", "public static class Program { public static void Main(IdentityDb? db) { } }", false)]
+    public async Task A_separate_bounded_contexts_store_is_left_to_the_library_it_serves(string role, string declaration, bool refused)
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings(role, Exe: role == "Host"), Identity + declaration, "App." + role, GeneratorTests.Levee);
+
+        Assert.Equal(refused, output.Ids.Contains("LEVEE018"));
+    }
 }

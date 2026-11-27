@@ -504,6 +504,55 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
     private sealed class SideDbContext(DbContextOptions<SideDbContext> options) : DbContext(options);
 
+    [Theory]
+    [InlineData("identity", "clients", null)]
+    [InlineData("public", "notes", "IdentityDb is a separate bounded context's, but maps public.notes")]
+    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_tables_of_its_own(string schema, string table, string? refusal)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration["Sample:BannedWords"] = "none";
+        builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddDbContext<IdentityDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
+        builder.Services.AddSingleton(new IdentityTable(schema, table));
+        builder.Services.AddLeveeOperations(builder.Configuration);
+        builder.Services.AddLeveePostgres<SampleDbContext>();
+        using var host = builder.Build();
+
+        if (refusal is null)
+        {
+            await host.StartAsync(Ct);
+            await host.StopAsync(Ct);
+        }
+        else
+        {
+            var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+            Assert.Contains(refusal, refused.Message, StringComparison.Ordinal);
+        }
+    }
+
+    private sealed record IdentityTable(string Schema, string Table);
+
+    [SeparateContext]
+    private sealed class IdentityDb(DbContextOptions<IdentityDb> options, IdentityTable table) : DbContext(options)
+    {
+        public IdentityTable Table => table;
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder) =>
+            modelBuilder.Entity<Ledger>(e =>
+            {
+                e.ToTable(table.Table, table.Schema);
+                e.Property(l => l.Id).HasColumnName("id");
+                e.Property(l => l.Tenant).HasColumnName("tenant");
+            });
+    }
+
+    // The two cases map different tables with one context type: each its own model.
+    private sealed class PerTable : Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory
+    {
+        public object Create(DbContext context, bool designTime) => (context.GetType(), (context as IdentityDb)?.Table, designTime);
+    }
+
     [Fact]
     public async Task A_second_context_configured_on_its_own_is_refused_at_start()
     {

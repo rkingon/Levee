@@ -96,6 +96,10 @@ internal static class Descriptors
         "LEVEE018", "Data is reached only through the operation's unit of work",
         "{0} opens a connection of its own, outside the operation's transaction: it isn't read-only when declared, isn't rolled back, isn't audited, and can set its own scope. Fix: use the DbContext the unit of work holds (or IAmbientTransaction's connection); a write that must outlive the operation is an internal operation dispatched as the system; work as the database's owner is a Tool's");
 
+    public static readonly DiagnosticDescriptor SeparateContextReach = Rule(
+        "LEVEE018", "Data is reached only through the operation's unit of work",
+        "{0} reaches {1}, a separate bounded context's store ([SeparateContext]), from the app's own code: its data is outside every operation, unscoped and unaudited. Fix: leave {1} to the library it serves (registered in Composition or the Host); what the app needs of that context is an operation of its own, or a port the context's adapter serves through the unit of work");
+
     public static readonly DiagnosticDescriptor OwnerRun = Rule(
         "LEVEE018", "Data is reached only through the operation's unit of work",
         "LeveeOwner.Run steps around the guard that keeps the app's context inside operations, for work as the database's owner. Fix: move migrations and bootstrap into a Tool project; everything else sends an operation through the Dispatcher");

@@ -34,6 +34,15 @@ public static class LeveePostgresServiceCollectionExtensions
 }
 
 /// <summary>
+/// A DbContext of a separate bounded context: a generic subdomain the app doesn't model (identity: OpenIddict's stores),
+/// its tables apart from the app's, used by the library it serves and never by the app's own code (LEVEE018). Levee's
+/// unit of work, guard and row-level security check are the app's context's alone; this one is outside every operation.
+/// Startup refuses it if it maps a table the app's context maps.
+/// </summary>
+[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+public sealed class SeparateContextAttribute : Attribute;
+
+/// <summary>
 /// Work as the database's owner, outside any operation: a Tool's migrations and role bootstrap. Everything else reaches the
 /// database only inside an operation's unit of work (LEVEE018 holds this to Tools and tests).
 /// </summary>
@@ -79,20 +88,41 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
             .OfType<Type>()
             .Select(t => t.IsGenericType && t.GetGenericTypeDefinition() == typeof(DbContextOptions<>) ? t.GenericTypeArguments[0] : t)
             .Where(t => typeof(DbContext).IsAssignableFrom(t) && t != context)
-            .Select(t => t.Name)
             .Distinct()
             .ToList();
+        var separate = others.Where(t => t.IsDefined(typeof(SeparateContextAttribute), inherit: false)).ToList();
+        others = [.. others.Except(separate)];
         if (others.Count > 0)
         {
             return ValidateOptionsResult.Fail(
-                $"{string.Join(", ", others)} is a DbContext besides {context.Name}, Levee's unit of work: it reaches the database outside "
-                + $"every operation's transaction. Map its entities in {context.Name}; a Tool's owner work builds its own context.");
+                $"{string.Join(", ", others.Select(t => t.Name))} is a DbContext besides {context.Name}, Levee's unit of work: it reaches the database outside "
+                + $"every operation's transaction. Map its entities in {context.Name}; a Tool's owner work builds its own context; "
+                + "a separate bounded context the app doesn't model (identity) is marked [SeparateContext].");
         }
         using var scope = scopes.CreateScope();
-        return Unfit((DbContext)scope.ServiceProvider.GetRequiredService(context)) is { } problem
-            ? ValidateOptionsResult.Fail(problem)
-            : ValidateOptionsResult.Success;
+        var app = (DbContext)scope.ServiceProvider.GetRequiredService(context);
+        if (Unfit(app) is { } problem)
+        {
+            return ValidateOptionsResult.Fail(problem);
+        }
+        // A separate context over the app's own tables would be the app's data outside every operation.
+        var mine = Tables(app);
+        foreach (var type in separate)
+        {
+            if (scope.ServiceProvider.GetService(type) is DbContext other && Tables(other).Intersect(mine).FirstOrDefault() is { } shared)
+            {
+                return ValidateOptionsResult.Fail(
+                    $"{type.Name} is a separate bounded context's, but maps {shared}, which {context.Name} maps too: that table would be "
+                    + $"reached outside every operation. Fix: keep the separate context's tables its own (its own schema), and map the app's in {context.Name} alone.");
+            }
+        }
+        return ValidateOptionsResult.Success;
     }
+
+    private static HashSet<string> Tables(DbContext db) =>
+    [
+        .. db.Model.GetEntityTypes().Select(e => e.GetTableName() is { } table ? $"{e.GetSchema() ?? "public"}.{table}" : null).OfType<string>(),
+    ];
 
     /// <summary>What the context's own configuration would undo: the guard, or a transaction the caller begins.</summary>
     public static string? Unfit(DbContext db)

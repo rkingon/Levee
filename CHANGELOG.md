@@ -26,6 +26,9 @@
   row-level security. Referenced from Test and TestSupport projects only.
 
 ### Levee.EntityFrameworkCore
+- `[SeparateContext]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the app's, used by
+  the library it serves outside every operation. The host's start refuses one that maps a table the app's context maps,
+  and LEVEE018 refuses the app's own code holding it.
 - `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
   before the app's own narrowing, which a blanket grant would undo.
 

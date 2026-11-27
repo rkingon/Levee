@@ -364,6 +364,11 @@ transaction's. A record that must survive the operation rolling back (a paid ven
 dispatched as the system. Work as the database's owner is a Tool's; Composition and a Host may resolve the data source
 to configure the context with.
 
+A separate bounded context's context (`[SeparateContext]`: identity's, for the library that serves it) is outside every
+operation, so the app's own code never holds it: a field, a property, a parameter or a return of it outside Composition,
+a Host or a Tool fails the build. Only the library's registration names it. See
+[postgres.md](postgres.md#outside-an-operation).
+
 ## LEVEE019: Aggregate roots live in Domain
 
 LEVEE007 guards an aggregate's state only in Domain; an aggregate declared anywhere else has no guard. Move it.

@@ -27,6 +27,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection,
+            Descriptors.SeparateContextReach,
             Descriptors.OwnerRun, Descriptors.CatalogByHand);
 
     public override void Initialize(AnalysisContext context)
@@ -46,6 +47,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
             // A method group is a call deferred: Func<Type, object?> f = services.GetService locates all the same.
             start.RegisterOperationAction(c => Known.Unless(c, () => OnMethodGroup(c, role)), OperationKind.MethodReference);
             start.RegisterOperationAction(c => Known.Unless(c, () => OnCreation(c, role)), OperationKind.ObjectCreation);
+            if (!Roles.Composes(role))
+            {
+                start.RegisterSymbolAction(OnSeparateContext, SymbolKind.Method, SymbolKind.Property, SymbolKind.Field);
+            }
             if (role != Role.Tool)
             {
                 start.RegisterSymbolAction(OnHeld, SymbolKind.Method, SymbolKind.Property);
@@ -348,6 +353,38 @@ public sealed class CodeRules : DiagnosticAnalyzer
             && (receiver.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"
                 || receiver.AllInterfaces.Any(i => i.ToDisplayString() == "Microsoft.AspNetCore.Routing.IEndpointRouteBuilder"));
     }
+
+    /// <summary>A separate bounded context's DbContext held by the app's own code: only the library it serves, registered where the app composes, uses it.</summary>
+    private static void OnSeparateContext(SymbolAnalysisContext context)
+    {
+        var symbol = context.Symbol;
+        if (symbol.IsImplicitlyDeclared || symbol.ContainingType is not { } owner || Separate(owner) is not null
+            || symbol.Locations.FirstOrDefault() is not { IsInSource: true } location || Known.IsLeveeGenerated(location.SourceTree))
+        {
+            return;
+        }
+        var types = symbol switch
+        {
+            IMethodSymbol m => m.Parameters.Select(p => p.Type).Append(m.ReturnType),
+            IPropertySymbol p => [p.Type],
+            IFieldSymbol f => [f.Type],
+            _ => [],
+        };
+        if (types.Select(Separate).FirstOrDefault(t => t is not null) is { } separate)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.SeparateContextReach, location, $"{owner.Name}.{symbol.Name}", separate.Name));
+        }
+    }
+
+    /// <summary>A DbContext marked as a separate bounded context's, or one wrapped (Task&lt;T&gt;, Lazy&lt;T&gt;, IDbContextFactory&lt;T&gt;).</summary>
+    private static INamedTypeSymbol? Separate(ITypeSymbol? type) => type switch
+    {
+        INamedTypeSymbol named when Derives(named, "Microsoft.EntityFrameworkCore.DbContext")
+            && named.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.EntityFrameworkCore.SeparateContextAttribute") => named,
+        INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(Separate).FirstOrDefault(c => c is not null),
+        IArrayTypeSymbol array => Separate(array.ElementType),
+        _ => null,
+    };
 
     private static bool Injected(ISymbol symbol) => symbol.GetAttributes().Any(a => a.AttributeClass?.Name is
         "FromServicesAttribute" or "FromKeyedServicesAttribute" or "InjectAttribute");
