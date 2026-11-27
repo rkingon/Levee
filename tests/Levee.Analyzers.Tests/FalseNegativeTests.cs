@@ -60,4 +60,34 @@ public sealed class FalseNegativeTests
             Assert.Contains("request.Scope.Key == m.Tenant", Message(output, "LEVEE113"), StringComparison.Ordinal);
         }
     }
+
+    [Theory]
+    [InlineData("typeof(Program).GetCustomAttributes(false).OfType<OperationAttribute>().Select(a => a.Name).ToList()", true)]
+    [InlineData("typeof(Program).GetCustomAttributes(false).FirstOrDefault(a => a is OperationAttribute)", true)]
+    [InlineData("typeof(Program).GetCustomAttributes(false) is [Levee.OperationAttribute op, ..] ? op.Name : null", true)]
+    [InlineData("(OperationAttribute?)System.Attribute.GetCustomAttribute(typeof(Program), typeof(System.Attribute))", true)]
+    [InlineData("typeof(OperationAttribute)", true)]
+    [InlineData("typeof(Program).GetCustomAttributes(false).OfType<Named>().ToList()", true, "using Named = Levee.OperationAttribute;")]
+    [InlineData("typeof(Program).GetCustomAttributes(false).OfType<System.ObsoleteAttribute>().ToList()", false)]
+    [InlineData("Tagged.Kind", false)]
+    public async Task OperationAttribute_is_named_only_as_an_attribute(string expression, bool refused, string header = "")
+    {
+        var output = await Probe.CompileAsync(new Probe.Settings("Host", Exe: true), $$"""
+            {{header}}
+            using System.Linq;
+            using Levee;
+            [System.AttributeUsage(System.AttributeTargets.Class)] public sealed class KindAttribute(System.Type kind) : System.Attribute { public System.Type Kind { get; } = kind; }
+            [Kind(typeof(OperationAttribute))] public static class Tagged { public static System.Type Kind => typeof(int); }
+            /// <summary>Not a <see cref="OperationAttribute"/>.</summary>
+            public static class Program
+            {
+                public static void Main() { }
+                public static object? Find() => {{expression}};
+            }
+            """, "App.Host", GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration);
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused ? ["LEVEE020"] : [], output.Ids.Distinct());
+        Assert.Equal(refused ? 1 : 0, output.Errors.Length);
+    }
 }
