@@ -574,3 +574,20 @@ internal sealed class AccessPolicy : IAccessPolicy
 ```
 
 A client that sees only Contracts (`LeveeCatalog`) doesn't see these: the policy lives where the app composes.
+
+## LEVEE112: Every process input has one process
+
+A queued job names only its input's type, and the worker runs the one `IProcess<TInput>` the container resolves for it.
+Two processes for one input (two Application projects', a base class's subclasses, a test's beside the app's) build and
+register, and which one runs an already queued job is registration order. Checked where the catalog is built, across the
+composed app.
+
+```csharp
+// Wrong: two processes claim TurnStarted
+internal sealed class RunTurn : IProcess<TurnStarted> { ... }
+internal sealed class ScoreTurn : IProcess<TurnStarted> { ... }
+
+// Right: one process per input; different work is a different input
+internal sealed class RunTurn : IProcess<TurnStarted> { ... }
+internal sealed class ScoreTurn : IProcess<TurnScored> { ... }
+```

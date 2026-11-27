@@ -168,10 +168,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if (role == Role.Composition || (role is Role.Host or Role.Tool or Role.Test && !composed && application))
         {
             Compose(context, compilation, role, operations, handlers, adapters, registers ? registration : null, refusals);
+            DuplicateProcesses(context, compilation, processes, ownOnly: false);
         }
         else if (role == Role.Test && composed && registers)
         {
             ComposeTestPart(context, compilation, operations, handlers, registration);
+            DuplicateProcesses(context, compilation, processes, ownOnly: true);
         }
         if (role == Role.Contracts && operations.Any(o => !o.Internal))
         {
@@ -333,6 +335,27 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         source.AppendLine("            return services;").AppendLine("        }").AppendLine("    }").AppendLine("}");
         context.AddSource("Levee.Composition.g.cs", source.ToString());
+    }
+
+    /// <summary>
+    /// A queued job names its input's type alone, and the worker resolves the one <c>IProcess&lt;TInput&gt;</c> for it, so two
+    /// for one input leave which runs to registration order. Across the root's own and every Application it references; a
+    /// test part reports only where its own process is one of them, as the app's root reported the rest.
+    /// </summary>
+    private static void DuplicateProcesses(SourceProductionContext context, Compilation compilation, List<(INamedTypeSymbol Process, ITypeSymbol Input)> own, bool ownOnly)
+    {
+        var all = own.Concat(compilation.SourceModule.ReferencedAssemblySymbols.Where(a => Roles.Of(a) == Role.Application)
+            .SelectMany(a => AllTypes(a.GlobalNamespace)).SelectMany(Processed));
+        foreach (var group in all.GroupBy(p => p.Input, SymbolEqualityComparer.Default).Where(g => g.Count() > 1))
+        {
+            var mine = group.FirstOrDefault(p => own.Contains(p));
+            if (ownOnly && mine.Process is null)
+            {
+                continue;
+            }
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.DuplicateProcess, mine.Process?.Locations.FirstOrDefault() ?? Location.None,
+                group.Key!.ToDisplayString(), group.Count(), string.Join(", ", group.Select(p => p.Process.ToDisplayString()))));
+        }
     }
 
     private static string DescriptorOf(OperationModel op)

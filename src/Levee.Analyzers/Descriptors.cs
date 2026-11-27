@@ -162,11 +162,16 @@ internal static class Descriptors
         "LEVEE111", "Access policies and admissions refuse only with the codes they declare",
         "{0} refuses with '{1}', which it doesn't declare. Fix: add it to [Refuses(...)] on {0}, so the catalog lists it for every client");
 
+    public static readonly DiagnosticDescriptor DuplicateProcess = Rule(
+        "LEVEE112", "Every process input has one process",
+        "Process input {0} is run by {1} processes ({2}), and a queued job names only its input, so which one runs is the container's registration order. Fix: keep one IProcess<{0}>; if they do different things, give each an input type of its own");
+
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
     [
         "LEVEE001", "LEVEE002", "LEVEE003", "LEVEE004", "LEVEE005", "LEVEE006", "LEVEE007", "LEVEE008", "LEVEE009",
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
+        "LEVEE112",
     ];
 }

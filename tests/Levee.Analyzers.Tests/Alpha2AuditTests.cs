@@ -69,4 +69,41 @@ public sealed class Alpha2AuditTests
         Assert.Contains("TryAddScoped<global::Formatter<string>>(services);", registration, StringComparison.Ordinal);
         Assert.DoesNotContain("Formatter<T>", registration, StringComparison.Ordinal);
     }
+
+    private const string Processes = """
+        using Levee;
+        using System.Threading;
+        using System.Threading.Tasks;
+        internal abstract class Processor<T> : IProcess<T>
+        {
+            public Task RunAsync(T input, ProcessContext context, CancellationToken ct) => Task.CompletedTask;
+        }
+        """;
+
+    [Theory]
+    [InlineData("internal sealed class First : Processor<int>; internal sealed class Second : Processor<int>;", true)]
+    [InlineData("internal sealed class First : Processor<int>; internal sealed class Second : Processor<long>;", false)]
+    public async Task A_process_input_is_run_by_one_process(string processes, bool refused)
+    {
+        var application = await Compile("Application", Processes + processes);
+        Assert.Empty(application.Errors);
+
+        var host = await Compile("Host", "public static class Program;", "App", application.Reference());
+
+        Assert.Equal(refused, host.Ids.Contains("LEVEE112"));
+    }
+
+    [Fact]
+    public async Task A_tests_own_process_for_the_apps_input_is_a_second_one()
+    {
+        var application = await Compile("Application", Processes + "internal sealed class Real : Processor<int>;");
+        var composition = await Compile("Composition", "internal static class Wiring;", "App", application.Reference());
+        Assert.Empty(composition.Errors);
+
+        var test = await Compile("Test", Processes + "internal sealed class Fake : Processor<int>; internal sealed class Own : Processor<long>;", "App",
+            application.Reference(), composition.Reference());
+
+        var error = Assert.Single(test.Errors, e => e.Id == "LEVEE112");
+        Assert.Contains("Fake", error.GetMessage(System.Globalization.CultureInfo.InvariantCulture), StringComparison.Ordinal);
+    }
 }
