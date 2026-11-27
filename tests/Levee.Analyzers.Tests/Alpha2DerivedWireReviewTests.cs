@@ -16,8 +16,8 @@ public sealed class Alpha2DerivedWireReviewTests
             using Levee;
             using System.Text.Json.Serialization;
             [JsonDerivedType(typeof(RetailPrice), "retail")]
-            public abstract record Price(int Amount);
-            public sealed record RetailPrice(int Amount) : Price(Amount) { {{member}} }
+            public abstract record Price { public abstract int Amount { get; init; } }
+            public sealed record RetailPrice(int Amount) : Price { {{member}} }
             [Operation("billing.price", "member", Platform = true)]
             public sealed record Quote({{parameters}}) : IOperation<{{result}}>;
             """, "Billing.Contracts", GeneratorTests.Levee);

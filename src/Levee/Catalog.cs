@@ -280,6 +280,36 @@ public sealed class OperationCatalog
             {
                 continue;
             }
+            for (var b = type.BaseType; b is not null && b != typeof(object) && b != typeof(ValueType); b = b.BaseType)
+            {
+                var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+                if (b.GetConstructors(flags).Any(c => c.GetParameters() is { Length: > 0 } ps && !(ps.Length == 1 && ps[0].ParameterType == b)))
+                {
+                    return $"{type.Name} derives from {b.Name}, which takes constructor parameters, so a value can be forwarded to the wrong member, or none. "
+                        + "Fix: a contract's base takes nothing, its members abstract or set on their own; or no base (LEVEE104).";
+                }
+            }
+            // A positional parameter naming a member a base declares sets nothing, unless the nearest declaration is abstract.
+            foreach (var parameter in (info.ConstructorAttributeProvider as System.Reflection.MethodBase)?.GetParameters() ?? [])
+            {
+                for (var b = type.BaseType; b is not null && b != typeof(object) && b != typeof(ValueType); b = b.BaseType)
+                {
+                    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic
+                        | System.Reflection.BindingFlags.DeclaredOnly;
+                    if (b.GetProperties(flags).FirstOrDefault(m => string.Equals(m.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)) is { } declared)
+                    {
+                        if (declared.GetMethod is { IsAbstract: false })
+                        {
+                            return $"{type.Name} takes {parameter.Name}, which {b.Name} already declares, so the parameter sets nothing and the caller's value is dropped (LEVEE104).";
+                        }
+                        break;
+                    }
+                }
+            }
+            if (info.Properties.FirstOrDefault(p => p.AttributeProvider is System.Reflection.FieldInfo) is { } field)
+            {
+                return $"{type.Name}.{field.Name} is a field, which isn't in the contract language. Fix: a property (LEVEE104).";
+            }
             if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
             {
                 return $"{type.Name} has no constructor the wire can call, so it writes it but can't read it back. Fix: a positional record (LEVEE104).";

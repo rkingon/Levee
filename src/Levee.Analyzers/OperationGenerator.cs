@@ -677,86 +677,6 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// writes it), with what's wrong, or null. An allow-list: what isn't named here is refused, so no shape the reader can't
     /// take back gets in by being one nobody thought of.
     /// </summary>
-    /// <summary>
-    /// How a record, or any record it derives from, sends a value from its positional constructor to its base's parameter of
-    /// another name, or null: as C# bound the call (the overload, named and positional arguments, defaults), not as it reads.
-    /// A base declared in another assembly is judged where it's declared.
-    /// </summary>
-    private static string? Misrouted(INamedTypeSymbol type, Compilation compilation)
-    {
-        static bool Positional(ISymbol? constructor) =>
-            constructor?.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax { ParameterList: not null };
-        for (var t = type; t is not null && t.SpecialType is not (SpecialType.System_Object or SpecialType.System_ValueType); t = t.BaseType)
-        {
-            if (t.BaseType is not { SpecialType: not (SpecialType.System_Object or SpecialType.System_ValueType) } baseType)
-            {
-                continue;
-            }
-            foreach (var reference in t.DeclaringSyntaxReferences)
-            {
-                if (reference.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax declaration || !compilation.ContainsSyntaxTree(declaration.SyntaxTree)
-                    || declaration.BaseList is null)
-                {
-                    continue;
-                }
-                var model = compilation.GetSemanticModel(declaration.SyntaxTree);
-                var forwarded = declaration.BaseList.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault();
-                // The base constructor C# bound, arguments or none: the base's positional one, or the implicit one of a base with no
-                // positional parameters. Any other (one with a body, one chaining on through this(...)) routes values where no
-                // schema shows.
-                var bound = forwarded is not null
-                    ? model.GetSymbolInfo(forwarded).Symbol as IMethodSymbol
-                    : baseType.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 0 && c.DeclaredAccessibility != Accessibility.Private);
-                if (bound is not null && !Positional(bound) && !(bound.IsImplicitlyDeclared && !Positional(baseType.InstanceConstructors.FirstOrDefault(Positional))
-                    && !baseType.InstanceConstructors.Any(Positional)))
-                {
-                    return $"{t.Name} calls a constructor of its base's own, not its positional one, which may send a value on to another member, or none";
-                }
-                var passed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var argument in forwarded?.ArgumentList.Arguments ?? [])
-                {
-                    if (model.GetOperation(argument) is not Microsoft.CodeAnalysis.Operations.IArgumentOperation { Parameter: { } parameter } argued)
-                    {
-                        continue;
-                    }
-                    // The parameter itself, unconverted: a cast (a narrowing one loses the caller's value) is a value of another.
-                    if (!(argued.Value is Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation source
-                        && string.Equals(source.Parameter.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)
-                        && SymbolEqualityComparer.Default.Equals(source.Parameter.Type, parameter.Type)))
-                    {
-                        return $"{t.Name} passes {argument.Expression} to its base's {parameter.Name}, so a value can land in another member";
-                    }
-                    passed[parameter.Name] = source.Parameter.Name;
-                }
-                // A positional parameter naming a member the base declares sets nothing of its own: it reaches that member only
-                // when it's passed on, or the base keeps its default.
-                foreach (var own in (declaration as Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax)?.ParameterList?.Parameters ?? [])
-                {
-                    var name = own.Identifier.Text;
-                    if (BaseMembers(baseType).Contains(name) && !passed.ContainsKey(name))
-                    {
-                        return $"{t.Name} takes {name} but doesn't pass it to its base, whose {name} it names, so the caller's value is dropped";
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    private static HashSet<string> BaseMembers(INamedTypeSymbol baseType)
-    {
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        for (var t = baseType; t is not null && t.SpecialType is not (SpecialType.System_Object or SpecialType.System_ValueType); t = t.BaseType)
-        {
-            // An abstract one the positional parameter overrides, and so sets.
-            foreach (var property in t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && !p.IsImplicitlyDeclared && !p.IsAbstract))
-            {
-                names.Add(property.Name);
-            }
-        }
-        return names;
-    }
-
     private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
     {
         // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
@@ -863,7 +783,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         // Judged from its source, so it's the contract's own: a record of another assembly (Kernel's) is seen here only as
         // metadata, which hides how its constructors route values.
         // Levee's own wire types (ChangeSignal) are judged by Levee's tests; its others aren't contract types.
-        if (ContractLanguage.LeveeRecords.Contains(MetadataName(named)))
+        if (named.ContainingType is null && named.ContainingAssembly.Name == "Levee" && ContractLanguage.LeveeRecords.Contains(MetadataName(named)))
         {
             return null;
         }
@@ -955,9 +875,30 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"derives from {baseOf.Name}, {baseOf.ContainingAssembly.Name}'s, so how its values reach their members can't be judged here. Fix: declare the contract's own record, with no base from another assembly");
         }
-        if (Misrouted(named, compilation) is { } misrouted)
+        // A base with constructor parameters is one more place a value can be forwarded wrongly or not at all: a contract's base takes
+        // nothing, its members abstract (each subtype's positional parameter overrides them) or set on their own.
+        for (var b = named.BaseType; b is { SpecialType: not (SpecialType.System_Object or SpecialType.System_ValueType) }; b = b.BaseType)
         {
-            return (here, $"{misrouted}. Fix: call the base's positional constructor, forwarding each of its parameters as the parameter of its own name: : Base(Ordered, Delivered)");
+            if (b.InstanceConstructors.Any(c => c.Parameters.Length > 0 && !(c.Parameters.Length == 1 && SymbolEqualityComparer.Default.Equals(c.Parameters[0].Type, b))))
+            {
+                return (here, $"derives from {b.Name}, which takes constructor parameters, so a value can be forwarded to the wrong member, or none. Fix: a contract's base takes nothing, its members abstract (each subtype's positional parameter overrides them) or set on their own; or no base");
+            }
+        }
+        // A positional parameter naming a member a base declares sets nothing of its own, unless the nearest such declaration is
+        // abstract, which the parameter then overrides and sets.
+        foreach (var parameter in constructor.Parameters)
+        {
+            for (var b = named.BaseType; b is { SpecialType: not (SpecialType.System_Object or SpecialType.System_ValueType) }; b = b.BaseType)
+            {
+                if (b.GetMembers().OfType<IPropertySymbol>().FirstOrDefault(m => !m.IsStatic && string.Equals(m.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)) is { } declared)
+                {
+                    if (!declared.IsAbstract)
+                    {
+                        return (here, $"takes {parameter.Name}, which {b.Name} already declares, so the parameter sets nothing and the caller's value is dropped. Fix: make {b.Name}'s {declared.Name} abstract, or drop the parameter and let the member set on its own");
+                    }
+                    break;
+                }
+            }
         }
         // [JsonInclude] lets the wire set a non-public setter, one a referenced assembly's metadata doesn't even show; one with
         // no setter at all the catalog refuses at start.
@@ -987,6 +928,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
             if (Wired(member) is not { } memberType)
             {
                 continue;
+            }
+            if (member is IFieldSymbol)
+            {
+                return (at, "is a field ([JsonInclude]), which isn't in the contract language. Fix: a property, positional or set on its own");
             }
             if (Loosened(member))
             {

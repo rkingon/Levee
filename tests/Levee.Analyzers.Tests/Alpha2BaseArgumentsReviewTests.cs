@@ -3,9 +3,10 @@ namespace Levee.Analyzers.Tests;
 public sealed class Alpha2BaseArgumentsReviewTests
 {
     [Theory]
-    [InlineData("", "Delivered: Delivered, Ordered: Ordered", false)]
+    // A base taking constructor parameters is outside the contract language, however its arguments are bound.
+    [InlineData("", "Delivered: Delivered, Ordered: Ordered", true)]
     [InlineData("", "Delivered: Ordered, Ordered: Delivered", true)]
-    [InlineData(", int Pending = 0", "Ordered, Delivered", false)]
+    [InlineData(", int Pending = 0", "Ordered, Delivered", true)]
     [InlineData(", int Pending = 0", "Delivered, Ordered", true)]
     public async Task Positional_inputs_follow_the_bound_base_parameters(string optional, string forwarding, bool refused)
     {

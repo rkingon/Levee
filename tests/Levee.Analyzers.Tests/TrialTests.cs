@@ -79,7 +79,7 @@ public sealed class TrialTests
     [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWriting)] int Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value);", "[property: System.Text.Json.Serialization.JsonIgnore] int Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value); public abstract record Counts(int Ordered, int Delivered); public sealed record Quantities(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Quantities Area", true)]
-    [InlineData(ZipJson + "public readonly record struct Zip(string Value); public abstract record Counts(int Ordered, int Delivered); public sealed record Quantities(int Ordered, int Delivered) : Counts(Ordered, Delivered);", "Quantities Area", false)]
+    [InlineData(ZipJson + "public readonly record struct Zip(string Value); public abstract record Counts(int Ordered, int Delivered); public sealed record Quantities(int Ordered, int Delivered) : Counts(Ordered, Delivered);", "Quantities Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value); [System.Text.Json.Serialization.JsonDerivedType(typeof(Bundle), \"bundle\")] public record Price(int Amount); public sealed record Bundle(int Amount, System.Collections.ObjectModel.ReadOnlyCollection<int> Parts) : Price(Amount);", "Price Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value); ", "System.Collections.Generic.IReadOnlySet<int> Area", true)]
     [InlineData(ZipJson + "public readonly record struct Zip(string Value); ", "int[,] Area", true)]

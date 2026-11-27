@@ -42,14 +42,14 @@ public sealed class ContractLanguageParityTests
     [InlineData("public sealed record Order(int Quantity, int Price) { public int Total => Quantity * Price; }", "Order A", true, false)]
     [InlineData("public sealed record Money { public int Amount { get; set; } public Money(int value) => Amount = value; }", "Money A", true, false)]
     [InlineData("public sealed class Bag : System.Collections.Generic.List<int>;", "Bag A", true, false)]
-    // What only the source shows: which member a constructor's body, or a base call, puts each value in.
+    // What only the source shows: which member a constructor's body puts each value in. A base taking parameters both refuse.
     [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } public Q(int ordered, int delivered) { Ordered = delivered; Delivered = ordered; } }", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered: Delivered, Delivered: Ordered);", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered);", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered: Delivered, Ordered: Ordered);", "Q A", false, false)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered);", "Q A", true, true)]
-    [InlineData("public abstract record Counts(int Ordered, int Delivered) { protected Counts() : this(0, 0) { } } public sealed record Q(int Ordered, int Delivered) : Counts();", "Q A", true, true)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Q A", true, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered: Delivered, Delivered: Ordered);", "Q A", true, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered);", "Q A", true, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered); public sealed record Q(int Ordered, int Delivered) : Counts(Delivered: Delivered, Ordered: Ordered);", "Q A", true, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered = 0); public sealed record Q(int Ordered, int Delivered) : Counts(Ordered);", "Q A", true, false)]
+    [InlineData("public abstract record Counts(int Ordered, int Delivered) { protected Counts() : this(0, 0) { } } public sealed record Q(int Ordered, int Delivered) : Counts();", "Q A", true, false)]
     [InlineData("public sealed record Q { public int Ordered { get; } public int Delivered { get; } [System.Text.Json.Serialization.JsonConstructor] public Q(int ordered, int delivered) : this(delivered, ordered, 0) { } private Q(int ordered, int delivered, int _) { Ordered = ordered; Delivered = delivered; } }", "Q A", true, true)]
     public async Task The_build_and_the_catalog_agree_on_the_contract_language(string types, string members, bool refused, bool sourceOnly)
     {

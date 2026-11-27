@@ -14,9 +14,10 @@ public sealed class Alpha2ConstructorBindingReviewTests
     [InlineData(Overloads, "Counts(Ordered, Delivered)", true)]
     [InlineData(Overloads, "Counts(Delivered, Ordered)", true)]
     [InlineData(Overloads, "Counts(Ordered: Ordered, Delivered: Delivered)", true)]
-    [InlineData("public record Counts(int Ordered, int Delivered);", "Counts(Ordered: Ordered, Delivered)", false)]
+    // A base taking constructor parameters is outside the contract language, however its arguments are bound.
+    [InlineData("public record Counts(int Ordered, int Delivered);", "Counts(Ordered: Ordered, Delivered)", true)]
     [InlineData("public record Counts(int Ordered, int Delivered); public record Line(int Ordered, int Delivered) : Counts(Delivered, Ordered);", "Line(Ordered, Delivered)", true)]
-    [InlineData("public record Counts(int Ordered, int Delivered); public record Line(int Ordered, int Delivered) : Counts(Ordered, Delivered);", "Line(Ordered, Delivered)", false)]
+    [InlineData("public record Counts(int Ordered, int Delivered); public record Line(int Ordered, int Delivered) : Counts(Ordered, Delivered);", "Line(Ordered, Delivered)", true)]
     public async Task Every_forwarded_argument_reaches_the_member_that_was_sent(string bases, string call, bool refused)
     {
         var built = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""

@@ -5,7 +5,8 @@ public sealed class Alpha2ForwardedValuesReviewTests
     private const string Primary = "public record Counts(int Ordered, int Delivered);";
 
     [Theory]
-    [InlineData("Ordered", false)]
+    // A base taking constructor parameters is outside the contract language, however its arguments are bound.
+    [InlineData("Ordered", true)]
     [InlineData("(byte)Ordered", true)]
     public async Task A_base_argument_must_preserve_the_supplied_integer(string argument, bool refused)
     {

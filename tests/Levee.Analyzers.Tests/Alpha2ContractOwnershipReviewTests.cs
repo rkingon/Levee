@@ -3,7 +3,8 @@ namespace Levee.Analyzers.Tests;
 public sealed class Alpha2ContractOwnershipReviewTests
 {
     [Theory]
-    [InlineData("int Ordered, int Delivered = 0", "", "Ordered, Delivered", false)]
+    // A base taking constructor parameters is outside the contract language, however its arguments are bound.
+    [InlineData("int Ordered, int Delivered = 0", "", "Ordered, Delivered", true)]
     [InlineData("int Ordered, int Delivered = 0", "", "Ordered", true)]
     [InlineData("int Ordered, int Delivered", "protected Counts() : this(0, 0) { }", "", true)]
     public async Task A_positional_input_must_store_every_argument_bound_to_an_inherited_property(

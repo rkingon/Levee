@@ -5,14 +5,15 @@ namespace Levee.Tests;
 
 public sealed class Alpha2DiscriminatorReviewTests
 {
+    // A contract's base takes nothing; its members set on their own.
     [JsonDerivedType(typeof(Bundle), "bundle")]
-    public record Price(int Amount);
-    public sealed record Bundle(int Amount, int Count) : Price(Amount);
+    public record Price { public int Amount { get; init; } }
+    public sealed record Bundle(int Count) : Price;
 
     [JsonPolymorphic(IgnoreUnrecognizedTypeDiscriminators = true)]
     [JsonDerivedType(typeof(QuotedBundle), "bundle")]
-    public record Quote(int Amount);
-    public sealed record QuotedBundle(int Amount, int Count) : Quote(Amount);
+    public record Quote { public int Amount { get; init; } }
+    public sealed record QuotedBundle(int Count) : Quote;
 
     [Theory]
     [InlineData("""{"$type":"bundle","amount":12,"count":2}""")]
@@ -21,7 +22,7 @@ public sealed class Alpha2DiscriminatorReviewTests
     {
         OperationCatalog.Prove([("review.price", typeof(Price))]);
         var read = JsonSerializer.Deserialize<Price>(wire, LeveeJson.Options);
-        Assert.Equal(new Bundle(12, 2), Assert.IsType<Bundle>(read));
+        Assert.Equal(new Bundle(2) { Amount = 12 }, Assert.IsType<Bundle>(read));
     }
 
     [Fact]

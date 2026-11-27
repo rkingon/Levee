@@ -40,8 +40,9 @@
   the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. Contracts are written in a closed language: what the wire reads back as it writes it. Scalars (strings,
   numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays, `List<T>`,
   `IReadOnlyList<T>` and the like (one dimension), and dictionaries keyed by a scalar; the contract's own records, built
-  only by their positional constructor or a parameterless one, forwarding each value unchanged to their base's positional
-  constructor by its own name (a Kernel record crosses into a contract as a value object), and records whose every declared
+  only by their positional constructor or a parameterless one, from a base that takes nothing (its members abstract, which
+  a subtype's positional parameter overrides, or set on their own), with properties, not fields (a Kernel record crosses
+  into a contract as a value object), and records whose every declared
   subtype, under an abstract base or not, has a discriminator, read wherever the caller puts it, with `[JsonPolymorphic]` left to refuse
   what it doesn't recognize. LEVEE104 refuses anything else, an
   interface, a collection of the app's own, a constructor written by hand (which decides where each value lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
