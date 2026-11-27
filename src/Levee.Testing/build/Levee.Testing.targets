@@ -1,0 +1,7 @@
+<Project>
+  <!-- A container per test run: what ships never starts one. -->
+  <Target Name="_LeveeTestingIsTests" BeforeTargets="CoreCompile"
+          Condition="'$(LeveeRole)' != '' and '$(LeveeRole)' != 'Test' and '$(LeveeRole)' != 'TestSupport'">
+    <Error Code="LEVEE002" Text="Levee.Testing is referenced by a $(LeveeRole) project. Fix: reference it from a Test or TestSupport project only (dotnet levee explain LEVEE002)" />
+  </Target>
+</Project>

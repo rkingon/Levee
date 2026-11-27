@@ -16,6 +16,11 @@
   themselves. In `Levee.AspNetCore`, `OperationView` (the catalog's wire shape); in `Levee.Oxbow`,
   `OperationUnavailableException`.
 
+### Levee.Testing
+- New: `LeveePostgres.StartAsync`, Postgres for pipeline tests as production has it (Testcontainers): the owner runs
+  Levee's schema, the app's migrations and its SQL, and the app connects as a role that owns nothing and doesn't bypass
+  row-level security. Referenced from Test and TestSupport projects only.
+
 ### Levee.EntityFrameworkCore
 - `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
   before the app's own narrowing, which a blanket grant would undo.

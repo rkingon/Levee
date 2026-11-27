@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <Description>Postgres for an app's pipeline tests as production has it: Levee's schema run by the owner, the app connected as a role that owns nothing and doesn't bypass row-level security.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="build/Levee.Testing.targets" Pack="true" PackagePath="build/" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.PublicApiAnalyzers" PrivateAssets="all" />
+    <AdditionalFiles Include="PublicAPI.Shipped.txt;PublicAPI.Unshipped.txt" />
+  </ItemGroup>
+</Project>

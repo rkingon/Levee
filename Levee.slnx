@@ -7,6 +7,7 @@
     <Project Path="src/Levee.AspNetCore/Levee.AspNetCore.csproj" />
     <Project Path="src/Levee.Mcp/Levee.Mcp.csproj" />
     <Project Path="src/Levee.Cli/Levee.Cli.csproj" />
+    <Project Path="src/Levee.Testing/Levee.Testing.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Levee.Benchmarks/Levee.Benchmarks.csproj" />
