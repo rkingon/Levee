@@ -100,7 +100,18 @@ tenant's rows. Only the unit of work sets them. The analyzer sees the name as a 
 together at run time from pieces isn't seen, and is the trust model's to answer. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
-owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one).
+owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
+written inline as an argument to the `MigrationBuilder` (`migrationBuilder.Sql(...)`, a column's `defaultValueSql`) in a
+`Migration` subclass. The rest of the migration class (a helper method, a constant, a local holding the SQL) is held like
+any other code.
+
+```csharp
+// Wrong: a migration's helper, callable from anywhere
+public static string Backfill() => "select levee_audit_write(...)";
+
+// Right: handed to the builder where it's written
+protected override void Up(MigrationBuilder migrationBuilder) => migrationBuilder.Sql("select levee_audit_write(...)");
+```
 
 To undo, return an error: the dispatcher rolls back. A refusal that must be recorded is a domain outcome in the
 result, not an error.

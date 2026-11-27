@@ -38,6 +38,8 @@ public sealed class TrialTests
     [Theory]
     [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select levee_audit_write(null, null, 'x', 'y', '{}')\"); }", false)]
     [InlineData("public static class Backfill { public static void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select levee_audit_write(null, null, 'x', 'y', '{}')\"); }", true)]
+    [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => b.Sql(\"select 1\"); public static string Forge() => \"select levee_audit_write(null, null, 'x', 'y', '{}')\"; }", true)]
+    [InlineData("public sealed class Backfill : Microsoft.EntityFrameworkCore.Migrations.Migration { protected override void Up(Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder b) => Run(\"select set_config('levee.scope', 'acme', true)\"); private static void Run(string sql) { } }", true)]
     public async Task A_migrations_SQL_is_the_owners(string declaration, bool refused)
     {
         var output = await Probe.CompileAsync(new Probe.Settings("Adapter"), Migrations + declaration, "App.Adapters", GeneratorTests.Levee);

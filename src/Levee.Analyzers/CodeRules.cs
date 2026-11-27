@@ -148,16 +148,17 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
         var operation = context.Operation;
-        // A migration runs as the owner, at migrate, never inside an operation: its SQL may backfill the audit.
-        if (InMigration(context.ContainingSymbol))
-        {
-            return;
-        }
         // The whole string once, at its outermost piece.
         if (operation.Parent is IInterpolatedStringTextOperation or IInterpolationOperation or IInterpolatedStringOperation
             || operation.Parent is IBinaryOperation { OperatorKind: BinaryOperatorKind.Add, Type.SpecialType: SpecialType.System_String }
             || operation.Parent?.ConstantValue is { HasValue: true, Value: string }
             || Flatten(operation) is not { } text)
+        {
+            return;
+        }
+        // A migration's SQL, handed to EF's builder, runs as the owner at migrate, never inside an operation: it may backfill
+        // the audit. The rest of a migration class (a helper, a constant, a string it keeps) is held like any other code.
+        if (InMigration(context.ContainingSymbol) && ToMigrationBuilder(operation))
         {
             return;
         }
@@ -182,6 +183,18 @@ public sealed class CodeRules : DiagnosticAnalyzer
             }
         }
         return false;
+    }
+
+    /// <summary>The string is an argument, as written, to one of EF's <c>MigrationBuilder</c> methods (<c>Sql</c>, a column's <c>defaultValueSql</c>).</summary>
+    private static bool ToMigrationBuilder(IOperation text)
+    {
+        var at = text.Parent;
+        while (at is IConversionOperation)
+        {
+            at = at.Parent;
+        }
+        return at is IArgumentOperation { Parent: IInvocationOperation call }
+            && Derives(call.TargetMethod.ContainingType, "Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder");
     }
 
     private const char Hole = '\u0001';
