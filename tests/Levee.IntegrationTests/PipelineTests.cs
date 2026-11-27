@@ -549,10 +549,51 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_table_is_reachable_by_the_app_only_once_row_level_security_holds_it()
+    {
+        // After the grants, as a later migration would add it: in public, and in a schema of its own.
+        await postgres.ExecuteAsync("""
+            create table plain_rows (id uuid primary key, tenant text not null);
+            create schema reporting;
+            create table reporting.totals (id uuid primary key, tenant text not null);
+            """);
+        try
+        {
+            await using var connection = new NpgsqlConnection(postgres.App);
+            await connection.OpenAsync(Ct);
+            async Task<string?> Read(string table)
+            {
+                await using var read = new NpgsqlCommand($"select count(*) from {table}", connection);
+                try
+                {
+                    await read.ExecuteScalarAsync(Ct);
+                    return null;
+                }
+                catch (PostgresException e)
+                {
+                    return e.SqlState;
+                }
+            }
+
+            Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, await Read("plain_rows"));
+            Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, await Read("reporting.totals"));
+
+            await postgres.ExecuteAsync(LeveeSchema.Isolation("plain_rows", "tenant") + LeveeSchema.Isolation("reporting.totals", "tenant"));
+
+            Assert.Null(await Read("plain_rows"));
+            Assert.Null(await Read("reporting.totals"));
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("drop table plain_rows; drop schema reporting cascade;");
+        }
+    }
+
+    [Fact]
     public async Task The_migration_history_is_the_owners_alone()
     {
         await postgres.ExecuteAsync("""create table if not exists "__EFMigrationsHistory" ("MigrationId" text primary key, "ProductVersion" text not null);"""
-            + LeveeSchema.Grants("app"));
+            + PostgresFixture.Grants);
         await using var connection = new NpgsqlConnection(postgres.App);
         await connection.OpenAsync(Ct);
         await using var forge = new NpgsqlCommand("""insert into "__EFMigrationsHistory" values ('20990101000000_Forged', '10.0.0')""", connection);

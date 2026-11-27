@@ -54,7 +54,7 @@ public static class LeveeSchema
               as $$ insert into {schema}.{AuditTable} (id, at, scope, subject, operation, input)
                     values (p_id, now(), p_scope, p_subject, p_operation, p_input) $$;
             {AppendOnly($"{schema}.{AuditTable}", schema)}
-            {Isolation($"{schema}.{AuditTable}", "scope", schema: schema)}
+            {Isolated($"{schema}.{AuditTable}", "scope", "text", schema, "select")}
             """;
     }
 
@@ -63,7 +63,10 @@ public static class LeveeSchema
     /// its scope; a platform operation, every row. Forced, so even the table's owner is held to it. <paramref name="schema"/>
     /// is where Levee's functions are. A policy over more than one column is written by hand over <c>levee_scope()</c>.
     /// </summary>
-    public static string Isolation(string table, string column, string columnType = "text", string schema = "public")
+    public static string Isolation(string table, string column, string columnType = "text", string schema = "public") =>
+        Isolated(table, column, columnType, schema, "select, insert, update, delete");
+
+    private static string Isolated(string table, string column, string columnType, string schema, string privileges)
     {
         Identifier(schema, nameof(schema));
         return $"""
@@ -72,6 +75,7 @@ public static class LeveeSchema
             create policy levee_scope on {table}
               using ({schema}.levee_platform() or {column} = nullif({schema}.levee_scope(), '')::{columnType})
               with check ({schema}.levee_platform() or {column} = nullif({schema}.levee_scope(), '')::{columnType});
+            {Admit(table, schema, privileges)}
             """;
     }
 
@@ -89,34 +93,67 @@ public static class LeveeSchema
             create policy levee_shared_read on {table} for select using (true);
             create policy levee_shared_write on {table} for all
               using ({schema}.levee_platform()) with check ({schema}.levee_platform());
+            {Admit(table, schema, "select, insert, update, delete")}
             """;
     }
 
     /// <summary>
-    /// What the app's runtime role needs in <paramref name="schema"/>, run by the owner: every table's rows (RLS still holds it
-    /// to its scope), now and as migrations add tables, and Levee's functions. The audit it reads, and adds to only through
-    /// <c>levee_audit_write</c>, at the transaction's time: it can't change, remove or backdate a record. EF's migration
-    /// history is the owner's alone. Run after migrations, and before the app's own narrowing (an append-only table), which
-    /// a blanket grant would undo.
+    /// The runtime role's grant on a table Levee has just put a policy on, once <see cref="Grants"/> has named the role: a
+    /// table is reachable by the app only once row-level security holds it, so one without a policy is never reachable.
+    /// </summary>
+    private static string Admit(string table, string schema, string privileges) => $"""
+        do $levee$
+        declare runtime text;
+        begin
+          if to_regprocedure('{schema}.levee_runtime()') is null then return; end if;
+          runtime := {schema}.levee_runtime();
+          execute format('grant usage on schema %I to %I', (select n.nspname from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.oid = '{table}'::regclass), runtime);
+          execute format('grant {privileges} on %s to %I', '{table}'::regclass, runtime);
+          perform {schema}.levee_runtime_sequences('{table}'::regclass);
+        end $levee$;
+        """;
+
+    /// <summary>
+    /// What the app's runtime role may reach, run by the owner: exactly the tables row-level security holds, a Levee policy on
+    /// each (<see cref="Isolation"/>, <see cref="Shared"/>), and nothing else. A table without one is unreachable, not
+    /// refused later: whatever names it (an unmapped table, raw SQL, another schema) is denied by Postgres. It resets the
+    /// role to that list (a grant of the role's from before is revoked) and names the role, so a table isolated afterwards,
+    /// by a later migration, is granted as its policy is made. The audit it reads, and adds to only through
+    /// <c>levee_audit_write</c>, at the transaction's time. Run before any grant of the app's own (Oxbow's, a table with a
+    /// policy of its own), which it would revoke.
     /// </summary>
     public static string Grants(string role, string schema = "public")
     {
         Identifier(role, nameof(role));
         Identifier(schema, nameof(schema));
         return $"""
+            revoke all on all tables in schema {schema} from {role};
+            revoke all on all sequences in schema {schema} from {role};
+            alter default privileges in schema {schema} revoke all on tables from {role};
+            alter default privileges in schema {schema} revoke all on sequences from {role};
             grant usage on schema {schema} to {role};
-            grant select, insert, update, delete on all tables in schema {schema} to {role};
-            grant usage, select on all sequences in schema {schema} to {role};
             grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role};
             grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role};
-            alter default privileges in schema {schema} grant select, insert, update, delete on tables to {role};
-            alter default privileges in schema {schema} grant usage, select on sequences to {role};
-            revoke insert, update, delete on {schema}.{AuditTable} from {role};
-            do $levee$ begin
-              if to_regclass('{schema}."__EFMigrationsHistory"') is not null then
-                revoke all on {schema}."__EFMigrationsHistory" from {role};
-              end if;
+            create or replace function {schema}.levee_runtime() returns text language sql immutable as $$ select '{role}' $$;
+            create or replace function {schema}.levee_runtime_sequences(t regclass) returns void language plpgsql as $$
+            declare s regclass;
+            begin
+              for s in select d.objid::regclass from pg_depend d join pg_class c on c.oid = d.objid
+                       where c.relkind = 'S' and d.refobjid = t and d.deptype in ('a', 'i') loop
+                execute format('grant usage, select on sequence %s to %I', s, {schema}.levee_runtime());
+              end loop;
+            end $$;
+            do $levee$
+            declare t regclass;
+            begin
+              for t in select distinct p.polrelid::regclass from pg_policy p
+                       where p.polname in ('levee_scope', 'levee_shared_read', 'levee_shared_write') loop
+                execute format('grant usage on schema %I to {role}', (select n.nspname from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.oid = t));
+                execute format('grant select, insert, update, delete on %s to {role}', t);
+                perform {schema}.levee_runtime_sequences(t);
+              end loop;
             end $levee$;
+            revoke insert, update, delete on {schema}.{AuditTable} from {role};
             """;
     }
 

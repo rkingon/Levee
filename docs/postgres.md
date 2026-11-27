@@ -27,34 +27,34 @@ table gets the policy. `dotnet levee db isolate` and `share` qualify it for you.
 
 The app connects as a role that is not a superuser, owns nothing and doesn't bypass row-level security, granted only
 what `LeveeSchema.Grants(role)` prints. The owner also revokes what every role gets by default, as the tested setup does:
-`revoke create on schema public from public` and `revoke temporary on database <db> from public`. The grants:
+`revoke create on schema public from public` and `revoke temporary on database <db> from public`. The grants are an
+allow-list, not a blanket:
 
-- every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
-  Everything the app's context maps, however it's mapped (split across tables, as a view, found through the search path),
-  and everything on the search path the runtime role may read or write at all, mapped or not (raw SQL reaches it by
-  name), is judged by what it is in the database, and every view among it by what it reads, down to the tables. Oxbow's
-  queue and EF's migration history are their owners' and left out; a relation the app names in another schema is
-  deliberate, the trust model's:
-  - a table must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the app's
-    own);
-  - a view must be `security_invoker` or owned by a role that is neither a superuser nor bypasses row-level security,
-    since a view reads with its owner's rights;
-  - a materialized view or a foreign table is refused: row-level security can't hold either.
-
-  What fails is found before the first operation, which fails with the fix, so a forgotten policy fails closed rather
-  than opening the table to every tenant. Not followed: a table the context doesn't map at all, and what a function or a
-  mapped SQL query reads. The check runs once per process for each server (its address, port and start time), database,
-  role and search path; a policy dropped or a restore into a server the app has already checked isn't seen until the app
-  restarts, so restart it after either;
+- exactly the tables row-level security holds, each with a Levee policy (`Isolation` for one scope's rows, `Shared` for
+  rows every scope reads and only platform operations write), in whatever schema they are. A table without one isn't
+  reachable at all: raw SQL that names it, mapped or not, qualified or not, is denied by Postgres. `Grants` resets the
+  role to that list (anything granted it before is revoked) and records the role, so a table a later migration
+  isolates is granted as its policy is made, whichever runs first;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
-  record;
-- nothing on EF's `__EFMigrationsHistory`: migrations are the owner's. An app that names its own history table
-  (`MigrationsHistoryTable`) revokes it the same way, after the grants.
+  record.
 
-Run the grants after migrations, then the app's own narrowing (an append-only table, a table only the owner writes): the
-grant on every table would undo a narrowing that came before it.
+Run Levee's grants first, then anything the app grants itself (Oxbow's, `dotnet levee db grants <role> --jobs` prints
+both in order; a table with a policy of the app's own; a view). A grant of the app's own is the app's to answer for, so
+before the first operation Levee also checks what the role can reach that it didn't grant: everything the app's context
+maps, however it's mapped (split across tables, as a view, found through the search path), and everything on the
+search path the role may read or write, by table or column. Each is judged by what it is in the database, and every
+view among it by what it reads, down to the tables:
+
+- a table must have forced row-level security and a policy;
+- a view must be `security_invoker` or owned by a role that is neither a superuser nor bypasses row-level security,
+  since a view reads with its owner's rights;
+- a materialized view or a foreign table is refused: row-level security can't hold either.
+
+What fails is found before the first operation, which fails with the fix. The check runs once per process for each
+server (its address, port and start time), database, role and search path; a policy dropped, or a grant added, after the
+app has checked isn't seen until it restarts.
 
 ## Per operation
 

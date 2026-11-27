@@ -365,7 +365,9 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                 and s.nspname = any (pg_catalog.current_schemas(false))
                 and c.relname not like 'oxbow\_%' and c.relname <> '__EFMigrationsHistory'
                 and (has_table_privilege(c.oid, 'select') or has_table_privilege(c.oid, 'insert')
-                  or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete'))
+                  or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete')
+                  or has_any_column_privilege(c.oid, 'select') or has_any_column_privilege(c.oid, 'insert')
+                  or has_any_column_privilege(c.oid, 'update'))
             ), reached(oid) as (
               select oid from mapped where oid is not null
               union

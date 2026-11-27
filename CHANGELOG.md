@@ -46,15 +46,17 @@
   row-level security. Referenced from Test and TestSupport projects only.
 
 ### Levee.EntityFrameworkCore
-- Row-level security is checked on everything on the search path the runtime role may read or write, mapped or not: raw
-  SQL reaches an unmapped table by name.
+- **Breaking:** the runtime role's grants are an allow-list. `LeveeSchema.Grants(role)` grants exactly the tables a Levee
+  policy holds (`Isolation`, `Shared`) and resets the role to them; a table isolated later is granted as its policy is
+  made. A table without one is unreachable, whatever names it: no blanket grant, no default privileges. Run Levee's
+  grants first, then the app's own.
+- Before the first operation, what the role can reach beyond Levee's grants (by table or column, on the search path) is
+  checked as what the context maps is.
 - `[SeparateContext("OpenIddict")]`: a separate bounded context's DbContext (identity: OpenIddict's stores) beside the
   app's, used by the library it names outside every operation. The host's start refuses one that maps an entity that
   isn't that library's (an assembly built with Levee is the app's, whatever the attribute names), or a table or view the
   app's context maps (every one an entity is split across), opening it as
   it's registered and refusing one it can't open; LEVEE018 refuses the app's own code holding it.
-- `LeveeSchema.Grants` leaves EF's migration history to the owner; the docs say to run the grants after migrations and
-  before the app's own narrowing, which a blanket grant would undo.
 
 ### Generator and analyzers
 - LEVEE021 (new): a principal is made only where the app composes (Composition, a Host, a Tool), and a process sends

@@ -34,13 +34,14 @@ public sealed class PostgresFixture : IAsyncLifetime
         {
             sql.AppendLine(migration.Sql);
         }
-        // What `dotnet levee db grants app --jobs` prints: the shipped grants, held as the real role.
-        sql.AppendLine(LeveeSchema.Grants("app"))
-            .AppendLine(OxbowSchema.GetGrants("app"))
-            .AppendLine("revoke insert, update, delete on oxbow_migration from app;");
+        sql.AppendLine(Grants);
         await ExecuteAsync(sql.ToString());
         App = new NpgsqlConnectionStringBuilder(Owner) { Username = "app", Password = "app" }.ConnectionString;
     }
+
+    /// <summary>What `dotnet levee db grants app --jobs` prints: the shipped grants, held as the real role, Levee's first.</summary>
+    public static string Grants { get; } = LeveeSchema.Grants("app") + "\n" + OxbowSchema.GetGrants("app")
+        + "\nrevoke insert, update, delete on oxbow_migration from app;";
 
     public async ValueTask DisposeAsync() => await _postgres.DisposeAsync();
 

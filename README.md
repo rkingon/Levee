@@ -244,7 +244,8 @@ Projections an app writes itself (typed REST routes, a webhook) answer failures 
 ## Postgres
 
 The owner runs `LeveeSchema.Sql` (or `migrationBuilder.AddLeveeSchema()`) and each table's `Isolation` or `Shared`; the app connects
-as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` gives it. That
+as a role that is not a superuser, owns nothing and doesn't bypass RLS, with what `LeveeSchema.Grants(role)` gives it:
+exactly the tables a Levee policy holds, so a table without one is unreachable, whatever names it. That
 role adds to the audit only through `levee_audit_write`, which stamps its own time, so it can't change, remove or backdate a
 record. The app's context refuses any command outside an operation, and a table or view it maps that row-level security
 doesn't hold. [docs/postgres.md](docs/postgres.md) has the setup,
