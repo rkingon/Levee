@@ -119,4 +119,45 @@ public sealed class Alpha2AuditTests
 
         Assert.Equal(refused, output.Ids.Contains("LEVEE020"));
     }
+
+    private const string Wiring = """
+        using Microsoft.Extensions.DependencyInjection;
+        public static class Wiring
+        {
+            public static IServiceCollection AddZipCodes(this IServiceCollection services) => services;
+            public static void AddMaps(this IServiceCollection services) { }
+            public static int CountDescriptors(this IServiceCollection services) => services.Count;
+        }
+        """;
+
+    [Theory]
+    [InlineData("services.AddZipCodes();", false)]
+    [InlineData("services.AddMaps();", false)]
+    [InlineData("services.AddZipCodes().AddMaps();", false)]
+    [InlineData("services.AddZipCodes().Clear();", false)]
+    [InlineData("return services.AddZipCodes();", false)]
+    [InlineData("var count = services.CountDescriptors();", true)]
+    [InlineData("services.CountDescriptors();", true)]
+    [InlineData("var held = services.AddZipCodes();", true)]
+    [InlineData("System.Console.WriteLine(services.AddZipCodes());", true)]
+    public async Task Composition_calls_an_adapters_registration_to_register_and_nothing_else(string call, bool refused)
+    {
+        var adapter = await Compile("Adapter", Wiring);
+        Assert.Empty(adapter.Errors);
+
+        var composition = await Compile("Composition", $$"""
+            using Microsoft.Extensions.DependencyInjection;
+            public static class Root
+            {
+                public static IServiceCollection AddApp(this IServiceCollection services)
+                {
+                    {{call}}
+                    return services;
+                }
+            }
+            """, "App", adapter.Reference());
+
+        Assert.DoesNotContain(composition.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, composition.Ids.Contains("LEVEE015"));
+    }
 }

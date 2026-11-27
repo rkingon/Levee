@@ -305,7 +305,10 @@ an Application method (a method group handed to a registration, a loop or a time
 
 An adapter's own setup is the exception: what it needs beyond its ports (its options, an `HttpClient`, a vendor's SDK)
 is one `IServiceCollection` extension in its Adapter project, and Composition calls it. Nothing else of an adapter's is
-called from Composition, so its options are parsed inside that extension, not by Composition.
+called from Composition, so its options are parsed inside that extension, not by Composition. The extension has the
+registration's shape: it returns the `IServiceCollection` (or nothing), and Composition calls it to register, as a
+statement, chained into the next registration, or returned from its own; one called for a value (a count, a client it
+builds) is the adapter's logic run from Composition, and is refused.
 
 ```csharp
 // Adapter
@@ -317,6 +320,9 @@ public static class ZipCodeApi
 
 // Composition
 services.AddZipCodeApi(configuration);
+
+// Wrong: an adapter's calculation, run from Composition
+var limit = services.ZipCodeQuota(configuration);
 ```
 
 ## LEVEE016: Application is reached only through operations

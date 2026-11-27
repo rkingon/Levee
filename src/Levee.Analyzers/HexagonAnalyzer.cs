@@ -229,9 +229,9 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
             return;
         }
         var reached = method.MethodKind == MethodKind.Ordinary ? roleOf(method.ContainingType.ContainingAssembly) : Role.None;
-        // An adapter registers what it needs beyond its ports (its options, an HttpClient) in one extension of its own.
-        if (reached == Role.Adapter && method.IsExtensionMethod && method.IsStatic
-            && method.Parameters.FirstOrDefault()?.Type.ToDisplayString() == "Microsoft.Extensions.DependencyInjection.IServiceCollection")
+        // An adapter registers what it needs beyond its ports (its options, an HttpClient) in one extension of its own, called to
+        // register: as a statement, or chained into the next registration. One called for a value is the adapter's logic.
+        if (reached == Role.Adapter && context.Operation is IInvocationOperation invocation && Registers(invocation))
         {
             return;
         }
@@ -239,6 +239,37 @@ public sealed class HexagonAnalyzer : DiagnosticAnalyzer
         {
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.CompositionDrives, context.Operation.Syntax.GetLocation(), $"{method.ContainingType.Name}.{method.Name}"));
         }
+    }
+
+    private const string ServiceCollection = "Microsoft.Extensions.DependencyInjection.IServiceCollection";
+
+    /// <summary>
+    /// A registration extension called as one: on IServiceCollection, returning it or nothing, its result discarded, chained into
+    /// another call on it, or returned from a registration of Composition's own.
+    /// </summary>
+    private static bool Registers(IInvocationOperation invocation)
+    {
+        var method = invocation.TargetMethod;
+        if (!method.IsExtensionMethod || (method.ReducedFrom ?? method).Parameters.FirstOrDefault()?.Type.ToDisplayString() != ServiceCollection
+            || !(method.ReturnsVoid || method.ReturnType.ToDisplayString() == ServiceCollection))
+        {
+            return false;
+        }
+        var at = invocation.Parent;
+        while (at is IConversionOperation)
+        {
+            at = at.Parent;
+        }
+        return at switch
+        {
+            IExpressionStatementOperation => true,
+            IInvocationOperation next => next.Instance is not null,
+            IArgumentOperation { Parent: IInvocationOperation next, Parameter: { Ordinal: 0 } } => next.TargetMethod.IsExtensionMethod
+                && (next.TargetMethod.ReducedFrom ?? next.TargetMethod).Parameters[0].Type.ToDisplayString() == ServiceCollection,
+            IReturnOperation => invocation.SemanticModel?.GetEnclosingSymbol(invocation.Syntax.SpanStart) is IMethodSymbol { ReturnType: var returned }
+                && returned.ToDisplayString() == ServiceCollection,
+            _ => false,
+        };
     }
 
     private static bool Exposes(INamedTypeSymbol contract, Func<IAssemblySymbol, Role> roleOf)
