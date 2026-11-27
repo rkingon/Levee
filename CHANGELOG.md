@@ -45,8 +45,9 @@
   what it doesn't recognize. LEVEE104 refuses anything else, an
   interface, a collection of the app's own, a constructor of two or more values written by hand (which decides where each
   lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
-  made (a host's start, the generated catalog test), naming each operation it refuses. A referenced assembly's operation
-  that fails where it's composed is reported there, never left out of the catalog. A value object's schema and the
+  made (a host's start, the generated catalog test), naming each operation it refuses. A referenced assembly's operation is
+  judged where it's declared, from its source, and carried as declared where it's composed, never left out of the catalog.
+  A record's base calls are judged as C# bound them, through every record it derives from. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an

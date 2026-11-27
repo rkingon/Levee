@@ -34,7 +34,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
 
         var own = AllTypes(compilation.Assembly.GlobalNamespace).ToList();
-        var operations = own.Select(t => Operation(t, context)).Where(o => o is not null).Select(o => o!).ToList();
+        var operations = own.Select(t => Operation(t, context, compilation)).Where(o => o is not null).Select(o => o!).ToList();
         var handlers = own.SelectMany(Handled).ToList();
         var processes = role is Role.Application or Role.Test ? own.SelectMany(Processed).ToList() : [];
         var helpers = role is Role.Application or Role.Test
@@ -238,10 +238,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 .Select(a => a.ConstructorArguments.FirstOrDefault().Value as string)
                 .OfType<string>())
             .Distinct(StringComparer.Ordinal).OrderBy(c => c, StringComparer.Ordinal).ToList();
-        // A referenced operation that fails here, as the declaring build saw it pass, is reported, never left out of the catalog.
+        // A referenced operation's shape was checked where it's declared, from its source, and is checked again by the catalog at
+        // start; metadata here hides its private members, so it isn't judged again from it. What else fails here is reported, never
+        // left out of the catalog.
         var operations = own.Concat(referenced.SelectMany(a => AllTypes(a.GlobalNamespace))
                 .Where(t => t.DeclaredAccessibility == Accessibility.Public)
-                .Select(t => Operation(t, context))
+                .Select(t => Operation(t, context, compilation: null))
                 .Where(o => o is not null)
                 .Select(o => o!))
             .ToList();
@@ -434,7 +436,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
     }
 
     /// <summary>The operation <paramref name="type"/> declares, or null. With a context, reports what's malformed about it.</summary>
-    private static OperationModel? Operation(INamedTypeSymbol type, SourceProductionContext? context)
+    /// <param name="compilation">The compilation declaring <paramref name="type"/>, whose source its contract's shape is judged from; null
+    /// for an operation a referenced assembly declares, judged there.</param>
+    private static OperationModel? Operation(INamedTypeSymbol type, SourceProductionContext? context, Compilation? compilation)
     {
         var attribute = type.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == Known.OperationAttribute);
         var contract = type.AllInterfaces.FirstOrDefault(i => Known.Is(i, "IOperation", 1) || Known.Is(i, "ISubscription", 1));
@@ -466,14 +470,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report("an operation is sealed, so no subclass carries more than its contract. Fix: declare it a public sealed record");
             return null;
         }
-        if (Untyped(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } untyped)
+        if (compilation is not null && Untyped(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } untyped)
         {
             Report($"its input's {untyped} is untyped, so its schema, redaction and the strict wire can't see what it holds. Fix: give it a type of its own");
             return null;
         }
         foreach (var (what, walked) in new[] { ("input", (ITypeSymbol)type), ("result", contract.TypeArguments[0]) })
         {
-            if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", input: what == "input") is { } shapeless)
+            if (compilation is not null && Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", what == "input", compilation) is { } shapeless)
             {
                 Report($"its {what}'s {shapeless.Path} {shapeless.Problem}");
                 return null;
@@ -674,36 +678,46 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// take back gets in by being one nobody thought of.
     /// </summary>
     /// <summary>
-    /// How a positional record's base call sends a value somewhere other than the base parameter of its name, or null: each
-    /// argument, named or by position, the identifier of its parameter's own name. An optional one left out is the base's own
-    /// member, read from the caller on its own.
+    /// How a record, or any record it derives from, sends a value from its positional constructor to its base's parameter of
+    /// another name, or null: as C# bound the call (the overload, named and positional arguments, defaults), not as it reads.
+    /// A base declared in another assembly is judged where it's declared.
     /// </summary>
-    private static string? Misrouted(SeparatedSyntaxList<Microsoft.CodeAnalysis.CSharp.Syntax.ArgumentSyntax> arguments, INamedTypeSymbol? baseType)
+    private static string? Misrouted(INamedTypeSymbol type, Compilation compilation)
     {
-        var named = arguments.Select(a => a.NameColon?.Name.Identifier.Text).OfType<string>().ToList();
-        var positionalCount = arguments.Count(a => a.NameColon is null);
-        // The base constructor the call binds: every parameter it leaves out has a default, as the compiler requires.
-        var target = baseType?.InstanceConstructors.FirstOrDefault(c => arguments.Count <= c.Parameters.Length
-            && named.All(n => c.Parameters.Any(p => p.Name == n))
-            && c.Parameters.Select((p, i) => (p, i)).All(x => x.i < positionalCount || named.Contains(x.p.Name) || x.p.HasExplicitDefaultValue));
-        if (target is null)
+        for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            return $"forwards {arguments.Count} value(s) to a base constructor that doesn't take them by these names";
-        }
-        for (var i = 0; i < arguments.Count; i++)
-        {
-            var argument = arguments[i];
-            var parameter = argument.NameColon is { } name ? target.Parameters.First(p => p.Name == name.Name.Identifier.Text) : target.Parameters[i];
-            if (!(argument.Expression is Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax id
-                && string.Equals(id.Identifier.Text, parameter.Name, StringComparison.OrdinalIgnoreCase)))
+            foreach (var reference in t.DeclaringSyntaxReferences)
             {
-                return $"passes {argument.Expression} to its base's {parameter.Name}";
+                if (reference.GetSyntax() is not Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax { ParameterList: not null } record
+                    || record.BaseList?.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() is not { } forwarded
+                    || !compilation.ContainsSyntaxTree(record.SyntaxTree))
+                {
+                    continue;
+                }
+                var model = compilation.GetSemanticModel(record.SyntaxTree);
+                foreach (var argument in forwarded.ArgumentList.Arguments)
+                {
+                    if (model.GetOperation(argument) is not Microsoft.CodeAnalysis.Operations.IArgumentOperation { Parameter: { } parameter } bound)
+                    {
+                        continue;
+                    }
+                    var value = bound.Value;
+                    while (value is Microsoft.CodeAnalysis.Operations.IConversionOperation conversion)
+                    {
+                        value = conversion.Operand;
+                    }
+                    if (!(value is Microsoft.CodeAnalysis.Operations.IParameterReferenceOperation source
+                        && string.Equals(source.Parameter.Name, parameter.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        return $"{t.Name} passes {argument.Expression} to its base's {parameter.Name}";
+                    }
+                }
             }
         }
         return null;
     }
 
-    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input)
+    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
     {
         // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
         // does a library's attribute deriving JsonConverterAttribute, which makes its converter itself.
@@ -741,7 +755,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if (type is IArrayTypeSymbol array)
         {
             return array.Rank == 1
-                ? Shapeless(array.ElementType, seen, path, input)
+                ? Shapeless(array.ElementType, seen, path, input, compilation)
                 : (path.Length == 0 ? type.ToDisplayString() : path, $"is {type.ToDisplayString()}, a many-dimensional array, which JSON has no shape for. Fix: an array of arrays");
         }
         if (type is not INamedTypeSymbol named)
@@ -750,7 +764,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T || named.TypeKind == TypeKind.Enum)
         {
-            return named.TypeKind == TypeKind.Enum ? null : Shapeless(named.TypeArguments[0], seen, path, input);
+            return named.TypeKind == TypeKind.Enum ? null : Shapeless(named.TypeArguments[0], seen, path, input, compilation);
         }
         var display = named.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString();
         if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)
@@ -767,7 +781,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 {
                     return (path.Length == 0 ? display : path, $"is a dictionary keyed by {key.ToDisplayString()}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum");
                 }
-                return named.TypeArguments.Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null);
+                return named.TypeArguments.Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null);
             }
             return (path.Length == 0 ? display : path, $"is {display}, which isn't in the contract language. {Language}");
         }
@@ -828,7 +842,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         // Each declared subtype is a shape the wire carries here, whether its base is abstract or not.
         if (subtypes.Select(d => d.ConstructorArguments[0].Value as ITypeSymbol).OfType<ITypeSymbol>()
-                .Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null) is { } inSubtype)
+                .Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null) is { } inSubtype)
         {
             return inSubtype;
         }
@@ -880,11 +894,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         // A positional record forwards to its base by name: an argument read from another parameter lands a value in another member.
-        if (positional && constructor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax record
-            && record.BaseList?.Types.OfType<Microsoft.CodeAnalysis.CSharp.Syntax.PrimaryConstructorBaseTypeSyntax>().FirstOrDefault() is { } forwarded
-            && Misrouted(forwarded.ArgumentList.Arguments, named.BaseType) is { } misrouted)
+        if (Misrouted(named, compilation) is { } misrouted)
         {
-            return (here, $"{misrouted}, so a value can land in another member, or in none. Fix: forward each base parameter as the parameter of its own name: : Base(Ordered, Delivered)");
+            return (here, $"{misrouted}, so a value can land in another member. Fix: forward each base parameter as the parameter of its own name: : Base(Ordered, Delivered)");
         }
         // [JsonInclude] lets the wire set a non-public setter, one a referenced assembly's metadata doesn't even show; one with
         // no setter at all the catalog refuses at start.
@@ -927,7 +939,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, "has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes");
             }
-            if (Shapeless(memberType, seen, at, input) is { } found)
+            if (Shapeless(memberType, seen, at, input, compilation) is { } found)
             {
                 return found;
             }

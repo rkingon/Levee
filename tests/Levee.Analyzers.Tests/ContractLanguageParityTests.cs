@@ -75,7 +75,7 @@ public sealed class ReferencedOperationTests
     [Theory]
     [InlineData("public sealed record Amount { [System.Text.Json.Serialization.JsonInclude] public int Value { get; private set; } }", false)]
     [InlineData("public sealed record Amount { public int Value { get; } }", true)]
-    public async Task An_operation_composed_from_another_assembly_is_in_the_catalog_or_refused_never_left_out(string amount, bool refused)
+    public async Task An_operation_composed_from_another_assembly_is_judged_where_its_declared_and_never_left_out(string amount, bool refused)
     {
         var contracts = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""
             using Levee;
@@ -85,11 +85,10 @@ public sealed class ReferencedOperationTests
         var composition = await Probe.CompileAsync(new Probe.Settings("Composition"), "internal static class Wiring;", "Shop.Composition",
             GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference());
 
+        // Judged where it's declared, from its source; where it's composed, metadata hides its private members, so it's
+        // carried as declared and the catalog checks it again at start.
         Assert.Equal(refused, contracts.Ids.Contains("LEVEE104"));
-        Assert.Equal(refused, composition.Ids.Contains("LEVEE104"));
-        if (!refused)
-        {
-            Assert.Contains("prices.set", composition.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
-        }
+        Assert.DoesNotContain("LEVEE104", composition.Ids);
+        Assert.Contains("prices.set", composition.Generated("Levee.Composition.g.cs"), StringComparison.Ordinal);
     }
 }
