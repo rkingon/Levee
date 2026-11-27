@@ -103,4 +103,71 @@ public sealed class StreamTests
         Assert.Contains("event: error", body, StringComparison.Ordinal);
         Assert.Contains("\"code\":\"scope.violation\"", body, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task A_lookup_that_fails_at_a_recheck_ends_the_stream_with_a_problem()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Configuration["Probe:Greeter"] = "en";
+        builder.Services.AddSingleton(new Store())
+            .AddSingleton<IAccessPolicy, TestAccess>()
+            .AddScoped<IUnitOfWorkFactory, FakeUnitOfWorkFactory>()
+            .AddLeveeOperations(builder.Configuration, o => o.SubscriptionRecheck = TimeSpan.FromMilliseconds(100));
+        await using var app = builder.Build();
+        var checks = 0;
+        app.MapLeveeOperations(_ => Interlocked.Increment(ref checks) == 1 ? new Member("ada", "acme") : throw new TimeoutException("The identity store timed out."));
+        await app.StartAsync(TestContext.Current.CancellationToken);
+        using var http = app.GetTestClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        var body = await http.GetStringAsync(new Uri("/ops/probe.forever/events", UriKind.Relative), timeout.Token);
+
+        Assert.Contains("\"code\":\"caller.unconfirmed\"", body, StringComparison.Ordinal);
+    }
+
+    /// <summary>A principal whose scope follows a live session, as a host's might.</summary>
+    private sealed record SessionKey(string Subject, Func<string> Tenant) : Principal(Subject), IScopedPrincipal
+    {
+        public string ScopeKey => Tenant();
+    }
+
+    [Fact]
+    public async Task A_stream_keeps_the_scope_it_opened_in_though_its_principal_follows_a_session()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.WebHost.UseTestServer();
+        builder.Configuration["Probe:Greeter"] = "en";
+        builder.Services.AddSingleton(new Store())
+            .AddSingleton<IAccessPolicy, SessionAccess>()
+            .AddScoped<IUnitOfWorkFactory, FakeUnitOfWorkFactory>()
+            .AddLeveeOperations(builder.Configuration, o => o.SubscriptionRecheck = TimeSpan.FromMilliseconds(100));
+        await using var app = builder.Build();
+        var tenant = "acme";
+        var session = new SessionKey("k1", () => tenant);
+        var checks = 0;
+        app.MapLeveeOperations(_ =>
+        {
+            if (Interlocked.Increment(ref checks) > 1)
+            {
+                tenant = "globex";
+            }
+            return session;
+        });
+        await app.StartAsync(TestContext.Current.CancellationToken);
+        using var http = app.GetTestClient();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+
+        var body = await http.GetStringAsync(new Uri("/ops/probe.mine_stream/events", UriKind.Relative), timeout.Token);
+
+        Assert.Contains("\"code\":\"scope.violation\"", body, StringComparison.Ordinal);
+    }
+
+    [Refuses]
+    private sealed class SessionAccess : IAccessPolicy
+    {
+        public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) => ValueTask.FromResult<Error?>(null);
+    }
 }

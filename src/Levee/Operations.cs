@@ -91,7 +91,7 @@ public sealed class OperationAttribute(string name, string access) : Attribute
 public sealed class OperationMetadataAttribute : Attribute;
 
 /// <summary>
-/// Write-only input: never echoed, logged, audited or put in a job. Property-only, so on a positional record it must be
+/// Write-only input: never echoed, logged or audited, and in a job's stored input only sealed. Property-only, so on a positional record it must be
 /// <c>[property: Secret]</c>: a bare <c>[Secret]</c> there would land on the constructor parameter and protect nothing.
 /// </summary>
 [AttributeUsage(AttributeTargets.Property)]

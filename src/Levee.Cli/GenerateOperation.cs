@@ -166,7 +166,8 @@ internal static partial class GenerateOperation
         string.Concat(name.Split('.')[0].Split('_').Select(w => char.ToUpper(w[0], CultureInfo.InvariantCulture) + w[1..]));
 
     private static string Literal(string value) =>
-        "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+        "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal) + "\"";
 
     [GeneratedRegex("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$")]
     private static partial Regex OperationName();

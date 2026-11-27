@@ -5,6 +5,8 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Levee.AspNetCore;
 
@@ -82,11 +84,29 @@ public static class LeveeEndpointRouteBuilderExtensions
             }
             // The stream runs as the caller who opened it, in that caller's scope: a recheck that finds another subject, or the same
             // one now scoped elsewhere (a session switched to another tenant), ends it rather than authorizing what isn't running.
-            async Task<Error?> StillAllowed(CancellationToken ct) => await principal(http) switch
+            // Read once, as it opened: a principal backed by a live session would answer the new values to both reads.
+            var openedBy = caller.Subject;
+            var openedIn = (caller as IScopedPrincipal)?.ScopeKey;
+            async Task<Error?> StillAllowed(CancellationToken ct)
+            {
+                Principal? now;
+                try
+                {
+                    now = await principal(http);
+                }
+                catch (Exception e) when (!ct.IsCancellationRequested)
+                {
+                    // The host's own lookup failing ends the stream with a problem, as any failure does, not a broken response.
+                    RecheckFailed(http.RequestServices.GetService<ILoggerFactory>()?.CreateLogger("Levee.AspNetCore"), e, name);
+                    return Error.Unavailable(LeveeErrors.CallerUnconfirmed, "The caller couldn't be confirmed: open the stream again.");
+                }
+                return await Recheck(now, ct);
+            }
+            async Task<Error?> Recheck(Principal? current, CancellationToken ct) => current switch
             {
                 null => Error.Unauthenticated("The caller's credentials no longer hold."),
-                { } now when now.Subject != caller.Subject => Error.Unauthenticated("The stream's caller changed: open it again."),
-                { } now when (now as IScopedPrincipal)?.ScopeKey != (caller as IScopedPrincipal)?.ScopeKey =>
+                { } now when now.Subject != openedBy => Error.Unauthenticated("The stream's caller changed: open it again."),
+                { } now when (now as IScopedPrincipal)?.ScopeKey != openedIn =>
                     Error.Forbidden(LeveeErrors.ScopeViolation, "The caller's scope changed: open the stream again in the new one."),
                 { } now => await dispatcher.AuthorizeFromClientAsync(name, parsed, now, ct),
             };
@@ -196,6 +216,17 @@ public static class LeveeEndpointRouteBuilderExtensions
         {
             await stop.CancelAsync();
             await pump;
+        }
+    }
+
+    private static readonly Action<ILogger, string, Exception?> RecheckFailedMessage =
+        LoggerMessage.Define<string>(LogLevel.Warning, new(1, "RecheckFailed"), "Confirming {Operation}'s caller as its stream was rechecked failed");
+
+    private static void RecheckFailed(ILogger? log, Exception e, string operation)
+    {
+        if (log is not null)
+        {
+            RecheckFailedMessage(log, operation, e);
         }
     }
 

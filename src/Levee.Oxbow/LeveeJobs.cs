@@ -151,6 +151,16 @@ internal static class Run
     {
         var job = new JobPrincipal(subject, system, scope);
         var principal = principals.FirstOrDefault() is { } restore ? await restore.RestoreAsync(job, ct) : job;
+        // It runs as whoever enqueued it, where they were: a lookup that now finds them elsewhere (a session switched tenant)
+        // doesn't move the queued work there.
+        if (principal.Subject != subject)
+        {
+            throw new JobCancelException($"Restored as {principal.Subject}, not {subject}, who enqueued it.");
+        }
+        if (scope is not null && principal is IScopedPrincipal restored && restored.ScopeKey != scope)
+        {
+            throw new JobCancelException($"Its caller's scope is now {restored.ScopeKey}, not {scope}, where it was enqueued.");
+        }
         var result = await dispatcher.SendJsonAsync(operation, input, principal, ct);
         if (result.IsSuccess)
         {

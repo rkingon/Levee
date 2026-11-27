@@ -39,7 +39,9 @@ what `LeveeSchema.Grants(role)` prints:
 
   What fails is found before the first operation, which fails with the fix, so a forgotten policy fails closed rather
   than opening the table to every tenant. Not followed: a table the context doesn't map at all, and what a function or a
-  mapped SQL query reads;
+  mapped SQL query reads. The check runs once per process for each server (its address, port and start time), database,
+  role and search path; a policy dropped or a restore into a server the app has already checked isn't seen until the app
+  restarts, so restart it after either;
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a

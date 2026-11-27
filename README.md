@@ -158,7 +158,7 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 - `Internal = true`: the platform's own operations (sign-in, bootstrap), through the same pipeline, never projected. The
   dispatcher's `FromClient` methods, which every projection uses, refuse them; in-process calls and jobs reach them.
 - A subscription (`ISubscription<TItem>`, `ISubscriptionHandler`) is declared like an operation, scoped, authorized and
-  admitted as it opens and rechecked while it streams, holds no transaction, and is projected as server-sent events
+  admitted as it opens and, by the HTTP projection, rechecked while it streams, holds no transaction, and is projected as server-sent events
   ([docs/subscriptions.md](docs/subscriptions.md)).
 - Jobs with `[Secret]` inputs are sealed at rest with Oxbow's args encryption: `AddLeveeJobs(sealSecrets: true)` and
   `AddArgsEncryption()`. Without it they're refused.

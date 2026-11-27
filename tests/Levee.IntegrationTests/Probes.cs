@@ -218,6 +218,11 @@ internal sealed class RestoreMembers : IJobPrincipals
         {
             return ValueTask.FromResult<Principal>(job);
         }
+        // A key whose lookup now finds it issued to another tenant.
+        if (job.Subject.StartsWith("moved_", StringComparison.Ordinal))
+        {
+            return ValueTask.FromResult<Principal>(new ApiKey(job.Subject, "elsewhere"));
+        }
         Restored.Add(job.Subject);
         return ValueTask.FromResult<Principal>(new Member(job.Subject, job.Subject[(job.Subject.IndexOf('@', StringComparison.Ordinal) + 1)..]));
     }

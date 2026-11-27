@@ -187,6 +187,8 @@ public sealed class CliTests : IDisposable
             "--scoped-by", "Tenant", "--result", "OrderLineView");
         Assert.Contains("using Shop.Contracts.OrderLines;", Read("Shop", "src", "Shop.Contracts", "Orders", "LastLine.cs"), StringComparison.Ordinal);
         Assert.Contains("using Shop.Contracts.OrderLines;", Read("Shop", "src", "Shop.Application", "Orders", "LastLineHandler.cs"), StringComparison.Ordinal);
+        await Run(app, "generate", "operation", "orders.notes", "OrderNotes", "--access", "member", "--summary", "Two\nlines.", "--scoped-by", "Tenant");
+        Assert.Contains("Summary = \"Two\\nlines.\"", Read("Shop", "src", "Shop.Contracts", "Orders", "OrderNotes.cs"), StringComparison.Ordinal);
     }
 
     [Fact]

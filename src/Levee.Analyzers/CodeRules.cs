@@ -286,9 +286,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var held = context.Symbol switch
         {
             // A record is data its maker fills (the ambient connection and transaction), not a service the container builds.
-            // A private constructor is the type's own factory's to call, not the container's.
+            // Only a public constructor is the container's to call; any other is the type's own factory's.
             IMethodSymbol { MethodKind: MethodKind.Constructor } constructor when !constructor.ContainingType.IsRecord
-                && constructor.DeclaredAccessibility != Accessibility.Private => constructor.Parameters.Cast<ISymbol>(),
+                && constructor.DeclaredAccessibility == Accessibility.Public => constructor.Parameters.Cast<ISymbol>(),
             IMethodSymbol { DeclaredAccessibility: Accessibility.Public, MethodKind: MethodKind.Ordinary } action
                 when Derives(action.ContainingType, "Microsoft.AspNetCore.Mvc.ControllerBase") => action.Parameters.Cast<ISymbol>(),
             IMethodSymbol method => method.Parameters.Where(Injected).Cast<ISymbol>(),

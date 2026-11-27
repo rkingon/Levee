@@ -115,6 +115,8 @@ public sealed class FifthAuditTests
     [InlineData("public sealed record Watch(string Topic, [property: Secret] string Key) : ISubscription<int>;", true)]
     [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\npublic sealed record Auth([property: Secret] string Key);", true)]
     [InlineData("public sealed record Watch(string Topic) : ISubscription<int>;", false)]
+    [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\n[System.Text.Json.Serialization.JsonDerivedType(typeof(KeyAuth), \"key\")] public abstract record Auth;\npublic sealed record KeyAuth([property: Secret] string Key) : Auth;", true)]
+    [InlineData("public sealed record Watch(string Topic) : ISubscription<int> { [System.Text.Json.Serialization.JsonIgnore, Secret] public string? Kept { get; init; } }", false)]
     public async Task A_subscriptions_input_holds_no_secret(string declaration, bool refused)
     {
         var output = await Compile("Contracts", $"[Operation(\"topics.watch\", \"member\", Platform = true)] {declaration}");
@@ -168,6 +170,7 @@ public sealed class SixthAuditTests
     [InlineData("Adapter", "public sealed record Tx(System.Data.Common.DbConnection Connection);", false)]
     [InlineData("Adapter", "public sealed class Ledger { private System.Data.Common.DbConnection? Connection => null; }", false)]
     [InlineData("Tool", "public sealed class Side(Npgsql.NpgsqlConnection connection) { }", false)]
+    [InlineData("Adapter", "public sealed class Wrapped { internal Wrapped(System.Data.Common.DbConnection c) { } }", false)]
     [InlineData("Adapter", "public sealed class Wrapped { private Wrapped(System.Data.Common.DbConnection c) { } public static Wrapped Over(System.Data.Common.DbConnection c) => new(c); }", false)]
     public async Task A_connection_the_container_hands_over_is_one_of_its_own(string role, string declaration, bool refused)
     {

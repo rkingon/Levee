@@ -364,6 +364,28 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_job_whose_caller_is_restored_elsewhere_is_cancelled_not_moved()
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var (acme, _) = NewTenant();
+        var subject = $"moved_1@{acme}";
+
+        var sent = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new NoteMineLater(Guid.CreateVersion7(), "milk"), new ApiKey(subject, acme), Ct);
+
+        Assert.True(sent.IsSuccess, sent.Error?.Message);
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (await postgres.CountAsync("select count(*) from oxbow_job where state = 'cancelled' and args::text like '%' || $1 || '%'", subject) == 0
+            && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(100, Ct);
+        }
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from oxbow_job where state = 'cancelled' and args::text like '%' || $1 || '%'", subject));
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where text = 'milk' and tenant in ($1, 'elsewhere')", acme));
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
     public async Task A_job_waits_as_long_as_its_failure_says()
     {
         using var host = Build(work: true);

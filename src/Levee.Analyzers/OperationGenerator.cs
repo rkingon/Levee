@@ -683,10 +683,20 @@ public sealed class OperationGenerator : IIncrementalGenerator
                 return inArgument;
             }
         }
+        // A declared polymorphic base may arrive as any of its derived types, each on the wire as itself.
+        foreach (var derived in named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute"))
+        {
+            if (derived.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol subtype && SecretIn(subtype, seen, path) is { } inDerived)
+            {
+                return inDerived;
+            }
+        }
         // The BCL's own types hold no [Secret]; their type arguments, above, may.
         for (var t = named; t is not null && t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true; t = t.BaseType)
         {
-            foreach (var property in t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+            // What the wire carries: an ignored member never reaches the URL.
+            foreach (var property in t.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && !p.GetAttributes().Any(a =>
+                a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute" && a.NamedArguments.All(n => n.Key != "Condition"))))
             {
                 var at = path.Length == 0 ? property.Name : $"{path}.{property.Name}";
                 if (property.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "Levee.SecretAttribute"))

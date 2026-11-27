@@ -128,6 +128,9 @@ public static class LeveeErrors
     /// <summary>The store couldn't be reached, or timed out: try again.</summary>
     public const string StoreUnavailable = "store.unavailable";
 
+    /// <summary>A stream's caller couldn't be confirmed as it was rechecked (an identity lookup that failed or timed out): open it again.</summary>
+    public const string CallerUnconfirmed = "caller.unconfirmed";
+
     /// <summary>
     /// An update or delete found no row to change: another write changed it first (a concurrency token), or it isn't the
     /// operation's scope's (row-level security hides it). Nothing was written; repeating it as it is can't help.
@@ -143,7 +146,7 @@ public static class LeveeErrors
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         Internal, Unauthenticated, UnknownOperation, InvalidInput, Streams, AnswersOnce, ScopeMissing, ScopeUndeclared, CallerUnscoped, Cancelled, NotImplemented,
-        UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable, Stale, InvalidValue,
+        UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable, Stale, InvalidValue, CallerUnconfirmed,
     };
 }
 
