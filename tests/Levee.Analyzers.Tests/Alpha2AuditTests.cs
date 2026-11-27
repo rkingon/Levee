@@ -177,4 +177,29 @@ public sealed class Alpha2AuditTests
         Assert.Equal(refused ? ["LEVEE004"] : [], output.Ids.Distinct());
         Assert.Equal(refused, output.Errors.Any(e => e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("IChangeSignals.RaiseAsync", StringComparison.Ordinal)));
     }
+
+    private const string NodaTime = """
+        namespace NodaTime
+        {
+            public readonly struct Instant;
+            public interface IClock { Instant GetCurrentInstant(); }
+            public sealed class SystemClock : IClock { public static SystemClock Instance { get; } = new(); public Instant GetCurrentInstant() => default; }
+        }
+
+        """;
+
+    [Theory]
+    [InlineData("Application", "public static object Now() => NodaTime.SystemClock.Instance.GetCurrentInstant();", true)]
+    [InlineData("Application", "public static object Now() => Microsoft.VisualBasic.DateAndTime.Now;", true)]
+    [InlineData("Application", "public static object Now() => Microsoft.VisualBasic.DateAndTime.Timer;", true)]
+    [InlineData("Composition", "public static object Now() => Microsoft.VisualBasic.DateAndTime.Today;", true)]
+    [InlineData("Composition", "public static NodaTime.IClock Clock() => NodaTime.SystemClock.Instance;", false)]
+    [InlineData("Application", "public static object Now(NodaTime.IClock clock) => clock.GetCurrentInstant();", false)]
+    public async Task NodaTime_and_Visual_Basic_clocks_are_the_wall_clock(string role, string member, bool refused)
+    {
+        var output = await Compile(role, NodaTime + $"internal static class Clocks {{ {member} }}");
+
+        Assert.DoesNotContain(output.Errors, e => e.Id.StartsWith("CS", StringComparison.Ordinal));
+        Assert.Equal(refused, output.Ids.Contains("LEVEE003"));
+    }
 }

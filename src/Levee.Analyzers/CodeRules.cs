@@ -75,6 +75,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         {
             ("System.DateTime", "Now" or "UtcNow" or "Today") => true,
             ("System.DateTimeOffset", "Now" or "UtcNow") => true,
+            // NodaTime's TimeProvider.System: registered as the IClock where the app composes, taken through the constructor elsewhere.
+            ("NodaTime.SystemClock", "Instance") => !Roles.Composes(role),
+            ("Microsoft.VisualBasic.DateAndTime", "Now" or "Today" or "TimeOfDay" or "Timer" or "DateString" or "TimeString") => true,
             ("System.TimeProvider", "System") => !Roles.Composes(role),
             _ => false,
         };

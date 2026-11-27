@@ -65,7 +65,10 @@ internal sealed class Lease(TimeProvider time) { DateTimeOffset Now => time.GetU
 and later than every id the operation made before it, which `Guid.CreateVersion7(context.Now)` isn't (every id in one
 operation shares its one time, so their order would be random). Elsewhere, pass the time.
 
-Only Composition, a Host or a Tool uses `TimeProvider.System`; tests register a `FakeTimeProvider`.
+Only Composition, a Host or a Tool uses `TimeProvider.System`; tests register a `FakeTimeProvider`. NodaTime is held the
+same way: its `SystemClock.Instance` is registered as the `IClock` where the app composes, and everything else takes the
+`IClock` through its constructor. `Microsoft.VisualBasic.DateAndTime`'s `Now`, `Today`, `TimeOfDay`, `Timer`, `DateString`
+and `TimeString` are the wall clock, like `DateTime.Now`.
 
 ## LEVEE004: Only the dispatcher saves and commits
 

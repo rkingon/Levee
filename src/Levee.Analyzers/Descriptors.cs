@@ -26,7 +26,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor WallClock = Rule(
         "LEVEE003", "Time comes from TimeProvider",
-        "{0} reads the wall clock. Fix: in a handler, use OperationContext.Now (the operation's one time), and OperationContext.NewId() for a new id; elsewhere, take a TimeProvider through the constructor. Only Composition, a Host or a Tool uses TimeProvider.System");
+        "{0} reads the wall clock. Fix: in a handler, use OperationContext.Now (the operation's one time), and OperationContext.NewId() for a new id; elsewhere, take a TimeProvider (or NodaTime's IClock) through the constructor. Only Composition, a Host or a Tool uses TimeProvider.System");
 
     public static readonly DiagnosticDescriptor Transaction = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",
