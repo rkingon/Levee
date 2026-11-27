@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Generator and analyzers
+- Every rule's help link opens its page on the site (`https://rkingon.github.io/Levee/rules/levee0nn/`).
+
 ### Documentation
 - The Starlight site includes a NuGet quick start, the guides, and a stable reference page for each build rule. Pages preload their self-hosted fonts to keep text stable on first load.
 

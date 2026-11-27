@@ -12,7 +12,7 @@ internal static class Descriptors
 
     private static DiagnosticDescriptor Rule(string id, string title, string message, params string[] tags) =>
         new(id, title, $"{message} (dotnet levee explain {id})", Category, DiagnosticSeverity.Error, isEnabledByDefault: true,
-            customTags: tags);
+            helpLinkUri: $"https://rkingon.github.io/Levee/rules/{id.ToLowerInvariant()}/", customTags: tags);
 
     public static readonly DiagnosticDescriptor NoRole = Rule(
         "LEVEE001", "Every Levee project declares its role",

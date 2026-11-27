@@ -21,8 +21,11 @@ public sealed class MessageTests
     public void Every_rule_names_its_fix_and_its_explanation(string id)
     {
         // A rule may say different things for different findings: each message is held to it.
-        foreach (var message in Rules.Where(r => r.Id == id).Select(r => r.MessageFormat.ToString(CultureInfo.InvariantCulture)))
+        foreach (var rule in Rules.Where(r => r.Id == id))
         {
+            var message = rule.MessageFormat.ToString(CultureInfo.InvariantCulture);
+            // The site builds one page per section of docs/rules.md, slugged by the lowercased id.
+            Assert.Equal($"https://rkingon.github.io/Levee/rules/{id.ToLowerInvariant()}/", rule.HelpLinkUri);
             Assert.EndsWith($"(dotnet levee explain {id})", message, StringComparison.Ordinal);
             Assert.True(FixFromCallSite.Contains(id) || message.Contains("Fix: ", StringComparison.Ordinal), message);
         }
