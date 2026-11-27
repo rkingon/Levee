@@ -18,6 +18,16 @@ public sealed class CliTests : IDisposable
 
     private string Read(params string[] path) => File.ReadAllText(Path.Combine([_dir, .. path]));
 
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (!File.Exists(Path.Combine(dir!.FullName, "Levee.slnx")))
+        {
+            dir = dir.Parent;
+        }
+        return dir.FullName;
+    }
+
     [Fact]
     public void Check_takes_the_solutions_projects_not_every_project_on_disk()
     {
@@ -35,12 +45,7 @@ public sealed class CliTests : IDisposable
     [Fact]
     public async Task A_project_a_Levee_project_references_has_a_role_and_runs_the_rules()
     {
-        var build = new DirectoryInfo(AppContext.BaseDirectory);
-        while (!File.Exists(Path.Combine(build!.FullName, "Levee.slnx")))
-        {
-            build = build.Parent;
-        }
-        var levee = Path.Combine(build.FullName, "src", "Levee", "build");
+        var levee = Path.Combine(RepoRoot(), "src", "Levee", "build");
         // Only the role check is under test here: these stand-ins have no Levee analyzers to run, so they build as check's own pass
         // does, with its token in the property and the environment.
         const string Token = "levee-cli-test";
@@ -105,6 +110,69 @@ public sealed class CliTests : IDisposable
         Assert.Contains("error LEVEE006: This project's role is Test", (await Build(Path.Combine(_dir, "Labelled", "Labelled.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: This project turns its analyzers off", (await Build(Path.Combine(_dir, "SelfIssued", "SelfIssued.csproj"))).Output, StringComparison.Ordinal);
         Assert.Contains("error LEVEE006: An analyzer config file sets what Levee's analyzers read", (await Build(Path.Combine(_dir, "Reconfigured", "Reconfigured.csproj"))).Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Check_fails_on_a_multi_target_finding_and_on_an_analyzed_build_that_fails_beyond_Levees_rules()
+    {
+        var repo = RepoRoot();
+        // The analyzers this test was built beside: its output directory is bin/<configuration>/<framework>.
+        var configuration = new DirectoryInfo(AppContext.BaseDirectory).Parent!.Name;
+        var analyzers = Path.Combine(repo, "src", "Levee.Analyzers", "bin", configuration, "netstandard2.0", "Levee.Analyzers.dll");
+        void Project(string name, string frameworks)
+        {
+            Directory.CreateDirectory(Path.Combine(_dir, name));
+            File.WriteAllText(Path.Combine(_dir, name, $"{name}.csproj"), $"""
+                <Project Sdk="Microsoft.NET.Sdk">
+                  <Import Project="{repo}/src/Levee/build/Levee.props" />
+                  <PropertyGroup><TargetFrameworks>{frameworks}</TargetFrameworks><LeveeRole>Adapter</LeveeRole></PropertyGroup>
+                  <ItemGroup>
+                    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+                    <Reference Include="Levee" HintPath="{Path.Combine(AppContext.BaseDirectory, "Levee.dll")}" />
+                    <Analyzer Include="{analyzers}" />
+                  </ItemGroup>
+                  <Import Project="{repo}/src/Levee/build/Levee.targets" />
+                </Project>
+                """);
+        }
+        Project("Clock", "net10.0;net10.0-windows");
+        Project("Tidy", "net10.0");
+        File.WriteAllText(Path.Combine(_dir, "App.slnx"), """<Solution><Project Path="Clock/Clock.csproj" /><Project Path="Tidy/Tidy.csproj" /></Solution>""");
+        File.WriteAllText(Path.Combine(_dir, "Clock", "Clock.cs"), "public static class Clock { public static System.DateTimeOffset Now => System.DateTimeOffset.UtcNow; }");
+        // An error the app's own config makes of a rule that isn't Levee's: the build fails, with no LEVEE finding to show for it.
+        File.WriteAllText(Path.Combine(_dir, "Tidy", ".editorconfig"), "root = true\n[*.cs]\ndotnet_diagnostic.CA1822.severity = error\n");
+        File.WriteAllText(Path.Combine(_dir, "Tidy", "Counter.cs"), "public class Counter { public int Read() => 42; }");
+
+        var (code, output, _) = await Run(_dir, "check", _dir);
+        var (jsonCode, json, _) = await Run(_dir, "check", _dir, "--json");
+
+        Assert.Equal(1, code);
+        Assert.Contains("LEVEE003 (1)", output, StringComparison.Ordinal);
+        Assert.Contains("error CA1822", output, StringComparison.Ordinal);
+        Assert.Equal("Not on Levee yet: 1 rule is still broken; analysis of Tidy is incomplete. The app is on Levee when this check is green.",
+            output.TrimEnd().Split('\n')[^1].TrimEnd());
+        Assert.Equal(1, jsonCode);
+        using var entries = System.Text.Json.JsonDocument.Parse(json);
+        Assert.Collection(entries.RootElement.EnumerateArray(),
+            finding =>
+            {
+                Assert.Equal(("LEVEE003", "Clock", false), (finding.GetProperty("rule").GetString(), finding.GetProperty("project").GetString(), finding.GetProperty("incomplete").GetBoolean()));
+            },
+            incomplete =>
+            {
+                Assert.Equal(System.Text.Json.JsonValueKind.Null, incomplete.GetProperty("rule").ValueKind);
+                Assert.Equal(("Tidy", true), (incomplete.GetProperty("project").GetString(), incomplete.GetProperty("incomplete").GetBoolean()));
+                Assert.Contains("error CA1822", incomplete.GetProperty("message").GetString(), StringComparison.Ordinal);
+            });
+
+        File.WriteAllText(Path.Combine(_dir, "Clock", "Clock.cs"), "public static class Clock { public static int Hours => 24; }");
+        File.WriteAllText(Path.Combine(_dir, "Tidy", "Counter.cs"), "public static class Counter { public static int Read() => 42; }");
+
+        var (clean, cleanOutput, _) = await Run(_dir, "check", _dir);
+        var (cleanJsonCode, cleanJson, _) = await Run(_dir, "check", _dir, "--json");
+
+        Assert.Equal((0, "No LEVEE findings in 2 projects."), (clean, cleanOutput.Trim()));
+        Assert.Equal((0, "[]"), (cleanJsonCode, cleanJson.Trim()));
     }
 
     [Fact]
@@ -320,6 +388,72 @@ public sealed class CheckTests
         Assert.Equal(2, findings.Count);
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE007", "App.Domain", "/app/src/App.Domain/Note.cs", 12, "Text can be changed from outside aggregate root Note"), findings[0]);
         Assert.Equal(new Levee.Cli.Check.Finding("LEVEE002", "App.Domain", null, null, "A Domain project may not reference App.Adapters (Adapter)"), findings[1]);
+    }
+
+    [Fact]
+    public void A_multi_target_projects_findings_are_read_once_each_whichever_target_reported_them()
+    {
+        const string Output = """
+            /app/src/App.Adapters/Clock.cs(1,72): error LEVEE003: DateTimeOffset.UtcNow reads the wall clock (https://rkingon.github.io/Levee/rules/levee003/) [/app/src/App.Adapters/App.Adapters.csproj::TargetFramework=net10.0]
+            /app/src/App.Adapters/Clock.cs(1,72): error LEVEE003: DateTimeOffset.UtcNow reads the wall clock (https://rkingon.github.io/Levee/rules/levee003/) [/app/src/App.Adapters/App.Adapters.csproj::TargetFramework=net10.0-windows]
+            /app/src/App.Adapters/Only.cs(2,1): error LEVEE003: DateTime.Now reads the wall clock [/app/src/App.Adapters/App.Adapters.csproj::TargetFramework=net10.0-windows;Configuration=Release]
+            """;
+
+        Assert.Equal([
+            new Levee.Cli.Check.Finding("LEVEE003", "App.Adapters", "/app/src/App.Adapters/Clock.cs", 1, "DateTimeOffset.UtcNow reads the wall clock"),
+            new Levee.Cli.Check.Finding("LEVEE003", "App.Adapters", "/app/src/App.Adapters/Only.cs", 2, "DateTime.Now reads the wall clock"),
+        ], Levee.Cli.Check.Parse(Output));
+        Assert.Equal(["App.Host"], Levee.Cli.Check.Broken(
+            "/app/src/App.Host/Program.cs(3,1): error CS0246: The type or namespace name 'X' could not be found [/app/src/App.Host/App.Host.csproj::TargetFramework=net10.0]"));
+    }
+
+    [Fact]
+    public void An_analyzed_build_is_complete_when_it_succeeds_or_fails_on_Levees_rules_alone()
+    {
+        const string Finding = "/app/Clock.cs(1,72): error LEVEE003: DateTimeOffset.UtcNow reads the wall clock [/app/App.csproj::TargetFramework=net10.0]";
+
+        Assert.Null(Levee.Cli.Check.Unfinished(succeeded: true, ""));
+        Assert.Null(Levee.Cli.Check.Unfinished(succeeded: false, $"{Finding}\n\nBuild FAILED.\n\n{Finding}\n    0 Warning(s)\n    1 Error(s)"));
+    }
+
+    [Fact]
+    public void An_analyzed_build_that_fails_beyond_Levees_rules_is_incomplete_with_its_errors_once_each()
+    {
+        const string Output = """
+            /app/Counter.cs(1,33): error CA1822: Member 'Read' can be marked as static [/app/App.csproj::TargetFramework=net10.0]
+            /app/Clock.cs(1,72): error LEVEE003: DateTimeOffset.UtcNow reads the wall clock [/app/App.csproj::TargetFramework=net10.0]
+            /app/Counter.cs(1,33): error CA1822: Member 'Read' can be marked as static [/app/App.csproj::TargetFramework=net10.0-windows]
+            /app/Counter.cs(2,1): warning CA1050: Declare types in namespaces; an error: in prose isn't one [/app/App.csproj]
+            CSC : error CS0006: Metadata file '/app/Domain/obj/Domain.dll' could not be found [/app/App.csproj]
+
+            Build FAILED.
+            """;
+
+        Assert.Equal([
+            "/app/Counter.cs(1,33): error CA1822: Member 'Read' can be marked as static",
+            "CSC : error CS0006: Metadata file '/app/Domain/obj/Domain.dll' could not be found",
+        ], Levee.Cli.Check.Unfinished(succeeded: false, Output)!);
+        // A build that fails with no error to show for it is no analysis either.
+        Assert.Empty(Levee.Cli.Check.Unfinished(succeeded: false, "Build FAILED.")!);
+    }
+
+    [Fact]
+    public void The_app_is_checked_at_its_real_path_so_its_editorconfig_applies()
+    {
+        var dir = Directory.CreateTempSubdirectory("levee-real-").FullName;
+        try
+        {
+            var app = Directory.CreateDirectory(Path.Combine(dir, "app", "src")).FullName;
+            var link = Path.Combine(dir, "link");
+            Directory.CreateSymbolicLink(link, Path.Combine(dir, "app"));
+
+            Assert.Equal(Levee.Cli.Check.RealPath(app), Levee.Cli.Check.RealPath(Path.Combine(link, "src")));
+            Assert.DoesNotContain("link", Levee.Cli.Check.RealPath(Path.Combine(link, "src")), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
     }
 
     [Fact]
