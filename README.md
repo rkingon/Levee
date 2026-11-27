@@ -150,9 +150,10 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
 - An operation declares only reads unless it says otherwise, and runs in a `read only` transaction: an undeclared write
   is `effects.undeclared`, refused by Postgres.
 - Every operation declares one scope (LEVEE106): its input's (`IScopedOperation`), its caller's (`CallerScoped = true`, from
-  a principal that is an `IScopedPrincipal`: an API key issued to one tenant), or every scope (`Platform = true`). The
+  a principal that is an `IScopedPrincipal`: an API key issued to one tenant), none (`Unscoped = true`: it sees no tenant's
+  rows, only `Shared` tables), or every scope (`Platform = true`). The
   dispatcher refuses a missing or blank scope key. A caller-scoped job runs in the scope its enqueuer was authorized in; an input-scoped job, in the scope its input names;
-  a platform job, at platform scope. `ScopeKey` sets `levee.scope` for the
+  an unscoped job, in no scope; a platform job, at platform scope. `ScopeKey` sets `levee.scope` for the
   transaction, and `LeveeSchema.Isolation(table, column)` is the RLS policy that holds a table to it (`Shared(table)` for one every scope
   reads); a table the app's context maps without a policy, or a view it maps that reads one, fails before the first operation. Platform scope
   (`levee.platform`) sees every row, so the access policy decides who may run a platform operation

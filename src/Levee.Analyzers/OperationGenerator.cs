@@ -364,7 +364,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var flags = $"{(op.Platform ? "true" : "false")}, {(op.Internal ? "true" : "false")}"
             + (op.Metadata.Count == 0 ? "" : $", metadata: new global::System.Attribute[] {{ {string.Join(", ", op.Metadata)} }}")
             + (op.Errors.Count == 0 || op.Streams ? "" : $", errors: new string[] {{ {string.Join(", ", op.Errors.Select(Literal))} }}")
-            + (op.CallerScoped ? ", callerScoped: true" : "");
+            + (op.CallerScoped ? ", callerScoped: true" : "")
+            + (op.Unscoped ? ", unscoped: true" : "");
         return op.Streams
             ? $"global::Levee.OperationDescriptor.CreateSubscription<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, {flags})"
             : $"global::Levee.OperationDescriptor.Create<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, "
@@ -503,6 +504,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         var platform = named.TryGetValue("Platform", out var pl) && pl is true;
         var @internal = named.TryGetValue("Internal", out var it) && it is true;
         var callerScoped = named.TryGetValue("CallerScoped", out var cs) && cs is true;
+        var unscoped = named.TryGetValue("Unscoped", out var un) && un is true;
         var metadata = type.GetAttributes()
             .Where(a => a.AttributeClass?.GetAttributes().Any(m => m.AttributeClass?.ToDisplayString() == Known.MetadataAttribute) == true)
             .Select(Construct)
@@ -535,7 +537,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             context?.ReportDiagnostic(Diagnostic.Create(Descriptors.WriteIdempotency, location, name, EffectsText(effects)));
         }
         var scoped = type.AllInterfaces.Any(i => Known.Is(i, "IScopedOperation", 0));
-        var scopes = (scoped ? 1 : 0) + (platform ? 1 : 0) + (callerScoped ? 1 : 0);
+        var scopes = (scoped ? 1 : 0) + (platform ? 1 : 0) + (callerScoped ? 1 : 0) + (unscoped ? 1 : 0);
         if (scopes != 1)
         {
             context?.ReportDiagnostic(Diagnostic.Create(Descriptors.ScopeUndeclared, location, name,
@@ -543,7 +545,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
 
         return new OperationModel(type, contract.TypeArguments[0], name, access, summary, effects, idempotency, platform, @internal, streams, metadata,
-            errors, callerScoped, location);
+            errors, callerScoped, unscoped, location);
     }
 
     /// <summary>
@@ -990,7 +992,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
     private static string Identifier(string name) => new(name.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
 
     private sealed record OperationModel(INamedTypeSymbol Type, ITypeSymbol Result, string Name, string Access, string Summary, int Effects,
-        int Idempotency, bool Platform, bool Internal, bool Streams, List<string> Metadata, List<string> Errors, bool CallerScoped, Location Location);
+        int Idempotency, bool Platform, bool Internal, bool Streams, List<string> Metadata, List<string> Errors, bool CallerScoped, bool Unscoped,
+        Location Location);
 
     /// <summary>An attribute as the expression that makes it again: its constructor arguments, then its named ones.</summary>
     private static string Construct(AttributeData attribute)

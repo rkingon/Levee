@@ -86,7 +86,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             return subscription.Error;
         }
         var subject = principal.Subject;
-        var scoped = ScopeOf(descriptor, subscription.Value, principal);
+        var scoped = Confine(ScopeOf(descriptor, subscription.Value, principal), descriptor, principal);
         var opened = await OpenAsync(descriptor, subscription.Value, principal, scoped, ct);
         return opened.IsSuccess
             ? new OpenedSubscription(Json(opened.Value, descriptor, CancellationToken.None), descriptor, subscription.Value, subject, scoped.Value)
@@ -182,7 +182,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// <summary>Scoped and authorized now; its items come from a DI scope of its own that lives as long as they're read.</summary>
     private Task<Result<IAsyncEnumerable<object?>>> OpenAsync(OperationDescriptor descriptor, IOperation subscription, Principal principal,
         CancellationToken ct) =>
-        OpenAsync(descriptor, subscription, principal, ScopeOf(descriptor, subscription, principal), ct);
+        OpenAsync(descriptor, subscription, principal, Confine(ScopeOf(descriptor, subscription, principal), descriptor, principal), ct);
 
     private async Task<Result<IAsyncEnumerable<object?>>> OpenAsync(OperationDescriptor descriptor, IOperation subscription, Principal principal,
         Result<WorkScope> scoped, CancellationToken ct)
@@ -269,35 +269,44 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
+    // The principal a process runs as, held to the scope it was started in, by whatever path it reaches the dispatcher: the
+    // process's own context, or a helper it hands the principal to. Keyed by the instance, which only the process holds.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Principal, WorkScope> Confined = [];
+
     /// <summary>
-    /// A step of a process, as its caller. One started in a scope stays in it, whatever the step declares (its input's
-    /// scope, its caller's, the platform's): the access policy may let the caller elsewhere, but the process was started
-    /// for that scope alone. One started by the platform may act in any, as the platform could.
+    /// Holds <paramref name="principal"/> to <paramref name="scope"/>: every operation it sends from now on runs there,
+    /// whatever it declares (its input's scope, its caller's, none, the platform's), though the access policy might let the
+    /// caller elsewhere. A process started by the platform isn't confined: it may act in any scope, as the platform could.
     /// </summary>
-    internal async Task<Result<object?>> SendConfinedAsync(IOperation operation, Principal principal, string? scope, CancellationToken ct)
+    internal static void Confine(Principal principal, WorkScope scope) => Confined.AddOrUpdate(principal, scope);
+
+    /// <summary>A process's step: an operation it holds, as its principal.</summary>
+    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         if (catalog.Find(operation.GetType()) is not { } descriptor)
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, scope, ct, confined: scope is not null);
+        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
     }
+
+    private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
+        scoped.IsSuccess && Confined.TryGetValue(principal, out var to) && (scoped.Value.Key != to.Key || scoped.Value.Unscoped != to.Unscoped)
+            ? Error.Forbidden(LeveeErrors.ScopeViolation,
+                $"{descriptor.Name} would run {(scoped.Value.Key is { } key ? $"in {key}" : scoped.Value.Unscoped ? "in no one's scope" : "across every scope")}, "
+                + "outside the scope its process was started in.")
+            : scoped;
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
         await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, CancellationToken ct, bool confined = false)
+        Func<object?, object?>? answer, string? pinned, CancellationToken ct)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
-        var scoped = ScopeOf(descriptor, operation, principal, pinned);
-        if (confined && scoped.IsSuccess && scoped.Value.Key != pinned)
-        {
-            scoped = Error.Forbidden(LeveeErrors.ScopeViolation,
-                $"{descriptor.Name} would run {(scoped.Value.Key is { } key ? $"in {key}" : "across every scope")}, outside the scope its process was started in.");
-        }
+        var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
         // Redacted once, for the audit and the outcome both. An input built in-process can hold what its own type refuses
         // (null where it's non-nullable): refused here, as the wire would, before any transaction opens.
         string? input = null;
@@ -367,7 +376,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        var scope = ScopeOf(descriptor, operation, principal);
+        // A confined process's enqueue is held to its scope as its own steps are.
+        var scope = Confine(ScopeOf(descriptor, operation, principal), descriptor, principal);
         if (!scope.IsSuccess)
         {
             return scope.Error;
@@ -486,15 +496,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     private static Result<WorkScope> Scoping(OperationDescriptor descriptor, IOperation operation, string? caller) =>
-        (descriptor.Platform, descriptor.CallerScoped, operation) switch
+        (descriptor.Platform || descriptor.Unscoped, descriptor.CallerScoped, operation) switch
         {
-            (true, false, not IScopedOperation) => new WorkScope(null, descriptor.ReadOnly),
+            (true, false, not IScopedOperation) when !(descriptor.Platform && descriptor.Unscoped) =>
+                new WorkScope(null, descriptor.ReadOnly) { Unscoped = descriptor.Unscoped },
             (false, true, not IScopedOperation) => caller is { } key && !string.IsNullOrWhiteSpace(key)
                 ? new WorkScope(key, descriptor.ReadOnly)
                 : Error.Forbidden(LeveeErrors.CallerUnscoped, $"{descriptor.Name} runs in its caller's scope, and this caller has none."),
             (false, false, IScopedOperation { ScopeKey: { } key }) when !string.IsNullOrWhiteSpace(key) => new WorkScope(key, descriptor.ReadOnly),
             (false, false, IScopedOperation) => Error.Validation(LeveeErrors.ScopeMissing, $"{descriptor.Name} needs its scope."),
-            _ => Error.Forbidden(LeveeErrors.ScopeUndeclared, $"{descriptor.Name} must declare one scope: its input's, its caller's, or the platform's."),
+            _ => Error.Forbidden(LeveeErrors.ScopeUndeclared, $"{descriptor.Name} must declare one scope: its input's, its caller's, none, or the platform's."),
         };
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,

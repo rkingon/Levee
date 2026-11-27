@@ -95,9 +95,15 @@ internal sealed class CurrentOperation
 }
 
 /// <summary>What a unit of work may see and do. A null <see cref="Key"/> is platform scope, only ever for a declared platform operation.</summary>
+/// <param name="Key">The scope row-level security holds the operation to; null when it's every scope's or none's.</param>
+/// <param name="ReadOnly">Whether its transaction is read-only, as its contract declares.</param>
 public sealed record WorkScope(string? Key, bool ReadOnly)
 {
-    public bool Platform => Key is null;
+    /// <summary>In no one's scope: no tenant's rows, only what every scope shares (<see cref="OperationAttribute.Unscoped"/>).</summary>
+    public bool Unscoped { get; init; }
+
+    /// <summary>Across every scope: an operator's, never what anyone may call.</summary>
+    public bool Platform => Key is null && !Unscoped;
 }
 
 public sealed record AccessRequest(Principal Principal, OperationDescriptor Operation, IOperation Input, WorkScope Scope);

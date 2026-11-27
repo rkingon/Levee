@@ -150,7 +150,7 @@ internal static partial class NewApp
                 - **Handlers never authorize.** `src/{{name}}.Host/AccessPolicy.cs` decides, once, before the unit of work
                   opens; a check that needs the transaction is an `IAdmission`.
                 - **Declare what an operation does.** Only reads unless it says `Effects.Write`; a write through a read is
-                  refused by Postgres. Scoped (`IScopedOperation`) unless it says `Platform = true`.
+                  refused by Postgres. Scoped (`IScopedOperation`) unless it says `Unscoped = true` (no tenant's rows: anyone's) or `Platform = true` (every tenant's: an operator's).
                 - **Nothing saves but the pipeline.** No `SaveChanges`, no transactions: the dispatcher commits once.
                 - **Time is `TimeProvider`**, or `OperationContext.Now` in a handler.
                 - **A job is an operation**: `IJobs.EnqueueAsync`, in the caller's transaction. Only operations safe to repeat.
@@ -174,7 +174,7 @@ internal static partial class NewApp
 
                 public sealed record Pong(DateTimeOffset At);
 
-                [Operation("health.ping", "anyone", Summary = "Answers with the platform's time.", Platform = true)]
+                [Operation("health.ping", "anyone", Summary = "Answers with the platform's time.", Unscoped = true)]
                 public sealed record Ping : IOperation<Pong>;
 
                 """,
@@ -267,8 +267,9 @@ internal static partial class NewApp
                     public ValueTask<Error?> AuthorizeAsync(AccessRequest request, CancellationToken ct) =>
                         ValueTask.FromResult(request.Operation.Access switch
                         {
-                            // Anyone reads only what's every tenant's (no key: the platform's scope); no caller here belongs to a tenant yet.
-                            "anyone" when request.Scope.Key is null => null,
+                            // Anyone may call what's in no one's scope: it sees no tenant's rows. The platform's scope (every tenant's)
+                            // is an operator's, and no caller here belongs to a tenant yet.
+                            "anyone" when request.Scope is { Unscoped: true, Key: null } => null,
                             var access => Error.Forbidden("access.unconfigured", $"Nothing grants '{access}' here yet: write it in AccessPolicy."),
                         });
                 }

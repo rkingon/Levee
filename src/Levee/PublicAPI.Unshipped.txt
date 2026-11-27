@@ -17,9 +17,7 @@
 *REMOVED*Levee.IUnitOfWork
 *REMOVED*Levee.IUnitOfWork.AuditAsync(Levee.AuditEntry! entry, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
 *REMOVED*Levee.IUnitOfWork.CommitAsync(System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task!
-*REMOVED*Levee.IUnitOfWork.Scope.get -> Levee.WorkScope!
 *REMOVED*Levee.IUnitOfWorkFactory
-*REMOVED*Levee.IUnitOfWorkFactory.BeginAsync(Levee.WorkScope! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.IUnitOfWork!>!
 *REMOVED*Levee.IUnitOfWorkFactory.Classify(System.Exception! exception) -> Levee.Error?
 *REMOVED*override Levee.AuditEntry.Equals(object? obj) -> bool
 *REMOVED*override Levee.AuditEntry.GetHashCode() -> int
@@ -90,3 +88,14 @@ override sealed Levee.AnonymousPrincipal.Equals(Levee.Principal? other) -> bool
 static Levee.AnonymousPrincipal.operator !=(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool
 static Levee.AnonymousPrincipal.operator ==(Levee.AnonymousPrincipal? left, Levee.AnonymousPrincipal? right) -> bool
 Levee.IChangeSignals.WatchAsync(string! kind, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<System.Collections.Generic.IAsyncEnumerable<Levee.ChangeSignal!>!>!
+*REMOVED*static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false) -> Levee.OperationDescriptor!
+*REMOVED*static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false) -> Levee.OperationDescriptor!
+Levee.OperationAttribute.Unscoped.get -> bool
+Levee.OperationAttribute.Unscoped.set -> void
+Levee.OperationDescriptor.Unscoped.get -> bool
+Levee.WorkScope.Unscoped.get -> bool
+Levee.WorkScope.Unscoped.init -> void
+static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
+static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
+*REMOVED*Levee.IUnitOfWork.Scope.get -> Levee.WorkScope!
+*REMOVED*Levee.IUnitOfWorkFactory.BeginAsync(Levee.WorkScope! scope, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.IUnitOfWork!>!

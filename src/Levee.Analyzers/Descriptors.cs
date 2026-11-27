@@ -161,7 +161,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ScopeUndeclared = Rule(
         "LEVEE106", "Every operation declares its scope",
-        "{0} {1}. Fix: declare exactly one: IScopedOperation when its input names the tenant (or household, account) whose rows it touches; CallerScoped = true when the caller's credentials carry it (an API key issued to a tenant); Platform = true only for an operator's operation across every scope");
+        "{0} {1}. Fix: declare exactly one: IScopedOperation when its input names the tenant (or household, account) whose rows it touches; CallerScoped = true when the caller's credentials carry it (an API key issued to a tenant); Unscoped = true when it touches no tenant's rows (a health check, a public lookup), so anyone may call it and see nothing of a tenant's; Platform = true only for an operator's operation across every tenant's rows");
 
     public static readonly DiagnosticDescriptor UnboundPort = Rule(
         "LEVEE107", "Every port is bound",

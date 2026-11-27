@@ -605,7 +605,7 @@ public sealed record CreateTenant(Guid Id, string Name) : IOperation<TenantView>
 ## LEVEE106: Every operation declares its scope
 
 Scope is whose rows an operation may see; Postgres holds it with row-level security. Forgetting it can't silently
-widen access, so each operation declares exactly one of three.
+widen access, so each operation declares exactly one of four.
 
 ```csharp
 // Scoped: the tenant (household, account) whose rows it touches
@@ -619,10 +619,17 @@ public sealed record CreateNote(Guid Id, string Tenant, string Text) : IOperatio
 public sealed record MyNotes : IOperation<IReadOnlyList<NoteView>>;
 // ...where the principal says it: public sealed record ApiKey(string Subject, string Tenant) : Principal(Subject), IScopedPrincipal
 
+// Unscoped: no tenant's rows at all (a health check, a public lookup in a Shared table); anyone may run it safely
+[Operation("system.ping", "anyone", Unscoped = true)]
+public sealed record Ping : IOperation<string>;
+
 // Platform: an operator's operation across every scope; the access policy decides who may
 [Operation("tenants.list", "platform-admin", Platform = true)]
 public sealed record ListTenants : IOperation<IReadOnlyList<TenantView>>;
 ```
+
+`Unscoped` isn't a smaller `Platform`: platform scope sees every tenant's rows, an unscoped operation sees none.
+Reaching for `Platform` because an operation touches no tenant hands every row to whoever may run it.
 
 ## LEVEE107: Every port is bound
 

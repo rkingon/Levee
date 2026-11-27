@@ -75,10 +75,11 @@ internal sealed record SealedOperationJob(string Operation, JsonElement Input, s
 
 /// <summary>A process: its input's type by name and assembly, its input, and who it runs for, where.</summary>
 [JobKind("levee_process")]
-internal sealed record ProcessJob(string Process, JsonElement Input, string Subject, bool System, string? Scope = null) : IJobArgs;
+internal sealed record ProcessJob(string Process, JsonElement Input, string Subject, bool System, string? Scope = null, bool Unscoped = false) : IJobArgs;
 
 [JobKind("levee_process_sealed"), EncryptArgs]
-internal sealed record SealedProcessJob(string Process, JsonElement Input, string Subject, bool System, string? Scope = null) : IJobArgs;
+internal sealed record SealedProcessJob(string Process, JsonElement Input, string Subject, bool System, string? Scope = null, bool Unscoped = false)
+    : IJobArgs;
 
 internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, CurrentOperation current, LeveeOptions levee, LeveeJobsOptions jobs,
     IServiceProvider services) : IJobs
@@ -112,6 +113,7 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         };
         // The scope the starting operation was authorized in: every step runs there, as a caller-scoped job does.
         var scope = context.Scope.Key;
+        var unscoped = context.Scope.Unscoped;
         var name = ProcessInputs.NameOf(typeof(TInput));
         var stored = JsonSerializer.SerializeToElement(input, levee.Json);
         var insert = new InsertOptions
@@ -122,8 +124,8 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             Unique = options is { Unique: true } ? new UniqueOptions { ByArgs = true, ByState = LiveStates } : null,
         };
         var result = secret is null
-            ? await client.InsertAsync(new ProcessJob(name, stored, subject, system, scope), insert, ct)
-            : await client.InsertAsync(new SealedProcessJob(name, stored, subject, system, scope), insert, ct);
+            ? await client.InsertAsync(new ProcessJob(name, stored, subject, system, scope, unscoped), insert, ct)
+            : await client.InsertAsync(new SealedProcessJob(name, stored, subject, system, scope, unscoped), insert, ct);
         return new Enqueued(result.Job.Id, result.UniqueSkippedAsDuplicate);
     }
 
@@ -214,7 +216,7 @@ internal sealed class ProcessJobWorker(IServiceScopeFactory scopes, Dispatcher d
 {
     public Task WorkAsync(Job<ProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, cancellationToken);
 }
 
 internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
@@ -222,7 +224,7 @@ internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispat
 {
     public Task WorkAsync(Job<SealedProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, cancellationToken);
 }
 
 /// <summary>
@@ -251,7 +253,7 @@ internal sealed class ProcessInputs(IServiceCollection services)
 internal static class Run
 {
     public static async Task ProcessAsync(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
-        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, int attempt, CancellationToken ct)
+        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, bool unscoped, int attempt, CancellationToken ct)
     {
         var type = inputs.Find(process) ?? throw new JobCancelException($"No process takes {process}: renamed or removed since it was started.");
         var job = new JobPrincipal(subject, system, scope);
@@ -260,7 +262,12 @@ internal static class Run
         {
             throw new JobCancelException($"Restored as {principal.Subject}, not {subject}, who started it.");
         }
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendConfinedAsync(operation, principal, scope, token));
+        // Held to where it was started, the platform's work aside, whichever way the principal reaches the dispatcher.
+        if (scope is not null || unscoped)
+        {
+            Dispatcher.Confine(principal, new WorkScope(scope, ReadOnly: false) { Unscoped = unscoped });
+        }
+        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, token));
         var value = input.Deserialize(type, levee.Json)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");
         await using var services = scopes.CreateAsyncScope();

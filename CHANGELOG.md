@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Levee
+- `[Operation(Unscoped = true)]`: an operation in no one's scope, for what touches no tenant's rows (a health check, a
+  lookup in a `Shared` table). It sees no tenant's rows, where `Platform = true` sees every one; `WorkScope.Unscoped`
+  tells an access policy which it is.
 - `AnonymousPrincipal`: a caller with no credentials, for what anyone may do. An operation in its caller's own scope
   answers it `Unauthenticated` (401), not `scope.caller` (403).
 - `OperationContext.NewId()`: a UUIDv7 at the operation's time, later than every id the operation made before it (a
@@ -12,8 +15,8 @@
 - Processes: `IProcess<TInput>`, long-running work an operation starts with `IJobs.StartAsync` (inserted in its
   transaction, run only if it commits) and `Levee.Oxbow` runs as a job, outside any transaction. Each step is an operation
   it sends through `ProcessContext`, as its starter, in their scope; `Snooze` runs it again later, from the top, reading
-  where it was. The generated registration finds a process in Application. A process started in a scope stays in it, step
-  by step; one the platform started may act in any. A stored process resolves only to a registered process's input, and
+  where it was. The generated registration finds a process in Application. A process started in a scope (or in none) stays in it, step
+  by step, its principal held there by whatever path it reaches the dispatcher; one the platform started may act in any. A stored process resolves only to a registered process's input, and
   one that snoozes before its first await isn't counted as failed.
 - `IChangeSignals`: change notifications, the store's own. Raised in an operation and delivered when it commits, never if it
   rolls back; watched from a subscription's handler in the scope the dispatcher authorized (every scope's for a platform

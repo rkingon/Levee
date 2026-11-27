@@ -9,9 +9,10 @@ public abstract class OperationDescriptor
 {
     private protected OperationDescriptor(string name, string summary, string access, Effects effects, Idempotency idempotency,
         bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, Type inputType, Type resultType,
-        bool callerScoped = false)
+        bool callerScoped = false, bool unscoped = false)
     {
         CallerScoped = callerScoped;
+        Unscoped = unscoped;
         Errors = errors;
         Platform = platform;
         Internal = @internal;
@@ -36,6 +37,9 @@ public abstract class OperationDescriptor
 
     /// <summary>Runs in its caller's scope, the principal's, not its input's.</summary>
     public bool CallerScoped { get; }
+
+    /// <summary>Runs in no one's scope: no tenant's rows, only what every scope shares.</summary>
+    public bool Unscoped { get; }
 
     /// <summary>The platform's own: never projected to a client.</summary>
     public bool Internal { get; }
@@ -65,15 +69,16 @@ public abstract class OperationDescriptor
 
     public static OperationDescriptor Create<TOperation, TResult>(string name, string summary, string access, Effects effects,
         Idempotency idempotency, bool platform, bool @internal = false, IReadOnlyList<Attribute>? metadata = null, IReadOnlyList<string>? errors = null,
-        bool callerScoped = false)
+        bool callerScoped = false, bool unscoped = false)
         where TOperation : class, IOperation<TResult> =>
-        new OperationDescriptor<TOperation, TResult>(name, summary, access, effects, idempotency, platform, @internal, metadata ?? [], errors ?? [], callerScoped);
+        new OperationDescriptor<TOperation, TResult>(name, summary, access, effects, idempotency, platform, @internal, metadata ?? [], errors ?? [], callerScoped,
+            unscoped);
 
     /// <summary>A subscription's descriptor. Its result type is the type of each item.</summary>
     public static OperationDescriptor CreateSubscription<TSubscription, TItem>(string name, string summary, string access, bool platform,
-        bool @internal = false, IReadOnlyList<Attribute>? metadata = null, bool callerScoped = false)
+        bool @internal = false, IReadOnlyList<Attribute>? metadata = null, bool callerScoped = false, bool unscoped = false)
         where TSubscription : class, ISubscription<TItem> =>
-        new SubscriptionDescriptor<TSubscription, TItem>(name, summary, access, platform, @internal, metadata ?? [], callerScoped);
+        new SubscriptionDescriptor<TSubscription, TItem>(name, summary, access, platform, @internal, metadata ?? [], callerScoped, unscoped);
 
     internal virtual Task<Result<object?>> InvokeAsync(IServiceProvider services, IOperation operation, OperationContext context,
         CancellationToken ct) =>
@@ -88,8 +93,9 @@ internal sealed class SubscriptionDescriptor<TSubscription, TItem> : OperationDe
     where TSubscription : class, ISubscription<TItem>
 {
     public SubscriptionDescriptor(string name, string summary, string access, bool platform, bool @internal, IReadOnlyList<Attribute> metadata,
-        bool callerScoped)
-        : base(name, summary, access, Effects.Read, Idempotency.Safe, platform, @internal, metadata, [], typeof(TSubscription), typeof(TItem), callerScoped) =>
+        bool callerScoped, bool unscoped)
+        : base(name, summary, access, Effects.Read, Idempotency.Safe, platform, @internal, metadata, [], typeof(TSubscription), typeof(TItem), callerScoped,
+            unscoped) =>
         Streams = true;
 
     internal override async IAsyncEnumerable<object?> SubscribeAsync(IServiceProvider services, IOperation operation, SubscriptionContext context,
@@ -104,8 +110,9 @@ internal sealed class SubscriptionDescriptor<TSubscription, TItem> : OperationDe
 }
 
 internal sealed class OperationDescriptor<TOperation, TResult>(string name, string summary, string access, Effects effects, Idempotency idempotency,
-    bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, bool callerScoped)
-    : OperationDescriptor(name, summary, access, effects, idempotency, platform, @internal, metadata, errors, typeof(TOperation), typeof(TResult), callerScoped)
+    bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, bool callerScoped, bool unscoped)
+    : OperationDescriptor(name, summary, access, effects, idempotency, platform, @internal, metadata, errors, typeof(TOperation), typeof(TResult), callerScoped,
+        unscoped)
     where TOperation : class, IOperation<TResult>
 {
     internal override async Task<Result<object?>> InvokeAsync(IServiceProvider services, IOperation operation, OperationContext context,

@@ -179,6 +179,23 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_process_is_confined_by_whatever_path_its_principal_reaches_the_dispatcher()
+    {
+        using var host = Build(work: true);
+        await host.StartAsync(Ct);
+        var (acme, _) = NewTenant();
+        var (globex, _) = NewTenant();
+
+        // Its principal, handed to code holding the Dispatcher rather than sent through its context.
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartHandedProcess(acme, globex), new SystemPrincipal("cron"), Ct)).IsSuccess);
+
+        await Until(() => postgres.CountAsync("select count(*) from oxbow_job where kind = 'levee_process' and args::text like '%' || $1 || '%' and state in ('completed', 'discarded')", globex), 1);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", globex));
+        Assert.Contains("scope.violation", await postgres.TextAsync("select errors::text from oxbow_job where args::text like '%' || $1 || '%'", globex), StringComparison.Ordinal);
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
     public async Task A_process_that_snoozes_before_its_first_await_runs_again()
     {
         using var host = Build(work: true);
@@ -199,6 +216,21 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         {
             await Task.Delay(100, Ct);
         }
+    }
+
+    [Fact]
+    public async Task An_unscoped_operation_sees_no_tenants_rows_and_a_platform_one_sees_them_all()
+    {
+        using var host = Build();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, ada) = NewTenant();
+        Assert.True((await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), acme, "mine"), ada, Ct)).IsSuccess);
+
+        var none = await dispatcher.SendAsync(new CountUnscoped(), new SystemPrincipal("anyone"), Ct);
+        var all = await dispatcher.SendAsync(new CountPlatform(), new SystemPrincipal("operator"), Ct);
+
+        Assert.Equal(0, none.Value);
+        Assert.True(all.Value >= 1);
     }
 
     private static (string Tenant, Member Member) NewTenant()

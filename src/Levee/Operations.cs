@@ -60,12 +60,21 @@ public sealed class OperationAttribute(string name, string access) : Attribute
 
     public Idempotency Idempotency { get; set; } = Idempotency.Safe;
 
-    /// <summary>Acts across every scope: its unit of work sees every row. Declared, never the default (LEVEE106).</summary>
+    /// <summary>
+    /// Acts across every scope: its unit of work sees every tenant's rows. An operator's, declared, never the default
+    /// (LEVEE106): what touches no one's rows is <see cref="Unscoped"/>.
+    /// </summary>
     public bool Platform { get; set; }
 
     /// <summary>
+    /// In no one's scope: its unit of work sees no tenant's rows, only what every scope shares (<c>LeveeSchema.Shared</c>).
+    /// For what anyone may call that reads nothing of a tenant's: a health check, a public lookup.
+    /// </summary>
+    public bool Unscoped { get; set; }
+
+    /// <summary>
     /// Runs in its caller's scope: the principal's (<see cref="IScopedPrincipal"/>), not one its input names. For a caller whose
-    /// credentials carry the tenant. One of this, <see cref="IScopedOperation"/> or <see cref="Platform"/> (LEVEE106).
+    /// credentials carry the tenant. One of this, <see cref="IScopedOperation"/>, <see cref="Platform"/> or <see cref="Unscoped"/> (LEVEE106).
     /// </summary>
     public bool CallerScoped { get; set; }
 

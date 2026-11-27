@@ -73,8 +73,9 @@ Its state is what its operations commit (a process manager's aggregate): a run t
 (`context.Snooze(delay)`) to come back later, starts again from the top and reads where it was. A snooze isn't an
 attempt, so `context.Attempt` doesn't say where a process is: its state does.
 
-A process started in a scope stays there: every step runs in that scope, whatever the step declares (its input's, its
-caller's, the platform's), even when the access policy would let its caller elsewhere. One the platform started may act
+A process started in a scope (or in none) stays there: every step runs in that scope, whatever the step declares (its
+input's, its caller's, the platform's), even when the access policy would let its caller elsewhere. Its principal is
+held to that scope, not its context: handed to anything else that sends, it's refused outside the scope all the same. One the platform started may act
 in any scope, as the platform could. A stored process resolves only to an input type some registered process takes;
 anything else is cancelled, never loaded. The generated
 registration finds a process in Application; its input is stored, so renaming the input type strands runs still queued,

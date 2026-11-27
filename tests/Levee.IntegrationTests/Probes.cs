@@ -433,3 +433,51 @@ internal sealed class EagerSnoozeProcess : IProcess<EagerSnoozeInput>
         return context.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Tenant, "after snooze"), ct);
     }
 }
+
+/// <summary>Counts the notes its unit of work sees, in no one's scope.</summary>
+[Operation("probe.count_unscoped", "anyone", Unscoped = true)]
+public sealed record CountUnscoped : IOperation<int>;
+
+/// <summary>Counts the notes its unit of work sees, across every scope.</summary>
+[Operation("probe.count_platform", "operator", Platform = true)]
+public sealed record CountPlatform : IOperation<int>;
+
+internal sealed class CountUnscopedHandler(INotes notes) : IOperationHandler<CountUnscoped, int>
+{
+    public async Task<Result<int>> HandleAsync(CountUnscoped operation, OperationContext context, CancellationToken ct) => (await notes.ListAsync(ct)).Count;
+}
+
+internal sealed class CountPlatformHandler(INotes notes) : IOperationHandler<CountPlatform, int>
+{
+    public async Task<Result<int>> HandleAsync(CountPlatform operation, OperationContext context, CancellationToken ct) => (await notes.ListAsync(ct)).Count;
+}
+
+/// <summary>Starts, from one tenant's operation, a process that hands its principal to something holding the Dispatcher.</summary>
+[Operation("probe.start_handed_process", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartHandedProcess(string Tenant, string Target) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StartHandedProcessHandler(IJobs jobs) : IOperationHandler<StartHandedProcess, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartHandedProcess operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new HandedInput(operation.Target), new JobOptions(MaxAttempts: 1), ct);
+        return Unit.Value;
+    }
+}
+
+public sealed record HandedInput(string Target);
+
+internal sealed class HandedProcess(Dispatcher dispatcher) : IProcess<HandedInput>
+{
+    public async Task RunAsync(HandedInput input, ProcessContext context, CancellationToken ct)
+    {
+        var written = await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), input.Target, "handed"), context.Principal, ct);
+        if (!written.IsSuccess)
+        {
+            throw new InvalidOperationException($"{written.Error.Code}: {written.Error.Message}");
+        }
+    }
+}
