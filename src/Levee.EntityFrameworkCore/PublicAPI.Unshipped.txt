@@ -1,6 +1,1 @@
 #nullable enable
-Levee.EntityFrameworkCore.SeparateContextAttribute
-Levee.EntityFrameworkCore.SeparateContextAttribute.Library.get -> string!
-Levee.EntityFrameworkCore.SeparateContextAttribute.SeparateContextAttribute(string! library) -> void
-Levee.EntityFrameworkCore.LeveeSeparateContextServiceCollectionExtensions
-static Levee.EntityFrameworkCore.LeveeSeparateContextServiceCollectionExtensions.AddLeveeSeparateContext<TContext>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Microsoft.EntityFrameworkCore.DbContextOptionsBuilder!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!

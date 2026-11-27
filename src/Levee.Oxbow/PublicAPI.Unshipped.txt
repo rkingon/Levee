@@ -1,3 +1,1 @@
 #nullable enable
-*REMOVED*Levee.Oxbow.OperationUnavailableException
-*REMOVED*Levee.Oxbow.OperationUnavailableException.OperationUnavailableException(string! message) -> void

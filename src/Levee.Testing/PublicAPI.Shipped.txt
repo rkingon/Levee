@@ -1,1 +1,30 @@
 #nullable enable
+Levee.Testing.LeveePostgres
+Levee.Testing.LeveePostgres.App.get -> string!
+Levee.Testing.LeveePostgres.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Levee.Testing.LeveePostgres.ExecuteAsync(string! sql, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Levee.Testing.LeveePostgres.Owner.get -> string!
+Levee.Testing.LeveePostgresOptions
+Levee.Testing.LeveePostgresOptions.<Clone>$() -> Levee.Testing.LeveePostgresOptions!
+Levee.Testing.LeveePostgresOptions.Equals(Levee.Testing.LeveePostgresOptions? other) -> bool
+Levee.Testing.LeveePostgresOptions.Grants.get -> string?
+Levee.Testing.LeveePostgresOptions.Grants.init -> void
+Levee.Testing.LeveePostgresOptions.Image.get -> string!
+Levee.Testing.LeveePostgresOptions.Image.init -> void
+Levee.Testing.LeveePostgresOptions.LeveePostgresOptions() -> void
+Levee.Testing.LeveePostgresOptions.LeveeSchema.get -> bool
+Levee.Testing.LeveePostgresOptions.LeveeSchema.init -> void
+Levee.Testing.LeveePostgresOptions.Migrate.get -> System.Func<string!, System.Threading.CancellationToken, System.Threading.Tasks.Task!>?
+Levee.Testing.LeveePostgresOptions.Migrate.init -> void
+Levee.Testing.LeveePostgresOptions.Role.get -> string!
+Levee.Testing.LeveePostgresOptions.Role.init -> void
+Levee.Testing.LeveePostgresOptions.Schema.get -> string!
+Levee.Testing.LeveePostgresOptions.Schema.init -> void
+Levee.Testing.LeveePostgresOptions.Sql.get -> string?
+Levee.Testing.LeveePostgresOptions.Sql.init -> void
+override Levee.Testing.LeveePostgresOptions.Equals(object? obj) -> bool
+override Levee.Testing.LeveePostgresOptions.GetHashCode() -> int
+override Levee.Testing.LeveePostgresOptions.ToString() -> string!
+static Levee.Testing.LeveePostgres.StartAsync(Levee.Testing.LeveePostgresOptions? options = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Levee.Testing.LeveePostgres!>!
+static Levee.Testing.LeveePostgresOptions.operator !=(Levee.Testing.LeveePostgresOptions? left, Levee.Testing.LeveePostgresOptions? right) -> bool
+static Levee.Testing.LeveePostgresOptions.operator ==(Levee.Testing.LeveePostgresOptions? left, Levee.Testing.LeveePostgresOptions? right) -> bool

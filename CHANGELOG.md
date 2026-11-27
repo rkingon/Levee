@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-alpha.2 (2026-11-27)
 
 ### Levee
 - `[Operation(Unscoped = true)]`: an operation in no one's scope, for what touches no tenant's rows (a health check, a
