@@ -574,11 +574,21 @@ internal sealed class StrictHandler : IOperationHandler<Strict, Unit>
     public Task<Result<Unit>> HandleAsync(Strict operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
 }
 
-[Operation("probe.computed", "member", Platform = true)]
-public sealed record Computed(string Email) : IOperation<Unit>
+/// <summary>Written by a converter that throws on a value it can't write.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(MailboxJson))]
+[ValueObject(typeof(string))]
+public sealed record Mailbox(string Address);
+
+public sealed class MailboxJson : System.Text.Json.Serialization.JsonConverter<Mailbox>
 {
-    public string Domain => Email.Split('@')[1];
+    public override Mailbox Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => new(reader.GetString()!);
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Mailbox value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Address.Split('@')[1]);
 }
+
+[Operation("probe.computed", "member", Platform = true)]
+public sealed record Computed(Mailbox Email) : IOperation<Unit>;
 
 internal sealed class ComputedHandler : IOperationHandler<Computed, Unit>
 {
@@ -619,7 +629,7 @@ public sealed class FifthAuditFixTests
         var outcomes = new Outcomes();
         var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
 
-        var result = await dispatcher.SendAsync(new Computed("no-at-sign"), Admin, CancellationToken.None);
+        var result = await dispatcher.SendAsync(new Computed(new Mailbox("no-at-sign")), Admin, CancellationToken.None);
 
         Assert.True(result.IsSuccess);
         Assert.Contains(outcomes.Seen, o => o.Operation.Name == "probe.computed");

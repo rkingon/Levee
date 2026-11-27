@@ -472,7 +472,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         foreach (var (what, walked) in new[] { ("input", (ITypeSymbol)type), ("result", contract.TypeArguments[0]) })
         {
-            if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } shapeless)
+            if (Shapeless(walked, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", input: what == "input") is { } shapeless)
             {
                 Report($"its {what}'s {shapeless.Path} {shapeless.Problem}");
                 return null;
@@ -653,10 +653,6 @@ public sealed class OperationGenerator : IIncrementalGenerator
     private static bool IsUntypedNamespace(ITypeSymbol type) =>
         type.ContainingNamespace?.ToDisplayString() is "System.Collections" or "System.Dynamic";
 
-    /// <summary>
-    /// The path to the first of the app's types in a contract, at any depth, that a converter of its own writes (on the type
-    /// or on the member) without saying what it writes (<c>[ValueObject]</c>), or null.
-    /// </summary>
     /// <summary>What a value object may say it writes: one JSON scalar, the set <c>LeveeJson</c> holds the wire to.</summary>
     private static readonly HashSet<string> ScalarWires =
     [
@@ -664,7 +660,26 @@ public sealed class OperationGenerator : IIncrementalGenerator
         "System.Guid", "System.DateOnly", "System.TimeOnly", "System.TimeSpan", "System.DateTime", "System.DateTimeOffset", "System.Uri",
     ];
 
-    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path)
+    /// <summary>The collections a contract may carry: each read back as the wire writes it.</summary>
+    private static readonly HashSet<string> ContractCollections =
+    [
+        "System.Collections.Generic.List<T>", "System.Collections.Generic.IList<T>", "System.Collections.Generic.ICollection<T>",
+        "System.Collections.Generic.IEnumerable<T>", "System.Collections.Generic.IReadOnlyList<T>", "System.Collections.Generic.IReadOnlyCollection<T>",
+        "System.Collections.Generic.HashSet<T>", "System.Collections.Generic.ISet<T>", "System.Collections.Generic.IReadOnlySet<T>",
+        "System.Collections.Generic.Dictionary<TKey, TValue>", "System.Collections.Generic.IDictionary<TKey, TValue>",
+        "System.Collections.Generic.IReadOnlyDictionary<TKey, TValue>",
+    ];
+
+    private const string Language = "Fix: a contract is made of what the wire reads back as it writes it: strings, numbers, bool, Guid, dates and times, "
+        + "enums and value objects; arrays, List<T>, IReadOnlyList<T> and the like, and dictionaries keyed by string; positional records, "
+        + "and abstract records whose every subtype has a discriminator ([JsonDerivedType(typeof(T), \"name\")])";
+
+    /// <summary>
+    /// The path to the first type in a contract, at any depth, outside the contract language (what the wire reads back as it
+    /// writes it), with what's wrong, or null. An allow-list: what isn't named here is refused, so no shape the reader can't
+    /// take back gets in by being one nobody thought of.
+    /// </summary>
+    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input)
     {
         // System.Text.Json's own converters (JsonStringEnumConverter) write what the schema exporter knows; an app's don't, nor
         // does a library's attribute deriving JsonConverterAttribute, which makes its converter itself.
@@ -701,20 +716,36 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (type is IArrayTypeSymbol array)
         {
-            return Shapeless(array.ElementType, seen, path);
+            return Shapeless(array.ElementType, seen, path, input);
         }
         if (type is not INamedTypeSymbol named)
         {
-            return null;
+            return (path.Length == 0 ? type.ToDisplayString() : path, $"is {type.ToDisplayString()}, which isn't in the contract language. {Language}");
         }
-        foreach (var argument in named.TypeArguments)
+        if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T || named.TypeKind == TypeKind.Enum)
         {
-            if (Shapeless(argument, seen, path) is { } inArgument)
-            {
-                return inArgument;
-            }
+            return named.TypeKind == TypeKind.Enum ? null : Shapeless(named.TypeArguments[0], seen, path, input);
         }
-        if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)))
+        var display = named.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString();
+        if (named.ContainingNamespace?.ToDisplayString() is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal)
+            || ns.StartsWith("Microsoft.", StringComparison.Ordinal)))
+        {
+            if (ScalarWires.Contains(display) || display == "System.Version")
+            {
+                return null;
+            }
+            if (ContractCollections.Contains(named.OriginalDefinition.ToDisplayString()))
+            {
+                if (named.TypeArguments.Length == 2 && named.TypeArguments[0] is var key && key.TypeKind != TypeKind.Enum
+                    && !ScalarWires.Contains(key.WithNullableAnnotation(NullableAnnotation.NotAnnotated).ToDisplayString()))
+                {
+                    return (path.Length == 0 ? display : path, $"is a dictionary keyed by {key.ToDisplayString()}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum");
+                }
+                return named.TypeArguments.Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null);
+            }
+            return (path.Length == 0 ? display : path, $"is {display}, which isn't in the contract language. {Language}");
+        }
+        if (display == "Levee.Unit")
         {
             return null;
         }
@@ -737,19 +768,90 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, "is written by a converter of its own, which no schema can read, so every client sees it as anything at all. Fix: declare what the converter writes on the type, [ValueObject(typeof(string))] (with Format or Pattern if it has one)");
         }
-        // As System.Text.Json chooses: a public parameterless constructor, the only public one, or the one [JsonConstructor] marks.
-        if (!Converted(named) && !Declared(named) && named.TypeKind is TypeKind.Class or TypeKind.Struct && !named.IsAbstract
-            && named.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public && !c.IsImplicitlyDeclared || c.DeclaredAccessibility == Accessibility.Public && c.Parameters.Length == 0).ToList() is { Count: > 1 } constructors
-            && !constructors.Any(c => c.Parameters.Length == 0)
-            && !named.InstanceConstructors.Any(c => c.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConstructorAttribute")))
-        {
-            return (here, "has more than one public constructor and none marked [JsonConstructor], so the wire can write it but not read it back: a caller's JSON for it is refused. Fix: keep one public constructor (a positional record's), or mark the one to use [JsonConstructor]");
-        }
         if (Declared(named) && !Converted(named))
         {
             return (here, "is a [ValueObject] with no converter of its own, so the serializer writes its members, not the scalar its schema shows. Fix: put the converter that writes it as that scalar on the type, [JsonConverter(typeof(...))] beside [ValueObject]");
         }
-        foreach (var member in named.GetMembers())
+        if (Declared(named))
+        {
+            return null;
+        }
+        if (named.TypeKind == TypeKind.Interface)
+        {
+            return (here, $"is an interface, which the wire writes but can't read back. {Language}");
+        }
+        if (named.TypeKind is not (TypeKind.Class or TypeKind.Struct))
+        {
+            return (here, $"is a {named.TypeKind.ToString().ToLowerInvariant()} of the app's, which isn't in the contract language: a value is a value object, an object a record. {Language}");
+        }
+        if (named.AllInterfaces.Any(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T))
+        {
+            return (here, $"is a collection of the app's own, which the wire reads as the collection it derives from, not as itself. {Language}");
+        }
+        var subtypes = named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute").ToList();
+        if (named.IsAbstract)
+        {
+            if (subtypes.Count == 0 || subtypes.Any(d => d.ConstructorArguments.Length < 2))
+            {
+                return (here, $"is abstract, and the wire reads one only by a discriminator each subtype declares. {Language}");
+            }
+            return subtypes.Select(d => d.ConstructorArguments[0].Value as ITypeSymbol).OfType<ITypeSymbol>()
+                .Select(t => Shapeless(t, seen, path, input)).FirstOrDefault(p => p is not null);
+        }
+        // As System.Text.Json chooses: the one [JsonConstructor] marks, a public parameterless one, or the only public one.
+        var publicConstructors = named.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public).ToList();
+        var constructor = named.InstanceConstructors.FirstOrDefault(c => c.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonConstructorAttribute"))
+            ?? publicConstructors.FirstOrDefault(c => c.Parameters.Length == 0)
+            ?? (publicConstructors.Count == 1 ? publicConstructors[0] : null);
+        if (constructor is null)
+        {
+            return (here, "has more than one public constructor and none the wire picks, so it writes it but can't read it back. Fix: a positional record, its one constructor");
+        }
+        // A constructor body of the app's own decides which member each of its values lands in, where no schema shows it; a
+        // record's positional constructor can't, nor can one taking a single value.
+        var positional = constructor.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.RecordDeclarationSyntax { ParameterList: not null };
+        if (constructor.Parameters.Length > 1 && !positional && constructor.DeclaringSyntaxReferences.Length > 0)
+        {
+            return (here, "is read through a constructor of its own, which decides which member each value lands in where no schema shows it. Fix: a positional record, whose constructor sets each member from the parameter of its name");
+        }
+        // Every member the wire writes, the type's own and inherited, most derived first.
+        var wired = new List<(ISymbol Member, ITypeSymbol Type)>();
+        for (var t = named; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+        {
+            foreach (var member in t.GetMembers())
+            {
+                if (Wired(member) is { } memberType && !wired.Any(w => w.Member.Name == member.Name))
+                {
+                    wired.Add((member, memberType));
+                }
+            }
+        }
+        foreach (var parameter in constructor.Parameters)
+        {
+            var bound = wired.FirstOrDefault(w => string.Equals(w.Member.Name, parameter.Name, StringComparison.OrdinalIgnoreCase));
+            if (bound.Member is null || !SymbolEqualityComparer.Default.Equals(bound.Type, parameter.Type))
+            {
+                return (here, $"has a constructor parameter {parameter.Name} that no member of its name and type carries, so the wire can't read it. Fix: a positional record, its parameters its members");
+            }
+            // A positional member declared again (to check it, say), set from another parameter than its own.
+            if (positional && bound.Member.DeclaringSyntaxReferences.FirstOrDefault()?.GetSyntax() is Microsoft.CodeAnalysis.CSharp.Syntax.PropertyDeclarationSyntax declared
+                && (declared.Initializer is null || declared.Initializer.Value.DescendantNodesAndSelf().OfType<Microsoft.CodeAnalysis.CSharp.Syntax.IdentifierNameSyntax>()
+                    .Any(id => id.Identifier.Text != parameter.Name && constructor.Parameters.Any(p => p.Name == id.Identifier.Text))))
+            {
+                return (path.Length == 0 ? bound.Member.Name : $"{path}.{bound.Member.Name}", $"is declared again on {named.Name}, set from something other than its parameter {parameter.Name}, so a value can land in another member. Fix: let the positional parameter be the member");
+            }
+        }
+        if (input && wired.FirstOrDefault(w => w.Member is IPropertySymbol { SetMethod: null or { DeclaredAccessibility: not Accessibility.Public } }
+                && !constructor.Parameters.Any(p => string.Equals(p.Name, w.Member.Name, StringComparison.OrdinalIgnoreCase))) is { Member: { } writeOnly })
+        {
+            return (path.Length == 0 ? writeOnly.Name : $"{path}.{writeOnly.Name}", "is a member the wire writes but never reads, so a caller's value for it is dropped, not refused. Fix: take it as a positional parameter, or move it off the input: a method, the result, or an interface's member implemented explicitly (string IScopedOperation.ScopeKey => Tenant)");
+        }
+        var chain = new List<INamedTypeSymbol>();
+        for (var t = named; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
+        {
+            chain.Add(t);
+        }
+        foreach (var member in chain.SelectMany(t => t.GetMembers()))
         {
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
             // Before Wired, which leaves an always-ignored member out. JsonIgnoreCondition.Never is 0; with no condition it's Always.
@@ -775,28 +877,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, "has a converter of its own on the member, which outranks its type's and says nothing a schema can show. Fix: put the converter on the member's type itself, with [ValueObject(typeof(string))] saying the JSON scalar it writes");
             }
-            if (Shapeless(memberType, seen, at) is { } found)
+            if (Shapeless(memberType, seen, at, input) is { } found)
             {
                 return found;
             }
         }
-        // A declared subtype is written with its own members, wherever its base is.
-        foreach (var derived in named.GetAttributes().Where(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonDerivedTypeAttribute"))
-        {
-            if (derived.ConstructorArguments.FirstOrDefault().Value is ITypeSymbol subtype && Shapeless(subtype, seen, path) is { } inDerived)
-            {
-                return inDerived;
-            }
-        }
-        // An interface is written with the members of every interface it extends.
-        foreach (var extended in named.TypeKind == TypeKind.Interface ? named.Interfaces : [])
-        {
-            if (Shapeless(extended, seen, path) is { } inExtended)
-            {
-                return inExtended;
-            }
-        }
-        return named.BaseType is { SpecialType: not SpecialType.System_Object } baseType ? Shapeless(baseType, seen, path) : null;
+        return null;
     }
 
     /// <summary>The path to the first member of an input, at any depth, typed as anything at all (object, raw JSON, dynamic), or null.</summary>

@@ -119,8 +119,6 @@ public sealed class FifthAuditTests
     [InlineData("public sealed record Watch(Auth Auth) : ISubscription<int>;\n[System.Text.Json.Serialization.JsonDerivedType(typeof(KeyAuth), \"key\")] public abstract record Auth;\npublic sealed record KeyAuth([property: Secret] string Key) : Auth;", true)]
     [InlineData("public sealed record Watch(string Topic) : ISubscription<int> { [Secret] private string? Kept { get; init; } }", false)]
     [InlineData("public interface IKeyed { [Secret] string Key { get; } }\npublic sealed record Watch(string Key) : ISubscription<int>, IKeyed;", true)]
-    [InlineData("public sealed record Leaf([property: Secret] string Key);\npublic sealed class Leaves : System.Collections.Generic.List<Leaf>;\npublic sealed record Watch(Leaves Items) : ISubscription<int>;", true)]
-    [InlineData("public interface IKeyed { [Secret] string Key { get; } }\npublic interface IAuth : IKeyed;\npublic sealed record Auth(string Key) : IAuth;\npublic sealed record Watch(IAuth Auth) : ISubscription<int>;", true)]
     [InlineData("public sealed record Auth([property: Secret] string Key);\npublic sealed record Watch(string Topic) : ISubscription<int> { [System.Text.Json.Serialization.JsonInclude] public Auth? Credentials; }", true)]
     public async Task A_subscriptions_input_holds_no_secret(string declaration, bool refused)
     {

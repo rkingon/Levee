@@ -101,3 +101,31 @@ public sealed class CatalogProofValueObjectTests
     [Fact]
     public void Value_objects_anywhere_in_an_input_prove_as_the_wire_carries_them() => OperationCatalog.Prove([("review.line", typeof(Line))]);
 }
+
+public sealed class ContractLanguageTests
+{
+    public sealed record Priced(Dictionary<string, System.Collections.ObjectModel.ReadOnlyCollection<int>> Price);
+
+    [JsonDerivedType(typeof(Retail), "retail")]
+    [JsonDerivedType(typeof(Bundle), "bundle")]
+    public abstract record Tagged;
+    public sealed record Retail(int Amount) : Tagged;
+    public sealed record Bundle(System.Collections.ObjectModel.ReadOnlyCollection<int> Amounts) : Tagged;
+    public sealed record TaggedPrice(Tagged Price);
+
+    public sealed record Timing(TimeSpan Every, TimeSpan? Grace, Version Api);
+    public sealed record Folder(string Name, Folder? Parent = null);
+    public sealed record Keyed(Dictionary<DateOnly, int> ByDay, Dictionary<Guid, string> Names);
+
+    [Theory]
+    [InlineData(typeof(Priced))]
+    [InlineData(typeof(TaggedPrice))]
+    public void Every_branch_and_value_a_contract_can_carry_is_in_the_language(Type contract) =>
+        Assert.Contains("isn't in the contract language", Assert.Throws<InvalidOperationException>(() => OperationCatalog.Prove([("review.read", contract)])).Message, StringComparison.Ordinal);
+
+    [Theory]
+    [InlineData(typeof(Timing))]
+    [InlineData(typeof(Folder))]
+    [InlineData(typeof(Keyed))]
+    public void What_the_wire_reads_back_starts(Type contract) => OperationCatalog.Prove([("review.read", contract)]);
+}

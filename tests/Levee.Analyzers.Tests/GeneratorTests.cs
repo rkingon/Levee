@@ -157,12 +157,12 @@ public sealed class GeneratorTests
 
     [Theory]
     [InlineData("""[Operation("notes.list", "member")] public sealed record ListNotes : IOperation<int>;""", true)]
-    [InlineData("""[Operation("notes.list", "member", Platform = true)] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { public string ScopeKey => Tenant; }""", true)]
-    [InlineData("""[Operation("notes.list", "member")] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { public string ScopeKey => Tenant; }""", false)]
+    [InlineData("""[Operation("notes.list", "member", Platform = true)] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { string IScopedOperation.ScopeKey => Tenant; }""", true)]
+    [InlineData("""[Operation("notes.list", "member")] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { string IScopedOperation.ScopeKey => Tenant; }""", false)]
     [InlineData("""[Operation("notes.list", "member", Platform = true)] public sealed record ListNotes : IOperation<int>;""", false)]
     [InlineData("""[Operation("notes.list", "member", CallerScoped = true)] public sealed record ListNotes : IOperation<int>;""", false)]
     [InlineData("""[Operation("notes.list", "member", CallerScoped = true, Platform = true)] public sealed record ListNotes : IOperation<int>;""", true)]
-    [InlineData("""[Operation("notes.list", "member", CallerScoped = true)] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { public string ScopeKey => Tenant; }""", true)]
+    [InlineData("""[Operation("notes.list", "member", CallerScoped = true)] public sealed record ListNotes(string Tenant) : IOperation<int>, IScopedOperation { string IScopedOperation.ScopeKey => Tenant; }""", true)]
     public async Task An_operation_is_scoped_or_declared_platform_wide(string declaration, bool refused)
     {
         var output = await Probe.CompileAsync("Contracts", $"using Levee;\nnamespace App;\n{declaration}", "App", Levee);

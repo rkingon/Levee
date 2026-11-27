@@ -3,10 +3,11 @@ namespace Levee.Analyzers.Tests;
 public sealed class Alpha2NumberHandlingAuditTests
 {
     [Theory]
-    [InlineData("IAmount", "Strict", false)]
+    [InlineData("IAmount", "Strict", true)]
     [InlineData("IAmount", "WriteAsString", true)]
-    [InlineData("IQuote", "Strict", false)]
+    [InlineData("IQuote", "Strict", true)]
     [InlineData("IQuote", "WriteAsString", true)]
+    // An interface result is outside the contract language whatever its members say: the wire can't read one back.
     public async Task Effective_result_interface_members_follow_the_number_rule(string result, string mode, bool refused)
     {
         var compiled = await Probe.CompileAsync(new Probe.Settings("Contracts"), $$"""

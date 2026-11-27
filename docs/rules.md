@@ -572,6 +572,14 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
 - **Typed all the way down**: no member, at any depth (fields `[JsonInclude]` adds, a base record's, a declared derived
   type's, the items of a collection of the app's own), is `object`, `dynamic`, raw JSON, `Array` or a non-generic
   collection (`ArrayList`, `Hashtable`, `ExpandoObject`). Redaction and the secret check go by type, and the wire's schema says nothing about an untyped member.
+- **Contracts are written in the contract language**: what the wire reads back as it writes it, and nothing else. Scalars
+  (strings, numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays,
+  `List<T>`, `IReadOnlyList<T>` and their kin, and dictionaries keyed by a scalar or enum; positional records (or records
+  whose every member sets on its own), and abstract records whose every subtype declares a discriminator
+  (`[JsonDerivedType(typeof(Card), "card")]`). Not an interface (written, never read back), a collection of the app's own,
+  or a constructor of two or more values written by hand, which decides where each value lands where no schema shows
+  it. An input's every member is one it reads: a computed member, or `ScopeKey` implemented publicly, is a caller's
+  value silently dropped (implement `IScopedOperation.ScopeKey` explicitly). The catalog checks the same where it's made.
 - **Value objects say what they write**: a type of the app's that a converter of its own writes, in the input or the
   result, declares the primitive it's written as. No schema can read a converter, so without it every client and agent
   sees the member as anything at all. A value object is one JSON scalar (a string, number, bool, enum, Guid, date or

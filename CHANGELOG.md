@@ -37,11 +37,13 @@
   are numbers both ways (Web's reading of one from a string is off). A value's JSON is its value object's own: a
   converter goes on a `[ValueObject]` type, never a member, and a `[ValueObject]` has one. A contract can't loosen the wire
   (`[JsonNumberHandling]`, `[JsonUnmappedMemberHandling(Skip)]`, `[JsonExtensionData]`, any `[JsonIgnore]`: a member off
-  the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. The catalog proves every
-  contract against the wire where it's made (a host's start, the generated catalog test), both ways: a document made from its schema is read by the wire and, for an input, written
-  back as it was, so a shape the reader refuses, or a caller's value read into nothing (a constructor parameter named
-  otherwise, a member it only writes), is refused by operation name, so none fails only when a caller,
-  or a listing of the catalog, first meets it. A value object's schema and the
+  the wire is skipped when sent, not refused, so a contract carries what's on its wire and nothing else). Its resolver is Levee's own and sealed, with nothing to add to. Contracts are written in a closed language: what the wire reads back as it writes it. Scalars (strings,
+  numbers, bool, Guid, dates and times, `TimeSpan`, `Uri`, `Version`), enums and value objects; arrays, `List<T>`,
+  `IReadOnlyList<T>` and the like, and dictionaries keyed by a scalar; positional records (or records whose every member is
+  set on its own), and abstract records whose every subtype has a discriminator. LEVEE104 refuses anything else, an
+  interface, a collection of the app's own, a constructor of two or more values written by hand (which decides where each
+  lands) and, on an input, a member it only writes; the catalog checks the same, from the wire's own metadata, where it's
+  made (a host's start, the generated catalog test), naming each operation it refuses. A value object's schema and the
   JSON it accepts come from one description of its wire: an enum by name, a nullable one with null; keyed in a
   dictionary, it keeps its converter's property-name methods.
 - **Breaking:** the unit of work is Levee's alone. `IUnitOfWorkFactory`, `IUnitOfWork` and `AuditEntry` are internal: an

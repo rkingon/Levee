@@ -173,7 +173,7 @@ public sealed class OperationCatalog
         try
         {
             LeveeJson.Schema(type);
-            return Unconstructible(type) ?? LeveeJson.Unreadable(type, input);
+            return Outside(type, input);
         }
         catch (InvalidOperationException e)
         {
@@ -181,53 +181,95 @@ public sealed class OperationCatalog
         }
     }
 
+    private static readonly HashSet<Type> Scalars =
+    [
+        typeof(string), typeof(char), typeof(bool), typeof(byte), typeof(sbyte), typeof(short), typeof(ushort), typeof(int), typeof(uint),
+        typeof(long), typeof(ulong), typeof(float), typeof(double), typeof(decimal), typeof(Guid), typeof(DateOnly), typeof(TimeOnly),
+        typeof(TimeSpan), typeof(DateTime), typeof(DateTimeOffset), typeof(Uri), typeof(Version), typeof(Unit),
+    ];
+
+    private static readonly HashSet<Type> Collections =
+    [
+        typeof(List<>), typeof(IList<>), typeof(ICollection<>), typeof(IEnumerable<>), typeof(IReadOnlyList<>), typeof(IReadOnlyCollection<>),
+        typeof(HashSet<>), typeof(ISet<>), typeof(IReadOnlySet<>), typeof(Dictionary<,>), typeof(IDictionary<,>), typeof(IReadOnlyDictionary<,>),
+    ];
+
     /// <summary>
-    /// The first type the contract carries that the wire can write but not read back: an object with no constructor
-    /// System.Text.Json will call (two public constructors and no [JsonConstructor], an abstract type it declares no
-    /// subtypes of). The schema would promise what every caller's input then fails on.
+    /// The first type a contract carries outside the contract language, with why, or null: the build's LEVEE104 again, as the
+    /// wire's own metadata sees it, for whatever the build didn't. An allow-list, so a shape nobody thought of is refused, not
+    /// published: scalars, enums, value objects, the collections above, objects the wire constructs (an input's every member
+    /// read, not only written), and abstract types whose every subtype has a discriminator.
     /// </summary>
-    private static string? Unconstructible(Type root)
+    private static string? Outside(Type root, bool input)
     {
         var seen = new HashSet<Type>();
         var next = new Stack<Type>([root]);
         while (next.TryPop(out var type))
         {
-            if (!seen.Add(type))
+            type = Nullable.GetUnderlyingType(type) ?? type;
+            if (!seen.Add(type) || type.IsEnum || Scalars.Contains(type) || LeveeJson.IsValueObject(type))
             {
                 continue;
             }
-            var info = LeveeJson.Options.GetTypeInfo(type);
-            switch (info.Kind)
+            if (type.IsArray)
             {
-                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object:
-                    if (info.PolymorphismOptions is { } polymorphic)
-                    {
-                        foreach (var derived in polymorphic.DerivedTypes)
-                        {
-                            next.Push(derived.DerivedType);
-                        }
-                        if (type.IsAbstract || type.IsInterface)
-                        {
-                            break;
-                        }
-                    }
-                    if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
-                    {
-                        return $"{type.Name} has no constructor the wire can call, so a caller's JSON for it is refused. Fix: give it one public constructor "
-                            + "(a positional record's), or mark the one to use [JsonConstructor] (LEVEE104).";
-                    }
-                    foreach (var member in info.Properties)
-                    {
-                        next.Push(member.PropertyType);
-                    }
-                    break;
-                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Enumerable:
-                    next.Push(info.ElementType!);
-                    break;
-                case System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Dictionary:
-                    next.Push(info.KeyType!);
-                    next.Push(info.ElementType!);
-                    break;
+                next.Push(type.GetElementType()!);
+                continue;
+            }
+            if (type.IsGenericType && Collections.Contains(type.GetGenericTypeDefinition()))
+            {
+                var arguments = type.GetGenericArguments();
+                if (arguments.Length == 2 && !(arguments[0].IsEnum || Scalars.Contains(arguments[0])))
+                {
+                    return $"{type.Name} is keyed by {arguments[0].Name}, which isn't in the contract language. Fix: key it by a string, number, Guid, date or enum (LEVEE104).";
+                }
+                foreach (var argument in arguments)
+                {
+                    next.Push(argument);
+                }
+                continue;
+            }
+            var language = " Fix: a contract is made of what the wire reads back as it writes it: scalars, enums, value objects, arrays and "
+                + "List<T>-like collections, string-keyed dictionaries, positional records, and abstract records whose every subtype has a "
+                + "discriminator (LEVEE104).";
+            if (type.Namespace is { } ns && (ns == "System" || ns.StartsWith("System.", StringComparison.Ordinal) || ns.StartsWith("Microsoft.", StringComparison.Ordinal)))
+            {
+                return $"{type.Name} isn't in the contract language." + language;
+            }
+            if (type.IsInterface)
+            {
+                return $"{type.Name} is an interface, which the wire writes but can't read back." + language;
+            }
+            var info = LeveeJson.Options.GetTypeInfo(type);
+            if (info.Kind != System.Text.Json.Serialization.Metadata.JsonTypeInfoKind.Object)
+            {
+                return $"{type.Name} isn't in the contract language." + language;
+            }
+            if (type.IsAbstract)
+            {
+                if (info.PolymorphismOptions is not { } polymorphic || polymorphic.DerivedTypes.Count == 0
+                    || polymorphic.DerivedTypes.Any(d => d.TypeDiscriminator is null))
+                {
+                    return $"{type.Name} is abstract, and the wire reads one only by a discriminator each subtype declares." + language;
+                }
+                foreach (var derived in polymorphic.DerivedTypes)
+                {
+                    next.Push(derived.DerivedType);
+                }
+                continue;
+            }
+            if (info.CreateObject is null && info.ConstructorAttributeProvider is null)
+            {
+                return $"{type.Name} has no constructor the wire can call, so it writes it but can't read it back. Fix: a positional record (LEVEE104).";
+            }
+            if (input && info.Properties.FirstOrDefault(p => p.Set is null && p.AssociatedParameter is null) is { } writeOnly)
+            {
+                return $"{type.Name}.{writeOnly.Name} is a member the wire writes but never reads, so a caller's value for it is dropped, not refused. "
+                    + "Fix: take it as a positional parameter, or move it off the input (LEVEE104).";
+            }
+            foreach (var member in info.Properties)
+            {
+                next.Push(member.PropertyType);
             }
         }
         return null;
