@@ -667,14 +667,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return path.Length == 0 ? named.Name : $"{path} ({named.Name})";
         }
-        foreach (var member in named.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        foreach (var member in named.GetMembers())
         {
-            var memberType = member switch
-            {
-                IPropertySymbol { IsIndexer: false, DeclaredAccessibility: Accessibility.Public } p => p.Type,
-                _ => null,
-            };
-            if (memberType is null)
+            if (Wired(member) is not { } memberType)
             {
                 continue;
             }
@@ -723,19 +718,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return null;
         }
-        // What the wire carries: public properties, and any field or property [JsonInclude] adds; an interface's, with those it inherits.
+        // An interface's members include those it inherits.
         var declared = named.TypeKind == TypeKind.Interface ? named.AllInterfaces.Prepend(named).SelectMany(i => i.GetMembers()) : named.GetMembers();
-        foreach (var member in declared.Where(m => !m.IsStatic && !m.IsImplicitlyDeclared))
+        foreach (var member in declared)
         {
-            var included = member.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
-            var memberType = member switch
-            {
-                IPropertySymbol { IsIndexer: false } p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
-                IFieldSymbol f when included => f.Type,
-                _ => null,
-            };
             var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
-            if (memberType is not null && Untyped(memberType, seen, at) is { } found)
+            if (Wired(member) is { } memberType && Untyped(memberType, seen, at) is { } found)
             {
                 return found;
             }
@@ -768,6 +756,32 @@ public sealed class OperationGenerator : IIncrementalGenerator
             }
         }
         return null;
+    }
+
+    /// <summary>
+    /// The member's type if System.Text.Json carries it, as its default member selection does: a public property, or a field
+    /// or non-public property [JsonInclude] adds, unless [JsonIgnore] always drops it. Null for anything else.
+    /// </summary>
+    private static ITypeSymbol? Wired(ISymbol member)
+    {
+        if (member.IsStatic || member.IsImplicitlyDeclared)
+        {
+            return null;
+        }
+        var attributes = member.GetAttributes();
+        // A condition other than Always (WhenWritingNull, WhenWritingDefault) still carries the member some of the time.
+        if (attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
+            && a.NamedArguments.All(n => n.Key != "Condition" || n.Value.Value is 1)))
+        {
+            return null;
+        }
+        var included = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
+        return member switch
+        {
+            IPropertySymbol { IsIndexer: false } p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
+            IFieldSymbol f when included => f.Type,
+            _ => null,
+        };
     }
 
     private static IEnumerable<INamedTypeSymbol> Bases(INamedTypeSymbol type)
@@ -817,26 +831,15 @@ public sealed class OperationGenerator : IIncrementalGenerator
         // The BCL's own types hold no [Secret]; their type arguments, above, may.
         foreach (var t in declaring.Where(t => t.ContainingNamespace?.ToDisplayString() is not "System" && t.ContainingNamespace?.ToDisplayString().StartsWith("System.", StringComparison.Ordinal) != true))
         {
-            // What the wire carries: public members and any [JsonInclude] adds, less any always ignored.
-            foreach (var member in t.GetMembers().Where(m => !m.IsStatic && !m.IsImplicitlyDeclared && m is IPropertySymbol { IsIndexer: false } or IFieldSymbol))
+            foreach (var member in t.GetMembers())
             {
-                var attributes = member.GetAttributes();
-                var included = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIncludeAttribute");
-                var ignored = attributes.Any(a => a.AttributeClass?.ToDisplayString() == "System.Text.Json.Serialization.JsonIgnoreAttribute"
-                    && a.NamedArguments.All(n => n.Key != "Condition" || n.Value.Value is 1));
-                var memberType = member switch
-                {
-                    IPropertySymbol p when p.DeclaredAccessibility == Accessibility.Public || included => p.Type,
-                    IFieldSymbol f when included => f.Type,
-                    _ => null,
-                };
-                if (memberType is null || ignored)
+                if (Wired(member) is not { } memberType)
                 {
                     continue;
                 }
                 var at = path.Length == 0 ? member.Name : $"{path}.{member.Name}";
                 // Marked on the member, or on the interface member it implements.
-                var marked = attributes.Any(IsSecret) || (member is IPropertySymbol property && named.AllInterfaces
+                var marked = member.GetAttributes().Any(IsSecret) || (member is IPropertySymbol property && named.AllInterfaces
                     .SelectMany(i => i.GetMembers().OfType<IPropertySymbol>())
                     .Any(i => i.GetAttributes().Any(IsSecret) && SymbolEqualityComparer.Default.Equals(named.FindImplementationForInterfaceMember(i), property)));
                 if (marked)
