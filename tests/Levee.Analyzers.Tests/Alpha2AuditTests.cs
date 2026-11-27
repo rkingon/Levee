@@ -281,7 +281,7 @@ public sealed class Alpha2AuditTests
     [Theory]
     [InlineData("ValueTask.FromResult<Error?>(request.Principal is SystemPrincipal ? null : Error.Forbidden(\"access.denied\", \"No.\"))", true)]
     [InlineData("ValueTask.FromResult<Error?>(request.Scope.Key == \"acme\" ? null : Error.Forbidden(\"access.denied\", \"No.\"))", false)]
-    [InlineData("ValueTask.FromResult<Error?>(request is { Scope.Platform: true } ? null : Error.Forbidden(\"access.denied\", \"No.\"))", false)]
+    [InlineData("ValueTask.FromResult<Error?>(request is { Scope.Key: \"acme\" } ? null : Error.Forbidden(\"access.denied\", \"No.\"))", false)]
     [InlineData("ValueTask.FromResult(Decide(request)); private static Error? Decide(AccessRequest request) => request.Scope.Key is null ? Error.Forbidden(\"access.denied\", \"No.\") : null", false)]
     [InlineData("ValueTask.FromResult(Elsewhere.Decide(request))", true)]
     public async Task An_access_policy_reads_the_scope_it_authorizes(string body, bool refused)

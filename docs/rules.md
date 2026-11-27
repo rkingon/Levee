@@ -680,10 +680,15 @@ internal sealed class ScoreTurn : IProcess<TurnScored> { ... }
 
 An input-scoped operation runs in the scope its input names, and row-level security then holds it to exactly that
 scope: the one the caller picked. So the access policy decides who may act *where*, not only who may act. A policy that
-grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant.
+grants by the access word alone (`"member" => request.Principal is Member ? null : ...`) lets any member into any tenant,
+and so does one that asks only whether the scope is the platform's: `Scope.Platform` is whether there's a key, not which.
 
 ```csharp
 // Wrong: any member, in whatever tenant the input names
+"member" => request.Principal is Member ? null : Error.Forbidden("access.members_only", "Sign in."),
+
+// Wrong: refuses the platform's scope, then grants any member any tenant
+"member" when request.Scope.Platform => Error.Forbidden("access.members_only", "Members act in a tenant."),
 "member" => request.Principal is Member ? null : Error.Forbidden("access.members_only", "Sign in."),
 
 // Right: a member, in their own tenant; the platform's scope only to its operators
@@ -691,6 +696,9 @@ grants by the access word alone (`"member" => request.Principal is Member ? null
 "platform-admin" => request.Scope.Platform && request.Principal is Operator ? null : Error.Forbidden("access.platform", "Operators only."),
 ```
 
-The build refuses a policy (outside tests) that never reads `request.Scope`, in a member access, a property pattern
-(`request is { Scope.Platform: true }`) or a deconstruction, in its own code: a helper of its own that reads it counts,
-one elsewhere doesn't. Reading it is the build's to see; comparing it rightly is the policy's, and the access tests'.
+The build refuses a policy (outside tests) that never reads the scope's `Key`, in a member access
+(`request.Scope.Key`), a property pattern (`request is { Scope.Key: var tenant }`) or a deconstruction that binds it, in its
+own code: a helper of its own that takes the scope and reads `Key` counts, one elsewhere doesn't. Reading only
+`Scope.Platform` doesn't count. A policy that grants nothing (every path returns one of `Error`'s refusals, or throws)
+needn't read it. Reading it is the build's to see; comparing it rightly is the policy's, and the access
+tests'.

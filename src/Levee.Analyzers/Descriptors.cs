@@ -180,7 +180,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ScopeUnread = Rule(
         "LEVEE113", "An access policy decides by scope",
-        "{0} authorizes without reading the request's Scope, but an input-scoped operation runs in whatever scope its input names, so a caller it grants is granted every tenant's rows. Fix: decide who may act in which scope: compare request.Scope.Key with the caller's own (a member's tenant), and grant platform scope (request.Scope.Platform) only to the platform's operators");
+        "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");
 
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
