@@ -24,3 +24,5 @@ override Levee.Testing.LeveePostgresOptions.ToString() -> string!
 static Levee.Testing.LeveePostgres.StartAsync(Levee.Testing.LeveePostgresOptions? options = null, System.Threading.CancellationToken ct = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Levee.Testing.LeveePostgres!>!
 static Levee.Testing.LeveePostgresOptions.operator !=(Levee.Testing.LeveePostgresOptions? left, Levee.Testing.LeveePostgresOptions? right) -> bool
 static Levee.Testing.LeveePostgresOptions.operator ==(Levee.Testing.LeveePostgresOptions? left, Levee.Testing.LeveePostgresOptions? right) -> bool
+Levee.Testing.LeveePostgresOptions.LeveeSchema.get -> bool
+Levee.Testing.LeveePostgresOptions.LeveeSchema.init -> void

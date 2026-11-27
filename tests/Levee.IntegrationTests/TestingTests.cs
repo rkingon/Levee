@@ -9,6 +9,28 @@ public sealed class TestingTests
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task An_app_whose_migrations_add_Levees_schema_runs_them_alone()
+    {
+        await using var postgres = await LeveePostgres.StartAsync(new LeveePostgresOptions
+        {
+            Image = Environment.GetEnvironmentVariable("LEVEE_POSTGRES_IMAGE") ?? "postgres:17-alpine",
+            LeveeSchema = false,
+            Migrate = async (owner, ct) =>
+            {
+                await using var connection = new NpgsqlConnection(owner);
+                await connection.OpenAsync(ct);
+                await using var create = new NpgsqlCommand(Levee.EntityFrameworkCore.LeveeSchema.Sql, connection);
+                await create.ExecuteNonQueryAsync(ct);
+            },
+        }, Ct);
+
+        await using var app = new NpgsqlConnection(postgres.App);
+        await app.OpenAsync(Ct);
+        await using var scope = new NpgsqlCommand("select levee_scope()", app);
+        Assert.Equal("", await scope.ExecuteScalarAsync(Ct) as string ?? "");
+    }
+
+    [Fact]
     public async Task The_app_role_is_held_to_row_level_security_and_writes_the_audit_only_through_Levee()
     {
         var migrated = false;

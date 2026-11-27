@@ -15,7 +15,7 @@ public sealed class ZipJson : JsonConverter<Zip>
     public override void Write(Utf8JsonWriter writer, Zip value, JsonSerializerOptions options) => writer.WriteStringValue(value.Value);
 }
 
-public sealed record FindHomes([property: Description("The area's five-digit zip.")] Zip Area, Zip? Near, string Text);
+public sealed record FindHomes([property: Description("The area's five-digit zip.")] Zip Area, Zip? Near, string Text, Zip? Born = null);
 
 public sealed class ValueObjectSchemaTests
 {
@@ -28,5 +28,6 @@ public sealed class ValueObjectSchemaTests
             properties["area"]!["pattern"]!.GetValue<string>(), properties["area"]!["description"]!.GetValue<string>()));
         Assert.Equal("""["string","null"]""", properties["near"]!["type"]!.ToJsonString());
         Assert.Equal("string", properties["text"]!["type"]!.GetValue<string>());
+        Assert.Equal("""["string","null"]""", properties["born"]!["type"]!.ToJsonString());
     }
 }

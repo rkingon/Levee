@@ -53,6 +53,25 @@ public static class LeveeJson
                 {
                     node = new JsonObject();
                 }
+                // A member with a default whose type has no shape of the exporter's own is never transformed on its own (it's
+                // written as just its default), so its value object is filled in here, from the object that holds it.
+                if (node is JsonObject { } holder && holder["properties"] is JsonObject members)
+                {
+                    foreach (var member in context.TypeInfo.Properties)
+                    {
+                        if (members[member.Name] is JsonObject written && written["type"] is null
+                            && (Nullable.GetUnderlyingType(member.PropertyType) ?? member.PropertyType).GetCustomAttributes(typeof(ValueObjectAttribute), inherit: false)
+                                is [ValueObjectAttribute skipped]
+                            && WireSchema(skipped, json, Nullable.GetUnderlyingType(member.PropertyType) is not null || written["default"] is null) is JsonObject filled)
+                        {
+                            foreach (var (key, value) in written.ToList())
+                            {
+                                filled[key] = value?.DeepClone();
+                            }
+                            members[member.Name] = filled;
+                        }
+                    }
+                }
                 if (node is JsonObject described
                     && (context.PropertyInfo?.AttributeProvider ?? (context.PropertyInfo is null ? context.TypeInfo.Type : null))?
                         .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), inherit: true) is [System.ComponentModel.DescriptionAttribute { Description: { Length: > 0 } text }, ..])

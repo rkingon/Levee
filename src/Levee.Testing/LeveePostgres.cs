@@ -14,6 +14,12 @@ public sealed record LeveePostgresOptions
     /// <summary>The role the app connects as: no superuser, no bypassing row-level security, owning nothing.</summary>
     public string Role { get; init; } = "app";
 
+    /// <summary>
+    /// Whether Levee's schema is run before <see cref="Migrate"/>. Off when the app's own migrations add it
+    /// (<c>migrationBuilder.AddLeveeSchema()</c>), as they do in production.
+    /// </summary>
+    public bool LeveeSchema { get; init; } = true;
+
     /// <summary>The app's schema, run as the owner after Levee's: its migrations (<c>Database.MigrateAsync</c>), given the owner's connection string.</summary>
     public Func<string, CancellationToken, Task>? Migrate { get; init; }
 
@@ -58,13 +64,13 @@ public sealed class LeveePostgres : IAsyncDisposable
                 create role {Quote(role)} login password 'levee' nosuperuser nobypassrls nocreaterole nocreatedb;
                 revoke create on schema public from public;
                 do $$ begin execute format('revoke temporary on database %I from public', current_database()); end $$;
-                {LeveeSchema.Sql}
+                {(options.LeveeSchema ? EntityFrameworkCore.LeveeSchema.Sql : "")}
                 """, ct).ConfigureAwait(false);
             if (options.Migrate is { } migrate)
             {
                 await migrate(owner, ct).ConfigureAwait(false);
             }
-            await ExecuteAsync(owner, $"{options.Sql}\n{LeveeSchema.Grants(role)}\n{options.Grants}", ct).ConfigureAwait(false);
+            await ExecuteAsync(owner, $"{options.Sql}\n{EntityFrameworkCore.LeveeSchema.Grants(role)}\n{options.Grants}", ct).ConfigureAwait(false);
             var app = new NpgsqlConnectionStringBuilder(owner) { Username = role, Password = "levee" }.ConnectionString;
             return new LeveePostgres(container, app);
         }
