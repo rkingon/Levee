@@ -17,6 +17,7 @@
     <Project Path="tests/Levee.Analyzers.Tests/Levee.Analyzers.Tests.csproj" />
     <Project Path="tests/Levee.IntegrationTests/Levee.IntegrationTests.csproj" />
     <Project Path="tests/Levee.Cli.Tests/Levee.Cli.Tests.csproj" />
+    <Project Path="tests/Levee.IdentityStandIn/Levee.IdentityStandIn.csproj" />
   </Folder>
   <Folder Name="/tests/Sample/">
     <Project Path="tests/Sample/Sample.Domain/Sample.Domain.csproj" />

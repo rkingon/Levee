@@ -176,13 +176,16 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
         return null;
     }
 
-    /// <summary>The library's own type, or the app's subclass of one: its assembly named for the library.</summary>
+    /// <summary>
+    /// The library's own type, or the app's subclass of one: its assembly named for the library. An assembly built with Levee
+    /// (it carries a role) is the app's, never a library's, whatever the attribute names.
+    /// </summary>
     private static bool Of(Type type, string library)
     {
         for (var t = type; t is not null && t != typeof(object); t = t.BaseType)
         {
             var assembly = t.Assembly.GetName().Name ?? "";
-            if (assembly == library || assembly.StartsWith(library + ".", StringComparison.Ordinal))
+            if ((assembly == library || assembly.StartsWith(library + ".", StringComparison.Ordinal)) && !t.Assembly.IsDefined(typeof(LeveeRoleAttribute)))
             {
                 return true;
             }
@@ -336,8 +339,11 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
     /// </summary>
     private async Task VerifyIsolationAsync(CancellationToken ct)
     {
-        // Every relation the model reads or writes, however it's mapped (split, as a view, through the search path), and every
-        // relation a view among them reads, down to the tables. Each is judged by what it is, not by how EF maps it:
+        // Every relation the model reads or writes, however it's mapped (split, as a view, through the search path), every one
+        // on the search path the runtime role may read or write at all (raw SQL reaches by name what the model doesn't map),
+        // and every relation a view among them reads, down to the tables. Oxbow's queue and EF's migration history are their
+        // owners', not the app's; a relation named in another schema is deliberate, and the trust model's.
+        // Each is judged by what it is, not by how EF maps it:
         // - a table: forced row-level security and a policy;
         // - a view: security_invoker, or an owner row-level security holds (neither a superuser nor bypassing it);
         // - a materialized view or a foreign table: refused, since row-level security can't hold either.
@@ -351,6 +357,15 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
         var open = await db.Database.SqlQuery<string>($"""
             with recursive mapped as (
               select n, to_regclass(n)::oid as oid from unnest({names}) n
+              union
+              select c.oid::regclass::text, c.oid
+              from pg_catalog.pg_class c
+              join pg_catalog.pg_namespace s on s.oid = c.relnamespace
+              where c.relkind in ('r', 'p', 'v', 'm', 'f')
+                and s.nspname = any (pg_catalog.current_schemas(false))
+                and c.relname not like 'oxbow\_%' and c.relname <> '__EFMigrationsHistory'
+                and (has_table_privilege(c.oid, 'select') or has_table_privilege(c.oid, 'insert')
+                  or has_table_privilege(c.oid, 'update') or has_table_privilege(c.oid, 'delete'))
             ), reached(oid) as (
               select oid from mapped where oid is not null
               union
@@ -381,7 +396,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
         if (open.Count > 0)
         {
             throw new InvalidOperationException(
-                $"Row-level security doesn't hold what the context reads and writes, so every tenant's operations would see all of it: "
+                $"Row-level security doesn't hold what the app's role can read and write, so every tenant's operations would see all of it: "
                 + $"{string.Join("; ", open.Select(t => t.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))}. Fix: in the migration "
                 + "that creates a table, EnableScopeIsolation(table, column) for one scope's rows, or ShareAcrossScopes(table) for rows every "
                 + "scope reads and only platform operations write; create a view with (security_invoker = true); read a materialized view's "

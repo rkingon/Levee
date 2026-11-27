@@ -31,7 +31,10 @@ what `LeveeSchema.Grants(role)` prints. The owner also revokes what every role g
 
 - every table's rows, now and as migrations add tables; row-level security still holds each to the operation's scope.
   Everything the app's context maps, however it's mapped (split across tables, as a view, found through the search path),
-  is judged by what it is in the database, and every view among it by what it reads, down to the tables:
+  and everything on the search path the runtime role may read or write at all, mapped or not (raw SQL reaches it by
+  name), is judged by what it is in the database, and every view among it by what it reads, down to the tables. Oxbow's
+  queue and EF's migration history are their owners' and left out; a relation the app names in another schema is
+  deliberate, the trust model's:
   - a table must exist and have forced row-level security and a policy (`Isolation` or `Shared`, or one of the app's
     own);
   - a view must be `security_invoker` or owned by a role that is neither a superuser nor bypasses row-level security,
@@ -87,7 +90,8 @@ One context is exempt: a separate bounded context's, marked `[SeparateContext("O
 (identity: OpenIddict's applications, authorizations and tokens) keeps its own store, used by the library it serves
 outside every operation, since it's not the product's data and not a tenant's. Its tables are its own (its own schema,
 written by its own role or the owner): the host's start refuses it if it maps an entity that isn't the library's (nor
-the app's subclass of one), or a table or view the app's context maps (every one an entity is split across), so the
+the app's subclass of one; an assembly built with Levee is the app's, whatever the attribute names), or a table or view
+the app's context maps (every one an entity is split across), so the
 app's own data can't hide in it. It's opened the way it's registered (itself, behind an interface, through its
 factory), and one that can't be opened is refused, not trusted; and the
 build refuses the app's own code holding it (LEVEE018), so only the library's registration in Composition or the Host

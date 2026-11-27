@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A library outside the app, as OpenIddict is: built without Levee, so a separate context may hold its entities. -->
+</Project>

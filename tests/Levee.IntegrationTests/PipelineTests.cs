@@ -651,13 +651,18 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     [InlineData("identity", "clients", false, null)]
     [InlineData("public", "notes", false, "IdentityDb is a separate bounded context's, but maps public.notes")]
     [InlineData("identity", "clients", true, "ForeignDb is OpenIddict's store ([SeparateContext]), but maps Ledger, which isn't OpenIddict's")]
-    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_its_librarys_tables_alone(string schema, string table, bool foreign, string? refusal)
+    [InlineData("identity", "clients", null, "OwnNamedDb is Levee.IntegrationTests's store ([SeparateContext]), but maps Ledger, which isn't Levee.IntegrationTests's")]
+    public async Task A_separate_bounded_contexts_store_starts_beside_the_app_over_its_librarys_tables_alone(string schema, string table, bool? foreign, string? refusal)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = "none";
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
-        if (foreign)
+        if (foreign is null)
+        {
+            builder.Services.AddDbContext<OwnNamedDb>(o => o.UseNpgsql(postgres.Owner));
+        }
+        else if (foreign == true)
         {
             builder.Services.AddDbContext<ForeignDb>(o => o.UseNpgsql(postgres.Owner).ReplaceService<Microsoft.EntityFrameworkCore.Infrastructure.IModelCacheKeyFactory, PerTable>());
         }
@@ -719,38 +724,38 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
     private interface IIdentityStore;
 
-    [SeparateContext("Levee.IntegrationTests")]
+    [SeparateContext("Levee.IdentityStandIn")]
     private sealed class AppTablesDb(DbContextOptions<AppTablesDb> options) : DbContext(options), IIdentityStore
     {
-        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Ledger>(e => e.ToTable("notes"));
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable("notes"));
     }
 
     // Its own table first, then split onto the app's: every table it maps is compared, not the first.
-    [SeparateContext("Levee.IntegrationTests")]
+    [SeparateContext("Levee.IdentityStandIn")]
     private sealed class SplitSeparateDb(DbContextOptions<SplitSeparateDb> options) : DbContext(options)
     {
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-            modelBuilder.Entity<IdentityRow>(e =>
+            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e =>
             {
                 e.ToTable("clients", "identity").SplitToTable("notes", "public", t => t.Property(r => r.Tenant));
             });
     }
 
-    private sealed record IdentityRow(Guid Id, string Name, string Tenant);
-
-    // The test assembly stands in for a library: Ledger is its entity.
-    [SeparateContext("Levee.IntegrationTests")]
+    // Levee.IdentityStandIn stands in for a library built without Levee, as OpenIddict is.
+    [SeparateContext("Levee.IdentityStandIn")]
     private sealed class IdentityDb(DbContextOptions<IdentityDb> options, IdentityTable table) : DbContext(options)
     {
         public IdentityTable Table => table;
 
         protected override void OnModelCreating(ModelBuilder modelBuilder) =>
-            modelBuilder.Entity<Ledger>(e =>
-            {
-                e.ToTable(table.Table, table.Schema);
-                e.Property(l => l.Id).HasColumnName("id");
-                e.Property(l => l.Tenant).HasColumnName("tenant");
-            });
+            modelBuilder.Entity<Levee.IdentityStandIn.ClientRow>(e => e.ToTable(table.Table, table.Schema));
+    }
+
+    // The app's own assembly named as the library: an assembly built with Levee is the app's, whatever the attribute says.
+    [SeparateContext("Levee.IntegrationTests")]
+    private sealed class OwnNamedDb(DbContextOptions<OwnNamedDb> options) : DbContext(options)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Ledger>(e => e.ToTable("clients", "identity"));
     }
 
     [SeparateContext("OpenIddict")]
@@ -860,12 +865,38 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
             await create.ExecuteNonQueryAsync(Ct);
         }
 
-        Assert.Contains("split_detail", await Refusal<SplitDb>(postgres.App), StringComparison.Ordinal);
-        // The fixture's owner is a superuser, as a container's is: a plain view reads every row.
-        Assert.Contains("viewed_v: a view that reads with its owner's rights", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
-        Assert.Null(await RefusalOrNull<InvokerViewedDb>(postgres.App));
-        Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
+        try
+        {
+            Assert.Contains("split_detail", await Refusal<SplitDb>(postgres.App), StringComparison.Ordinal);
+            // The fixture's owner is a superuser, as a container's is: a plain view reads every row.
+            Assert.Contains("viewed_v: a view that reads with its owner's rights", await Refusal<ViewedDb>(postgres.App), StringComparison.Ordinal);
+            Assert.Contains("found_by_path", await Refusal<PathDb>(new NpgsqlConnectionStringBuilder(postgres.App) { SearchPath = "by_path,public" }.ConnectionString), StringComparison.Ordinal);
+            await postgres.ExecuteAsync("drop table split_detail; drop view viewed_v;");
+            Assert.Null(await RefusalOrNull<InvokerViewedDb>(postgres.App));
+        }
+        finally
+        {
+            // What's left unprotected would fail every other context's check, as it would an app's.
+            await postgres.ExecuteAsync("drop table if exists split_detail; drop view if exists viewed_v; drop schema if exists by_path cascade;");
+        }
     }
+
+    [Fact]
+    public async Task A_table_the_app_role_reaches_is_checked_though_no_context_maps_it()
+    {
+        // Raw SQL reaches it by name: its rows are as open as a mapped table's would be.
+        await postgres.ExecuteAsync("create table unmapped_rows (id uuid primary key, tenant text not null); grant select on unmapped_rows to app;");
+        try
+        {
+            Assert.Contains("unmapped_rows: no forced row-level security", await Refusal<MapsNothingDb>(postgres.App), StringComparison.Ordinal);
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("drop table unmapped_rows;");
+        }
+    }
+
+    private sealed class MapsNothingDb(DbContextOptions<MapsNothingDb> options) : DbContext(options);
 
     [Fact]
     public async Task A_view_is_judged_by_what_it_reads_down_to_the_tables()
@@ -892,11 +923,22 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
             await create.ExecuteNonQueryAsync(Ct);
         }
 
-        Assert.Contains("raw_rows: no forced row-level security", await Refusal<ReadsRawRows>(postgres.App), StringComparison.Ordinal);
-        Assert.Contains("hidden_rows: no forced row-level security", await Refusal<ReadsOverHidden>(postgres.App), StringComparison.Ordinal);
-        Assert.Null(await RefusalOrNull<ReadsOverHeld>(postgres.App));
-        Assert.Contains("frozen_rows: a materialized view", await Refusal<ReadsFrozen>(postgres.App), StringComparison.Ordinal);
-        Assert.Contains("loose_rows: no forced row-level security", await Refusal<ReadsOverLoose>(postgres.App), StringComparison.Ordinal);
+        try
+        {
+            Assert.Contains("raw_rows: no forced row-level security", await Refusal<ReadsRawRows>(postgres.App), StringComparison.Ordinal);
+            Assert.Contains("hidden_rows: no forced row-level security", await Refusal<ReadsOverHidden>(postgres.App), StringComparison.Ordinal);
+            Assert.Contains("frozen_rows: a materialized view", await Refusal<ReadsFrozen>(postgres.App), StringComparison.Ordinal);
+            Assert.Contains("loose_rows: no forced row-level security", await Refusal<ReadsOverLoose>(postgres.App), StringComparison.Ordinal);
+            await postgres.ExecuteAsync("drop view over_loose, over_hidden; drop materialized view frozen_rows; drop table raw_rows, hidden_rows, loose_rows;");
+            Assert.Null(await RefusalOrNull<ReadsOverHeld>(postgres.App));
+        }
+        finally
+        {
+            await postgres.ExecuteAsync("""
+                drop view if exists over_loose, over_hidden; drop materialized view if exists frozen_rows;
+                drop table if exists raw_rows, hidden_rows, loose_rows;
+                """);
+        }
     }
 
     [Fact]

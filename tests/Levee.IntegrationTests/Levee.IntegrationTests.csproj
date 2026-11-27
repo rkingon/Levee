@@ -3,6 +3,7 @@
     <ProjectReference Include="../Sample/Sample.Adapters/Sample.Adapters.csproj" />
     <ProjectReference Include="../../src/Levee.Oxbow/Levee.Oxbow.csproj" />
     <ProjectReference Include="../../src/Levee.Testing/Levee.Testing.csproj" />
+    <ProjectReference Include="../Levee.IdentityStandIn/Levee.IdentityStandIn.csproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Testcontainers.PostgreSql" />
     <PackageReference Include="Microsoft.AspNetCore.DataProtection" />
