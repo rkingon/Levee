@@ -27,7 +27,8 @@
   it writes, and every schema (the catalog's, each MCP tool's) shows that, nullable where the member is; a member's
   `[Description]` is its description in every schema, a nullable member with a default included; a nullable reference
   value object allows null. LEVEE104 refuses a contract type written by its own converter
-  without one, and a value object's converter is handed only the JSON its `[ValueObject]` says it writes.
+  without one, and a value object's converter is handed only the JSON its `[ValueObject]` says it writes. A value object is
+  one JSON scalar; LEVEE104 refuses any other wire, and so does the contract wire.
 - **Breaking:** the contract wire is Levee's. `LeveeJson.Create` refuses a converter or a type resolver, and
   `LeveeOptions.Json` takes only options it made: a value's JSON is its value object's own, a .NET type's is
   System.Text.Json's.
@@ -43,6 +44,10 @@
   `LeveeJson.Redact`, `FindSecret`, `FindSecretIn` and `Schema`, which the audit, outcomes, jobs and catalog apply
   themselves. In `Levee.AspNetCore`, `OperationView` (the catalog's wire shape); in `Levee.Oxbow`,
   `OperationUnavailableException`.
+
+### Levee.Analyzers
+- LEVEE003: a handler holding a port that tells the time (an interface or delegate answering a date or time when asked
+  nothing) holds a clock, as one holding `TimeProvider` does.
 
 ### Levee.Testing
 - `LeveePostgresOptions.LeveeSchema = false` for an app whose own migrations add Levee's schema, and `Schema` for one

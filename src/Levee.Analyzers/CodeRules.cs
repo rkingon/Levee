@@ -588,15 +588,31 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
     }
 
-    /// <summary>TimeProvider or NodaTime's IClock (or what implements it), or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
+    /// <summary>
+    /// TimeProvider or NodaTime's IClock (or what implements it), an interface or delegate that answers a time when asked
+    /// nothing (a port wrapping TimeProvider is the wall clock by another name), or one wrapped (Lazy&lt;T&gt;, an array).
+    /// Asked nothing and answering at once, it can only be reading a clock: a vendor's time is asked for, and awaited.
+    /// </summary>
     private static INamedTypeSymbol? Clock(ITypeSymbol type) => type switch
     {
         INamedTypeSymbol named when Derives(named.OriginalDefinition, "System.TimeProvider")
             || named.OriginalDefinition.AllInterfaces.Prepend(named.OriginalDefinition).Any(i => i.ToDisplayString() == "NodaTime.IClock") => named,
+        INamedTypeSymbol { TypeKind: TypeKind.Delegate, DelegateInvokeMethod: { Parameters.Length: 0 } invoke } named when IsTime(invoke.ReturnType) => named,
+        INamedTypeSymbol { TypeKind: TypeKind.Interface } named when named.AllInterfaces.Prepend(named).SelectMany(i => i.GetMembers()).Any(m => m switch
+        {
+            IMethodSymbol { MethodKind: MethodKind.Ordinary, Parameters.Length: 0 } method => IsTime(method.ReturnType),
+            IPropertySymbol { IsIndexer: false } property => IsTime(property.Type),
+            _ => false,
+        }) => named,
         INamedTypeSymbol { IsGenericType: true } generic => generic.TypeArguments.Select(Clock).FirstOrDefault(c => c is not null),
         IArrayTypeSymbol array => Clock(array.ElementType),
         _ => null,
     };
+
+    private static bool IsTime(ITypeSymbol type) =>
+        (type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } n ? n.TypeArguments[0] : type).ToDisplayString() is
+            "System.DateTime" or "System.DateTimeOffset" or "System.DateOnly" or "System.TimeOnly" or "NodaTime.Instant" or "NodaTime.ZonedDateTime"
+            or "NodaTime.OffsetDateTime" or "NodaTime.LocalDateTime" or "NodaTime.LocalDate" or "NodaTime.LocalTime";
 
     /// <summary>Levee's <paramref name="name"/>, or one wrapped (Lazy&lt;T&gt;, Func&lt;T&gt;, an array).</summary>
     private static bool Holds(ITypeSymbol type, string name) => type switch

@@ -113,7 +113,7 @@ public sealed class SecretAttribute : Attribute;
 /// date of birth): what every schema shows for it, since no schema can read the converter. A contract type written by
 /// its own converter declares one (LEVEE104).
 /// </summary>
-/// <param name="wire">The type the converter writes: <c>typeof(string)</c>, <c>typeof(int)</c>, <c>typeof(DateOnly)</c>.</param>
+/// <param name="wire">The JSON scalar the converter writes: <c>typeof(string)</c>, <c>typeof(int)</c>, <c>typeof(DateOnly)</c>. Nothing else is one JSON value.</param>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false)]
 public sealed class ValueObjectAttribute(Type wire) : Attribute
 {

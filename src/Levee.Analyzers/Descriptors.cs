@@ -30,7 +30,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor HandlerClock = Rule(
         "LEVEE003", "Time comes from TimeProvider",
-        "{0} is a handler holding a {1}, a clock of its own: in production it's the wall clock, not the operation's one time. Fix: take nothing for time; in an operation's handler, use OperationContext.Now (and OperationContext.NewId() for a new id); a subscription's handler reads time through the operations it sends. A TimeProvider (or NodaTime's IClock) through the constructor is for an adapter or a process, never a handler");
+        "{0} is a handler holding a {1}, a clock of its own: whatever it wraps, in production it's the wall clock, not the operation's one time (a port that tells the time is the wall clock too). Fix: take nothing for time; in an operation's handler, use OperationContext.Now (and OperationContext.NewId() for a new id); a subscription's handler reads time through the operations it sends. A TimeProvider (or NodaTime's IClock) through the constructor is for an adapter or a process, never a handler");
 
     public static readonly DiagnosticDescriptor Transaction = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",

@@ -99,3 +99,27 @@ public sealed class ValueObjectWireTests
         Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<Noted>("""{"body":42}""", LeveeJson.Options));
     }
 }
+
+[JsonConverter(typeof(BlobJson))]
+[ValueObject(typeof(JsonElement))]
+public sealed record Blob(string Raw);
+
+public sealed class BlobJson : JsonConverter<Blob>
+{
+    public override Blob Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new(JsonDocument.ParseValue(ref reader).RootElement.GetRawText());
+
+    public override void Write(Utf8JsonWriter writer, Blob value, JsonSerializerOptions options) => writer.WriteRawValue(value.Raw);
+}
+
+public sealed record Blobbed(Blob Body);
+
+public sealed class ValueObjectScalarTests
+{
+    [Fact]
+    public void A_value_object_is_one_json_scalar()
+    {
+        var refused = Assert.ThrowsAny<InvalidOperationException>(() => JsonSerializer.Deserialize<Blobbed>("""{"body":{"anything":1}}""", LeveeJson.Options));
+        Assert.Contains("isn't one JSON value", refused.Message, StringComparison.Ordinal);
+        Assert.ThrowsAny<InvalidOperationException>(() => LeveeJson.Schema(typeof(Blobbed)));
+    }
+}

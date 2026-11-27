@@ -68,24 +68,29 @@ public static class LeveeJson
             {
                 inner = factory.CreateConverter(typeToConvert, options)!;
             }
-            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire)!;
+            return (JsonConverter)Activator.CreateInstance(typeof(Checked<>).MakeGenericType(typeToConvert), inner, declared.Wire, Accepts(typeToConvert, declared.Wire))!;
         }
 
-        private sealed class Checked<T>(JsonConverter<T> inner, Type wire) : JsonConverter<T>
+        private static readonly HashSet<Type> Strings = [typeof(Guid), typeof(DateOnly), typeof(TimeOnly), typeof(TimeSpan), typeof(DateTimeOffset), typeof(Uri)];
+
+        private static JsonTokenType[] Accepts(Type value, Type wire) => (Nullable.GetUnderlyingType(wire) ?? wire) switch
         {
-            private readonly JsonTokenType[] _accepts = Type.GetTypeCode(Nullable.GetUnderlyingType(wire) ?? wire) switch
+            var w when Strings.Contains(w) => [JsonTokenType.String],
+            var w => Type.GetTypeCode(w) switch
             {
                 TypeCode.Boolean => [JsonTokenType.True, JsonTokenType.False],
                 TypeCode.Byte or TypeCode.SByte or TypeCode.Int16 or TypeCode.UInt16 or TypeCode.Int32 or TypeCode.UInt32 or TypeCode.Int64
                     or TypeCode.UInt64 or TypeCode.Single or TypeCode.Double or TypeCode.Decimal => [JsonTokenType.Number],
-                TypeCode.Object when wire.IsArray || typeof(System.Collections.IEnumerable).IsAssignableFrom(wire) && wire != typeof(string) => [JsonTokenType.StartArray],
-                TypeCode.Object when !wire.IsPrimitive && wire != typeof(Guid) && wire != typeof(DateOnly) && wire != typeof(TimeOnly)
-                    && wire != typeof(TimeSpan) && wire != typeof(DateTimeOffset) && wire != typeof(Uri) => [JsonTokenType.StartObject],
-                _ => [JsonTokenType.String],
-            };
+                TypeCode.String or TypeCode.Char or TypeCode.DateTime => [JsonTokenType.String],
+                _ => throw new InvalidOperationException(
+                    $"{value.Name} is a value object written as {wire.Name}, which isn't one JSON value. A value object is one JSON scalar: a string, number, bool, Guid or date (LEVEE104)."),
+            },
+        };
 
+        private sealed class Checked<T>(JsonConverter<T> inner, Type wire, JsonTokenType[] accepts) : JsonConverter<T>
+        {
             public override T? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
-                _accepts.Contains(reader.TokenType)
+                accepts.Contains(reader.TokenType)
                     ? inner.Read(ref reader, typeToConvert, options)
                     : throw new JsonException($"{typeof(T).Name} is written as {wire.Name}, not {reader.TokenType}.");
 

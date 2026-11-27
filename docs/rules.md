@@ -65,7 +65,9 @@ internal sealed class Lease(TimeProvider time) : ILease { DateTimeOffset Now => 
 ```
 
 A handler (`IOperationHandler`, `ISubscriptionHandler`) holds no clock: a `TimeProvider` or NodaTime `IClock` as its
-constructor's parameter, a field or a property is refused, wrapped or not. An operation's handler reads
+constructor's parameter, a field or a property is refused, wrapped or not. So is a port that tells the time (an interface
+or a delegate answering a date or time when asked nothing, `ITime.Current()`, `Func<DateTime>`): whatever it wraps, it's
+the wall clock in production. A port that asks a vendor for a time takes what it asks about, or is awaited. An operation's handler reads
 `OperationContext.Now`; a subscription's handler reads time through the operations it sends, each with its own.
 
 `Guid.CreateVersion7()` reads the clock too. In a handler, `context.NewId()` is the id: a UUIDv7 at the operation's time,
@@ -570,7 +572,9 @@ sees Application; a test may declare its own), as a public, top-level, non-gener
   collection (`ArrayList`, `Hashtable`, `ExpandoObject`). Redaction and the secret check go by type, and the wire's schema says nothing about an untyped member.
 - **Value objects say what they write**: a type of the app's that a converter of its own writes (on the type, or on the
   member), in the input or the result, declares the primitive it's written as. No schema can read a converter, so
-  without it every client and agent sees the member as anything at all. The members checked, here and for types and
+  without it every client and agent sees the member as anything at all. A value object is one JSON scalar (a string,
+  number, bool, Guid, date or time): `[ValueObject(typeof(JsonElement))]` or a record would hand its converter whatever
+  shape it likes. A value with members of its own is a record the serializer writes, with no converter. The members checked, here and for types and
   secrets, are the ones System.Text.Json writes: public properties, and fields and non-public properties `[JsonInclude]`
   adds, less any `[JsonIgnore]` always drops (`[JsonIgnore(Condition = WhenWritingNull)]` still writes it).
 
