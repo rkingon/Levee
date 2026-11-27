@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.0.1-alpha.1 (unreleased)
+## 0.0.1-alpha.1 (2026-11-26)
 
 The first release: the keystone, for feedback from the apps migrating onto it. Everything may change.
 

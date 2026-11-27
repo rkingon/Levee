@@ -1,6 +1,1 @@
 #nullable enable
-Levee.Oxbow.LeveeOxbowServiceCollectionExtensions
-Levee.Oxbow.OperationUnavailableException
-Levee.Oxbow.OperationUnavailableException.OperationUnavailableException(string! message) -> void
-static Levee.Oxbow.LeveeOxbowServiceCollectionExtensions.AddLeveeJobs(this Microsoft.Extensions.DependencyInjection.IOxbowBuilder! oxbow, bool sealSecrets = false) -> Microsoft.Extensions.DependencyInjection.IOxbowBuilder!
-static Levee.Oxbow.LeveeOxbowServiceCollectionExtensions.AddLeveeOxbow(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Oxbow.OxbowOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IOxbowBuilder!
