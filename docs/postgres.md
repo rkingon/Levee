@@ -42,7 +42,12 @@ allow-list, not a blanket:
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
-  record.
+  record;
+- idempotency keys (`levee_idempotency`): nothing of the table, only `levee_idempotency_claim` and
+  `levee_idempotency_complete`, which read the transaction's own scope, so a key is claimed, and its result replayed, only
+  where and for whom it was sent. An installation from before alpha.3 adds them as the owner, with
+  `migrationBuilder.AddLeveeIdempotency()` (`LeveeSchema.Idempotency(schema)`), which grants the recorded role itself.
+  `LeveeSchema.SweepExpiredKeys()` removes the keys past their lifetime, on a schedule of the owner's.
 
 Run Levee's grants first, then anything the app grants itself (Oxbow's, `dotnet levee db grants <role> --jobs` prints
 both in order; a table with a policy of the app's own; a view). A grant of the app's own is the app's to answer for, so
@@ -66,9 +71,12 @@ app has checked isn't seen until it restarts.
 
 1. `begin`; `set transaction read only` when the operation declares only reads.
 2. `levee.scope` (the operation's scope key) and `levee.platform` (`on` for a platform operation), local to the transaction.
-3. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction.
-4. The audit record, for a write, through `levee_audit_write`.
-5. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
+3. With an idempotency key, for a write: the key claimed, or what its first request committed answered without running
+   the handler again. An equal request still in flight is waited for, so equal requests at once make one write.
+4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. Every aggregate
+   root's version (`xmin`) is checked as it's written, and a changed child marks its root.
+5. The audit record, for a write, through `levee_audit_write`.
+6. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 
 Postgres's refusals come back classified: a write in a read-only transaction is `effects.undeclared`, a row inserted or
 moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write

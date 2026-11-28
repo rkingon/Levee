@@ -143,10 +143,20 @@ public static class LeveeErrors
     /// </summary>
     public const string InvalidValue = "store.invalid_value";
 
+    /// <summary>An idempotency key that isn't one: empty, longer than 255 characters, or holding a control character.</summary>
+    public const string InvalidIdempotencyKey = "idempotency.invalid_key";
+
+    /// <summary>The idempotency key was sent before with other input: a key names one request.</summary>
+    public const string IdempotencyMismatch = "idempotency.mismatch";
+
+    /// <summary>The request with this idempotency key was done already, and its result isn't kept: it carries a secret, shown once.</summary>
+    public const string IdempotencyReplayed = "idempotency.replayed";
+
     public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         Internal, Unauthenticated, UnknownOperation, InvalidInput, Streams, AnswersOnce, ScopeMissing, ScopeUndeclared, CallerUnscoped, Cancelled, NotImplemented,
         UndeclaredWrite, ScopeViolation, Conflict, ConstraintViolation, Contention, StoreUnavailable, Stale, InvalidValue, CallerUnconfirmed,
+        InvalidIdempotencyKey, IdempotencyMismatch, IdempotencyReplayed,
     };
 }
 

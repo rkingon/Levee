@@ -38,6 +38,7 @@ internal sealed class Store
     public List<WorkScope> Begun { get; } = [];
     public List<AuditEntry> Audited { get; } = [];
     public List<uint> Expected { get; } = [];
+    public Dictionary<string, (byte[] Hash, string? Result)> Keys { get; } = [];
     public int Commits { get; set; }
     public int Disposed { get; set; }
 }
@@ -61,6 +62,29 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
 
     public void Expect(uint version) => store.Expected.Add(version);
 
+    private readonly List<(string Key, byte[] Hash, string? Result)> _claims = [];
+
+    public Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct)
+    {
+        var id = $"{scope.Key}/{key.Subject}/{key.Operation}/{key.Key}";
+        if (!store.Keys.TryGetValue(id, out var held))
+        {
+            _claims.Add((id, key.InputHash, null));
+            return Task.FromResult(new IdempotencyClaim(IdempotencyState.Claimed));
+        }
+        return Task.FromResult(!held.Hash.AsSpan().SequenceEqual(key.InputHash) ? new IdempotencyClaim(IdempotencyState.Mismatch)
+            : held.Result is null ? new IdempotencyClaim(IdempotencyState.Replayed)
+            : new IdempotencyClaim(IdempotencyState.Kept, held.Result));
+    }
+
+    public Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct)
+    {
+        var id = $"{scope.Key}/{key.Subject}/{key.Operation}/{key.Key}";
+        var at = _claims.FindIndex(c => c.Key == id);
+        _claims[at] = _claims[at] with { Result = result };
+        return Task.CompletedTask;
+    }
+
     public Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
         _pending.Add(entry);
@@ -69,6 +93,10 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
 
     public Task CommitAsync(CancellationToken ct)
     {
+        foreach (var (key, hash, result) in _claims)
+        {
+            store.Keys[key] = (hash, result);
+        }
         store.Audited.AddRange(_pending);
         store.Commits++;
         return Task.CompletedTask;

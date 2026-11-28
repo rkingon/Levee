@@ -527,11 +527,37 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public void Expect(uint version) => Aggregates.Expect(db, version);
 
+    private string Schema => db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
+
+    public async Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var answer = await db.Database.SqlQuery<string>(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}}, {{4}})::text as \"Value\"",
+            key.Subject, key.Operation, key.Key, key.InputHash, key.Lifetime)).SingleAsync(ct);
+        using var claim = System.Text.Json.JsonDocument.Parse(answer);
+        return claim.RootElement.GetProperty("state").GetString() switch
+        {
+            "claimed" => new IdempotencyClaim(IdempotencyState.Claimed),
+            "mismatch" => new IdempotencyClaim(IdempotencyState.Mismatch),
+            "replayed" => new IdempotencyClaim(IdempotencyState.Replayed),
+            _ => new IdempotencyClaim(IdempotencyState.Kept, claim.RootElement.GetProperty("result").GetRawText()),
+        };
+    }
+
+    public async Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+            $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb)",
+            key.Subject, key.Operation, key.Key, (object?)result ?? DBNull.Value), ct);
+    }
+
     /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>
     public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        var schema = db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
+        var schema = Schema;
         await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
             $"select {schema}.levee_audit_write({{0}}, {{1}}, {{2}}, {{3}}, {{4}}::jsonb)",
             Guid.CreateVersion7(entry.At), entry.Scope, entry.Subject, entry.Operation, entry.Input), ct);

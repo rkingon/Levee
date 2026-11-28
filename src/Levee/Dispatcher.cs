@@ -20,7 +20,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 
     public OperationCatalog Catalog => catalog;
 
-    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, CancellationToken ct)
+    public Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, CancellationToken ct) =>
+        SendAsync(operation, principal, idempotencyKey: null, ct);
+
+    /// <summary>
+    /// As <see cref="SendAsync{TResult}(IOperation{TResult}, Principal, CancellationToken)"/>, retryable: a write sent again
+    /// with the same <paramref name="idempotencyKey"/>, by the same caller in the same scope, gets the first result back
+    /// instead of writing twice, and an equal request still in flight is waited for. What an app's own projection passes on
+    /// from its caller (the <c>Idempotency-Key</c> header). A read ignores it.
+    /// </summary>
+    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, string? idempotencyKey, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(principal);
@@ -28,21 +37,25 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        var result = await RunAsync(descriptor, operation, principal, ct);
+        var result = await RunAsync(descriptor, operation, principal, answer: null, pinned: null, idempotencyKey, ct);
         return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
     }
 
     /// <summary>An operation by name, its input and result as JSON, in-process: internal operations included (jobs run them).</summary>
     internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, ct);
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, key: null, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for work asked for earlier, in the caller's scope as it was then.</summary>
     internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, string? pinned, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, ct);
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, key: null, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for a client: what a projection sends. Internal operations aren't there.</summary>
     internal Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, ct);
+        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, key: null, ct);
+
+    /// <summary>As <see cref="SendFromClientAsync(string, JsonElement, Principal, CancellationToken)"/>, with the client's idempotency key.</summary>
+    internal Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, string? idempotencyKey, CancellationToken ct) =>
+        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, idempotencyKey, ct);
 
     public async Task<Result<IAsyncEnumerable<TItem>>> SubscribeAsync<TItem>(ISubscription<TItem> subscription, Principal principal, CancellationToken ct)
     {
@@ -246,7 +259,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     private async Task<Result<JsonElement>> SendFoundAsync(Result<OperationDescriptor> found, JsonElement input, Principal principal, string? pinned,
-        CancellationToken ct)
+        string? key, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(principal);
         if (!found.IsSuccess)
@@ -265,7 +278,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
         // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
         var result = await RunAsync(descriptor, operation.Value, principal,
-            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, LeveeJson.Options), pinned, ct);
+            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, LeveeJson.Options), pinned, key, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
@@ -288,7 +301,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
+        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct);
     }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
@@ -298,11 +311,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 + "outside the scope its process was started in.")
             : scoped;
 
-    private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
-        await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
-
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, CancellationToken ct)
+        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
@@ -324,10 +334,15 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             // Unredactable for another reason (a getter that throws): a bug, which the audit's own redaction fails on.
         }
+        if (refused is null && key is not null && !descriptor.ReadOnly && !IsKey(key))
+        {
+            refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
+                $"{descriptor.Name}'s idempotency key isn't one: 1 to 255 characters, none of them a control character.");
+        }
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, key, ct) : scoped.Error);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -511,8 +526,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             _ => Error.Forbidden(LeveeErrors.ScopeUndeclared, $"{descriptor.Name} must declare one scope: its input's, its caller's, none, or the platform's."),
         };
 
+    private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
+
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        Func<object?, object?>? answer, CancellationToken ct)
+        Func<object?, object?>? answer, string? key, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -537,6 +554,26 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                     return refused;
                 }
             }
+            // After the admissions, so a refused caller learns nothing of what a key did; before the handler, so a repeat never runs it.
+            var claimed = key is not null && !scope.ReadOnly
+                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(operation, descriptor), options.IdempotencyKeyLifetime)
+                : null;
+            if (claimed is not null)
+            {
+                var claim = await unit.ClaimAsync(claimed, ct);
+                switch (claim.State)
+                {
+                    case IdempotencyState.Mismatch:
+                        return Error.Conflict(LeveeErrors.IdempotencyMismatch, $"{descriptor.Name} was sent with this idempotency key and other input: a key names one request.");
+                    case IdempotencyState.Replayed:
+                        return Error.Conflict(LeveeErrors.IdempotencyReplayed,
+                            $"{descriptor.Name} was done already with this idempotency key, and its result isn't kept: it carries a secret, shown once.");
+                    case IdempotencyState.Kept:
+                        // Done already: its first result, and nothing written again, nothing audited again.
+                        var first = JsonSerializer.Deserialize(claim.Result!, descriptor.ResultType, LeveeJson.Options);
+                        return Result<object?>.Success(answer is null ? first : answer(first));
+                }
+            }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
             if (!result.IsSuccess && ReferenceEquals(result.Error, Error.Uninitialized))
             {
@@ -558,6 +595,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                     LogUndeclaredError(log, descriptor.Name, result.Error.Code);
                 }
                 return result;
+            }
+            if (claimed is not null)
+            {
+                // A secret is shown once: a result that carries one is never kept to show again.
+                var kept = result.Value is null || LeveeJson.FindSecretIn(result.Value, descriptor.ResultType, LeveeJson.Options) is null
+                    ? JsonSerializer.Serialize(result.Value, descriptor.ResultType, LeveeJson.Options)
+                    : null;
+                await unit.CompleteAsync(claimed, kept, ct);
             }
             if (answer is not null)
             {
@@ -627,6 +672,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             LogOutcomeFailed(log, e, outcome.Operation.Name, recorder);
         }
     }
+
+    /// <summary>The input as the wire carries it, whatever its formatting was: what a key's repeat is compared by.</summary>
+    private static byte[] Hash(IOperation operation, OperationDescriptor descriptor) =>
+        System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(operation, descriptor.InputType, LeveeJson.Options));
 
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
     private static string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), LeveeJson.Options);
@@ -699,6 +748,12 @@ public sealed class LeveeOptions
     /// running, unawaited.
     /// </summary>
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long a write's idempotency key holds after it commits: a retry within it gets the first result back; one after
+    /// it runs as a new request.
+    /// </summary>
+    public TimeSpan IdempotencyKeyLifetime { get; set; } = TimeSpan.FromHours(24);
 }
 
 /// <summary>A stream a projection opened: its items, and who it was opened for, where, for its rechecks.</summary>

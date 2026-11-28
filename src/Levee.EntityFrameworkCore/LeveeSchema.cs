@@ -63,6 +63,91 @@ public static class LeveeSchema
             create policy levee_audit_insert on {schema}.{AuditTable} for insert
               with check ({schema}.levee_platform() or scope is not distinct from nullif({schema}.levee_scope(), ''));
             {Admit($"{schema}.{AuditTable}", schema, "select")}
+            {Idempotency(schema)}
+            """;
+    }
+
+    public const string IdempotencyTable = "levee_idempotency";
+
+    /// <summary>
+    /// The keys retried writes are sent with, and the first result each one committed: part of <see cref="Create"/>. An
+    /// installation from before alpha.3 runs it alone, as the owner (<see cref="LeveeMigrationBuilderExtensions.AddLeveeIdempotency"/>).
+    /// The runtime role reaches it only through its two functions, which read the transaction's own scope, so a key is
+    /// claimed, and a result replayed, only in the scope and for the subject that sent it.
+    /// </summary>
+    public static string Idempotency(string schema = "public")
+    {
+        Identifier(schema, nameof(schema));
+        return $"""
+            create table {schema}.{IdempotencyTable} (
+              scope text not null,
+              subject text not null,
+              operation text not null,
+              key text not null,
+              input_hash bytea not null,
+              result jsonb,
+              kept boolean not null default false,
+              expires_at timestamptz not null,
+              primary key (scope, subject, operation, key)
+            );
+            create index {IdempotencyTable}_expires_at on {schema}.{IdempotencyTable} (expires_at);
+            alter table {schema}.{IdempotencyTable} enable row level security;
+            alter table {schema}.{IdempotencyTable} force row level security;
+            create policy levee_idempotency_scope on {schema}.{IdempotencyTable}
+              using ({schema}.levee_platform() or scope = {schema}.levee_scope())
+              with check (scope = {schema}.levee_scope());
+            -- Claims the key for this transaction, or says what an earlier request with it committed. An equal claim still in
+            -- flight is waited for: if it commits, this one reads its row; if it rolls back, this one takes the key.
+            create function {schema}.levee_idempotency_claim(p_subject text, p_operation text, p_key text, p_hash bytea, p_lifetime interval)
+              returns jsonb language plpgsql security definer set search_path = {schema}, pg_temp
+              as $$
+              declare v_scope text := {schema}.levee_scope();
+              declare r record;
+              begin
+                delete from {schema}.{IdempotencyTable} i
+                  where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key and i.expires_at <= now();
+                insert into {schema}.{IdempotencyTable} (scope, subject, operation, key, input_hash, expires_at)
+                  values (v_scope, p_subject, p_operation, p_key, p_hash, now() + p_lifetime)
+                  on conflict do nothing;
+                if found then
+                  return jsonb_build_object('state', 'claimed');
+                end if;
+                select i.input_hash, i.result, i.kept into r from {schema}.{IdempotencyTable} i
+                  where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key;
+                return case when r.input_hash <> p_hash then jsonb_build_object('state', 'mismatch')
+                            when not r.kept then jsonb_build_object('state', 'replayed')
+                            else jsonb_build_object('state', 'kept', 'result', r.result) end;
+              end $$;
+            -- The result the claimed key's request commits with; null when it isn't kept (it carries a secret, shown once).
+            create function {schema}.levee_idempotency_complete(p_subject text, p_operation text, p_key text, p_result jsonb)
+              returns void language sql security definer set search_path = {schema}, pg_temp
+              as $$ update {schema}.{IdempotencyTable} set result = p_result, kept = p_result is not null
+                    where scope = {schema}.levee_scope() and subject = p_subject and operation = p_operation and key = p_key $$;
+            revoke all on function {schema}.levee_idempotency_claim(text, text, text, bytea, interval) from public;
+            revoke all on function {schema}.levee_idempotency_complete(text, text, text, jsonb) from public;
+            do $levee$
+            begin
+              if to_regprocedure('{schema}.levee_runtime()') is not null then
+                execute format('grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea, interval), '
+                  || '{schema}.levee_idempotency_complete(text, text, text, jsonb) to %I', {schema}.levee_runtime());
+              end if;
+            end $levee$;
+            """;
+    }
+
+    /// <summary>
+    /// Removes the keys whose lifetime has passed, every scope's: run by the owner, on a schedule of the app's own. A key
+    /// past its lifetime is claimed afresh whether or not this has run; this only keeps the table small.
+    /// </summary>
+    public static string SweepExpiredKeys(string schema = "public")
+    {
+        Identifier(schema, nameof(schema));
+        return $"""
+            do $levee$
+            begin
+              perform set_config('levee.platform', 'on', true);
+              delete from {schema}.{IdempotencyTable} where expires_at <= now();
+            end $levee$;
             """;
     }
 
@@ -196,6 +281,11 @@ public static class LeveeSchema
               execute 'grant usage on schema {schema} to {role}';
               execute 'grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role}';
               execute 'grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role}';
+              -- An installation from before alpha.3 has no idempotency keys until the owner adds them (LeveeSchema.Idempotency).
+              if to_regprocedure('{schema}.levee_idempotency_claim(text, text, text, bytea, interval)') is not null then
+                execute 'grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea, interval), '
+                  || '{schema}.levee_idempotency_complete(text, text, text, jsonb) to {role}';
+              end if;
               execute $ddl$create or replace function {schema}.levee_runtime() returns text language sql immutable as $body$ select '{role}' $body$$ddl$;
               execute $ddl$create or replace function {schema}.levee_runtime_sequences(t regclass) returns void language plpgsql as $body$
                 declare s regclass;
@@ -296,6 +386,14 @@ public static class LeveeMigrationBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(migrationBuilder);
         migrationBuilder.Sql(LeveeSchema.Create(schema));
+        return migrationBuilder;
+    }
+
+    /// <summary>For an installation from before alpha.3: <see cref="LeveeSchema.Idempotency"/>.</summary>
+    public static MigrationBuilder AddLeveeIdempotency(this MigrationBuilder migrationBuilder, string schema = "public")
+    {
+        ArgumentNullException.ThrowIfNull(migrationBuilder);
+        migrationBuilder.Sql(LeveeSchema.Idempotency(schema));
         return migrationBuilder;
     }
 

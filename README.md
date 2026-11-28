@@ -186,6 +186,9 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   and a change to a child is a change to its root. An edit held to what its caller saw is an `IVersionedOperation`:
   its `ExpectedVersion` (a view's `Version`, read from `uint Version { get; private set; }` on the root) is compared as
   the root is written. A repository whose `Save` flushes gives the view the version just written.
+- A write is retryable with an idempotency key (`SendAsync(operation, principal, key, ct)`, the `Idempotency-Key`
+  header): sent again, it answers the first result instead of writing twice, and equal requests at once make one write.
+  A result carrying a `[Secret]` isn't kept, so its repeat is `idempotency.replayed`.
 - Only the dispatcher commits, but an adapter may flush: `IFlush` sends pending writes inside the open transaction, so a
   later query or set-based statement sees them, and refuses outside an operation. `SaveChanges` stays banned (LEVEE004).
 - Jobs run for whoever enqueued them: register an `IJobPrincipals` to turn that subject back into the app's own principal.

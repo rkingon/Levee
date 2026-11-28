@@ -179,6 +179,26 @@ public interface IAmbientTransaction
 
 internal sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subject, string Operation, string Input);
 
+/// <summary>A retried write's key: one request, by who sent it, what to, and the hash of its input.</summary>
+internal sealed record IdempotencyKey(string Subject, string Operation, string Key, byte[] InputHash, TimeSpan Lifetime);
+
+internal enum IdempotencyState
+{
+    /// <summary>This request holds the key: it runs.</summary>
+    Claimed,
+
+    /// <summary>The key was used with other input.</summary>
+    Mismatch,
+
+    /// <summary>Done already, and its result isn't kept.</summary>
+    Replayed,
+
+    /// <summary>Done already: <see cref="IdempotencyClaim.Result"/> is what it answered.</summary>
+    Kept,
+}
+
+internal sealed record IdempotencyClaim(IdempotencyState State, string? Result = null);
+
 /// <summary>One operation's transaction. Opened scoped and read-only as its contract says; committed only by the dispatcher.</summary>
 internal interface IUnitOfWork : IAsyncDisposable
 {
@@ -189,6 +209,15 @@ internal interface IUnitOfWork : IAsyncDisposable
 
     /// <summary>Records the entry in this transaction: it commits or rolls back with the operation.</summary>
     Task AuditAsync(AuditEntry entry, CancellationToken ct);
+
+    /// <summary>
+    /// Claims <paramref name="key"/> in this transaction, or says what the request that claimed it committed. An equal claim
+    /// still in flight is waited for, so concurrent equal requests make one write.
+    /// </summary>
+    Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct);
+
+    /// <summary>Keeps the claimed key's result, as JSON, to replay; null when it isn't kept.</summary>
+    Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct);
 
     Task CommitAsync(CancellationToken ct);
 }

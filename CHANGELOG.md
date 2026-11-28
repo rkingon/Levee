@@ -7,6 +7,13 @@
   explicitly over a positional parameter, as `IScopedOperation` is). It commits only if the one root it changes is still
   at that version, and is refused as 409 `store.stale` otherwise; a root it loaded but didn't change is compared as read.
   One that loads no root, or changes more than one aggregate, is a bug, answered `internal`.
+- Idempotency keys for retryable writes: `Dispatcher.SendAsync(operation, principal, idempotencyKey, ct)`, and over HTTP
+  the `Idempotency-Key` header. A write sent again with the same key, by the same caller in the same scope, answers the
+  first result without running again; equal requests at once make one write, the later waiting for the first; a key
+  sent with other input is 409 `idempotency.mismatch`. The key and its result commit with the write, so a request that
+  rolled back left nothing to replay. A result carrying a `[Secret]` isn't kept: its repeat is 409
+  `idempotency.replayed`, since a secret is shown once. A key holds for `LeveeOptions.IdempotencyKeyLifetime` (24 hours);
+  a read ignores it.
 
 ### Levee.EntityFrameworkCore
 - **Breaking:** every aggregate root has a version. `configurationBuilder.AddLeveeConventions()`, from the app's context's
@@ -17,6 +24,10 @@
   the whole aggregate; one changed without its root loaded is a bug. A context whose roots aren't versioned fails before
   the first operation, naming the call to add. In the context itself, so every model of it (the host's, a Tool's, a
   migration's) is the same.
+
+- **Upgrading:** idempotency keys live in `levee_idempotency`, which an installation from before alpha.3 adds as its owner:
+  `migrationBuilder.AddLeveeIdempotency()` (or `LeveeSchema.Idempotency(schema)`). `LeveeSchema.SweepExpiredKeys()`
+  removes keys past their lifetime.
 
 ### Generator and analyzers
 - LEVEE114: an `IVersionedOperation` declares `Effects.Write`, and its handler takes a repository (an `IRepository<T>`

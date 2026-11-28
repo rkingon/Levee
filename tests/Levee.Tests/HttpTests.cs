@@ -61,6 +61,35 @@ public sealed class HttpTests : IAsyncDisposable
         return (response, JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement);
     }
 
+    private async Task<(HttpStatusCode Status, string Body)> PostKeyed(string name, string body, params string[] keys)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri($"/ops/{name}", UriKind.Relative))
+        {
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+        };
+        foreach (var key in keys)
+        {
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", key);
+        }
+        using var response = await _http.SendAsync(request, TestContext.Current.CancellationToken);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task An_idempotency_key_makes_a_write_safe_to_send_again()
+    {
+        var body = $$"""{"tenant":"acme","name":"{{Guid.NewGuid():N}}"}""";
+
+        var first = await PostKeyed("probe.count", body, "k1");
+        var again = await PostKeyed("probe.count", body, "k1");
+        var twice = await PostKeyed("probe.count", body, "k1", "k2");
+
+        Assert.Equal((HttpStatusCode.OK, "1"), first);
+        Assert.Equal(first, again);
+        Assert.Equal(HttpStatusCode.BadRequest, twice.Status);
+        Assert.Contains(LeveeErrors.InvalidIdempotencyKey, twice.Body, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task A_failure_is_a_problem_with_its_code_kind_and_trace()
     {
