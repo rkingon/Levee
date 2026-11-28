@@ -293,18 +293,26 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// </summary>
     internal static void Confine(Principal principal, WorkScope scope) => Confined.AddOrUpdate(principal, scope);
 
+    // What holds a process's writes to its attempt, by the run's own principal, as its confinement is: a helper it hands the
+    // principal to sends through the same lock as its context does.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Principal, Func<IServiceProvider, CancellationToken, Task>> Attempts = [];
+
+    /// <summary>
+    /// Holds every write <paramref name="principal"/> sends to its process's attempt: <paramref name="enlist"/> runs first in
+    /// each write's transaction (Oxbow's attempt lock), so a superseded run's write can't commit, and throws
+    /// <see cref="AttemptSuperseded"/> when the attempt is no longer the one running.
+    /// </summary>
+    internal static void HoldToAttempt(Principal principal, Func<IServiceProvider, CancellationToken, Task> enlist) => Attempts.AddOrUpdate(principal, enlist);
+
     /// <summary>A process's step: an operation it holds, as its principal.</summary>
-    // enlist: run first in a write's transaction, what holds it to the process's attempt (Oxbow's attempt lock), so a superseded
-    // run's write can't commit. It throws AttemptSuperseded when the attempt is no longer the one running.
-    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, Func<IServiceProvider, CancellationToken, Task>? enlist,
-        CancellationToken ct)
+    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         if (catalog.Find(operation.GetType()) is not { } descriptor)
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct, enlist);
+        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct);
     }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
@@ -315,8 +323,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             : scoped;
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct, Func<IServiceProvider, CancellationToken, Task>? enlist = null)
+        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct)
     {
+        var enlist = Attempts.TryGetValue(principal, out var attempt) ? attempt : null;
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
         var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
@@ -337,10 +346,19 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             // Unredactable for another reason (a getter that throws): a bug, which the audit's own redaction fails on.
         }
-        if (refused is null && key is not null && !descriptor.ReadOnly && !IsKey(key))
+        if (refused is null && key is not null && !descriptor.ReadOnly)
         {
-            refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
-                $"{descriptor.Name}'s idempotency key isn't one: 1 to 255 characters, none of them a control character.");
+            if (!IsKey(key))
+            {
+                refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
+                    $"{descriptor.Name}'s idempotency key isn't one: 1 to 255 characters, none of them a control character.");
+            }
+            // A key is its sender's: every anonymous caller is one subject, so one's key would answer another's request.
+            else if (principal is AnonymousPrincipal)
+            {
+                refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
+                    $"{descriptor.Name} was sent with an idempotency key by no one: a key is held by a caller who signs in.");
+            }
         }
         Result<object?> result;
         try
@@ -689,9 +707,22 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
     }
 
-    /// <summary>The input as the wire carries it, whatever its formatting was: what a key's repeat is compared by.</summary>
-    private static byte[] Hash(IOperation operation, OperationDescriptor descriptor) =>
-        System.Security.Cryptography.SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(operation, descriptor.InputType, LeveeJson.Options));
+    /// <summary>
+    /// The input as the wire carries it, its objects' members in one order (a dictionary's entries in any order are the same
+    /// input), its arrays' as they are: what a key's repeat is compared by.
+    /// </summary>
+    private static byte[] Hash(IOperation operation, OperationDescriptor descriptor)
+    {
+        static JsonNode? Canonical(JsonNode? node) => node switch
+        {
+            JsonObject members => new JsonObject(members.OrderBy(m => m.Key, StringComparer.Ordinal)
+                .Select(m => KeyValuePair.Create(m.Key, Canonical(m.Value)))),
+            JsonArray items => new JsonArray([.. items.Select(Canonical)]),
+            _ => node?.DeepClone(),
+        };
+        var input = JsonSerializer.SerializeToNode(operation, descriptor.InputType, LeveeJson.Options);
+        return System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Canonical(input)?.ToJsonString() ?? "null"));
+    }
 
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
     private static string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), LeveeJson.Options);

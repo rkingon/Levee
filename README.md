@@ -324,7 +324,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
 | LEVEE113 | An access policy reads the key of the scope it authorizes (`AccessRequest.Scope.Key`), not only whether it's the platform's: it decides who may act in which tenant. |
-| LEVEE114 | An `IVersionedOperation` writes, and its handler takes the repository of the root it changes. |
+| LEVEE114 | An `IVersionedOperation` declares a write: what it changes is held to the version its caller saw. |
 
 ## Decisions
 

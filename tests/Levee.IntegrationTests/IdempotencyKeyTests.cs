@@ -102,14 +102,58 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
+    public async Task A_fresh_install_with_both_migrations_creates_the_keys_once()
+    {
+        // An app's alpha.2 migration (AddLeveeSchema, now with keys) and its alpha.3 one (AddLeveeIdempotency), on an empty database.
+        await postgres.ExecuteAsync($"""
+            create schema fresh_keys;
+            {LeveeSchema.Create("fresh_keys")}
+            {LeveeSchema.Idempotency("fresh_keys")}
+            """);
+
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from pg_policy where polrelid = 'fresh_keys.levee_idempotency'::regclass"));
+    }
+
+    [Fact]
+    public async Task A_keyed_write_whose_result_carries_a_secret_commits_and_is_never_shown_again()
+    {
+        using var host = Build();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+
+        var issued = await dispatcher.SendAsync(new IssueKey(tenant), ada, "retry-1", Ct);
+        var again = await dispatcher.SendAsync(new IssueKey(tenant), ada, "retry-1", Ct);
+
+        Assert.True(issued.IsSuccess, issued.Error?.Message);
+        Assert.Equal(LeveeErrors.IdempotencyReplayed, again.Error!.Code);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from levee_idempotency where scope = $1 and result is not null", tenant));
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.issue_key'", tenant));
+    }
+
+    [Fact]
+    public async Task A_keys_lifetime_counts_from_its_commit_not_its_start()
+    {
+        using var host = Build();
+        host.Services.GetRequiredService<LeveeOptions>().IdempotencyKeyLifetime = TimeSpan.FromMilliseconds(500);
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+
+        Assert.True((await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(800)), ada, "retry-1", Ct)).IsSuccess);
+        var again = await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(800)), ada, "retry-1", Ct);
+
+        Assert.True(again.IsSuccess);
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.slow_issue'", tenant));
+    }
+
+    [Fact]
     public async Task An_installation_from_before_keys_gets_them_from_its_owner()
     {
         await postgres.ExecuteAsync($"""
             create role legacy_app login password 'legacy' nosuperuser nobypassrls;
             create schema legacy_keys;
             {LeveeSchema.Create("legacy_keys")}
-            drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea, interval);
-            drop function legacy_keys.levee_idempotency_complete(text, text, text, jsonb);
+            drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea);
+            drop function legacy_keys.levee_idempotency_complete(text, text, text, jsonb, interval);
             drop table legacy_keys.levee_idempotency;
             {LeveeSchema.Grants("legacy_app", "legacy_keys")}
             """);
@@ -117,7 +161,37 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
         await postgres.ExecuteAsync(LeveeSchema.Idempotency("legacy_keys"));
 
         Assert.Equal("True", await postgres.TextAsync(
-            "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea, interval)', 'execute')"));
+            "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea)', 'execute')"));
         Assert.Equal("False", await postgres.TextAsync("select has_table_privilege('legacy_app', 'legacy_keys.levee_idempotency', 'select')"));
+    }
+}
+
+public sealed record IssuedKey([property: Secret] string Token);
+
+[Operation("probe.issue_key", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
+public sealed record IssueKey(string Tenant) : IOperation<IssuedKey>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class IssueKeyHandler : IOperationHandler<IssueKey, IssuedKey>
+{
+    public Task<Result<IssuedKey>> HandleAsync(IssueKey operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<IssuedKey>>(new IssuedKey($"key-{context.NewId():N}"));
+}
+
+/// <summary>A write that takes its time before it commits.</summary>
+[Operation("probe.slow_issue", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
+public sealed record SlowIssue(string Tenant, TimeSpan Takes) : IOperation<int>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class SlowIssueHandler : IOperationHandler<SlowIssue, int>
+{
+    public async Task<Result<int>> HandleAsync(SlowIssue operation, OperationContext context, CancellationToken ct)
+    {
+        await Task.Delay(operation.Takes, ct);
+        return 42;
     }
 }

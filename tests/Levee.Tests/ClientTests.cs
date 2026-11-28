@@ -112,6 +112,74 @@ public sealed class ClientTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_outside_effect_not_declared_safe_to_repeat_is_never_sent_again()
+    {
+        var reference = $"c{Guid.NewGuid():N}";
+
+        var charged = await Client().SendAsync(new Charge("acme", reference), Ct);
+
+        Assert.Equal(ErrorKind.Internal, charged.Error!.Kind);
+        Assert.Equal(1, Counted.Runs[reference]);
+    }
+
+    /// <summary>The platform answered, and the body broke off on the way: the status said it was coming.</summary>
+    private sealed class CutOffFirstAnswer : DelegatingHandler
+    {
+        private int _sent;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var answer = await base.SendAsync(request, cancellationToken);
+            if (Interlocked.Increment(ref _sent) > 1)
+            {
+                return answer;
+            }
+            answer.Dispose();
+            var cut = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new BrokenStream()) };
+            cut.Content.Headers.ContentType = new("application/json");
+            return cut;
+        }
+
+        private sealed class BrokenStream : MemoryStream
+        {
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+                throw new IOException("The response ended prematurely.");
+
+            public override int Read(byte[] buffer, int offset, int count) => throw new IOException("The response ended prematurely.");
+        }
+    }
+
+    [Fact]
+    public async Task A_write_whose_body_broke_off_is_sent_again_under_its_key()
+    {
+        var name = $"n{Guid.NewGuid():N}";
+
+        var counted = await Client(between: new CutOffFirstAnswer()).SendAsync(new Count("acme", name), Ct);
+
+        Assert.Equal(1, counted.Value);
+        Assert.Equal(1, Counted.Runs[name]);
+    }
+
+    /// <summary>A sign-in page in front of the platform, answering 200 for everything.</summary>
+    private sealed class SignInPage : DelegatingHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("<html>sign in</html>", System.Text.Encoding.UTF8, "text/html") });
+    }
+
+    [Fact]
+    public async Task What_isnt_the_platform_answering_is_the_platform_out_of_reach()
+    {
+        var client = Client(retries: 0, between: new SignInPage());
+
+        var sent = await client.SendAsync(new Echo("hi"), Ct);
+        var opened = await client.SubscribeAsync(new Ticks(1), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, sent.Error!.Code);
+        Assert.Equal(LeveeErrors.Unreachable, opened.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_platform_out_of_reach_is_unavailable_once_its_retries_run_out()
     {
         var gone = await Client(retries: 1, between: new Unreachable()).SendAsync(new Echo("hi"), Ct);
@@ -156,5 +224,21 @@ public sealed class ClientTests : IAsyncDisposable
 
         Assert.Equal(LeveeErrors.UnknownOperation, refused.Error!.Code);
         Assert.Empty(lost.Keys);
+    }
+}
+
+/// <summary>Charges a card, then fails: what it did outside the platform isn't rolled back with it.</summary>
+[Operation("probe.charge", "member", Effects = Effects.Write | Effects.External, Idempotency = Idempotency.Conflicts)]
+public sealed record Charge(string Tenant, string Reference) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class ChargeHandler : IOperationHandler<Charge, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Charge operation, OperationContext context, CancellationToken ct)
+    {
+        Counted.Runs.AddOrUpdate(operation.Reference, 1, (_, n) => n + 1);
+        throw new InvalidOperationException("the charge went through, and then this broke");
     }
 }

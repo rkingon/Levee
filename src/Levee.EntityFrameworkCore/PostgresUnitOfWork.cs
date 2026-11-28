@@ -533,8 +533,8 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     {
         ArgumentNullException.ThrowIfNull(key);
         var answer = await db.Database.SqlQuery<string>(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}}, {{4}})::text as \"Value\"",
-            key.Subject, key.Operation, key.Key, key.InputHash, key.Lifetime)).SingleAsync(ct);
+            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}})::text as \"Value\"",
+            key.Subject, key.Operation, key.Key, key.InputHash)).SingleAsync(ct);
         using var claim = System.Text.Json.JsonDocument.Parse(answer);
         return claim.RootElement.GetProperty("state").GetString() switch
         {
@@ -549,8 +549,8 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     {
         ArgumentNullException.ThrowIfNull(key);
         await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-            $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb)",
-            key.Subject, key.Operation, key.Key, (object?)result ?? DBNull.Value), ct);
+            $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb, {{4}})",
+            key.Subject, key.Operation, key.Key, new NpgsqlParameter<string?>("result", NpgsqlTypes.NpgsqlDbType.Text) { TypedValue = result }, key.Lifetime), ct);
     }
 
     /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>

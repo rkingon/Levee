@@ -30,6 +30,20 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         return builder.Build();
     }
 
+    /// <summary>The orders tables, once per database: every test in a class shares its fixture's.</summary>
+    private async Task OrdersAsync()
+    {
+        if (await postgres.CountAsync("select count(*) from pg_class where relname = 'orders'") == 0)
+        {
+            await postgres.ExecuteAsync($"""
+                create table orders (id uuid primary key, tenant text not null);
+                create table order_lines (id uuid primary key, order_id uuid not null references orders(id), tenant text not null, amount int not null);
+                {LeveeSchema.Isolation("orders", "tenant")}
+                {LeveeSchema.Isolation("order_lines", "tenant")}
+                """);
+        }
+    }
+
     private static (string Tenant, Member Member) NewTenant()
     {
         var tenant = $"t{Guid.CreateVersion7():N}";
@@ -79,12 +93,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     [Fact]
     public async Task A_child_added_to_an_aggregate_is_a_change_to_its_root()
     {
-        await postgres.ExecuteAsync($"""
-            create table orders (id uuid primary key, tenant text not null);
-            create table order_lines (id uuid primary key, order_id uuid not null references orders(id), tenant text not null, amount int not null);
-            {LeveeSchema.Isolation("orders", "tenant")}
-            {LeveeSchema.Isolation("order_lines", "tenant")}
-            """);
+        await OrdersAsync();
         using var host = Build<OrdersDb>();
         var dispatcher = host.Services.GetRequiredService<Dispatcher>();
         var (tenant, ada) = NewTenant();
@@ -110,6 +119,53 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
 
         Assert.Contains("Order is an aggregate root without a version", refused.Message, StringComparison.Ordinal);
         Assert.Contains("configurationBuilder.AddLeveeConventions()", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_token_of_the_apps_own_is_no_version()
+    {
+        using var host = Build<StampedOrdersDb>();
+
+        var refused = await Assert.ThrowsAsync<Microsoft.Extensions.Options.OptionsValidationException>(() => host.StartAsync(Ct));
+
+        Assert.Contains("Order is an aggregate root without a version", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_versioned_edit_changes_one_aggregate_however_often_it_flushes()
+    {
+        using var host = Build<SampleDbContext>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var first = (await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), tenant, "first"), ada, Ct)).Value;
+        var second = (await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), tenant, "second"), ada, Ct)).Value;
+
+        var both = await dispatcher.SendAsync(new EditTwo(tenant, first.Id, second.Id, first.Version), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, both.Error!.Kind);
+        Assert.Equal(["first", "second"], (await dispatcher.SendAsync(new ListNotes(tenant), ada, Ct)).Value.Select(n => n.Text));
+    }
+
+    [Fact]
+    public async Task A_child_moved_between_aggregates_changes_both()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var (from, to, line) = (Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7());
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, from), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, to), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, from, line), ada, Ct)).IsSuccess);
+        Task<string> Version(Guid order) => postgres.TextAsync("select xmin::text from orders where id = $1", order);
+        var (fromBefore, toBefore) = (await Version(from), await Version(to));
+
+        var moved = await dispatcher.SendAsync(new MoveLine(tenant, from, to, line), ada, Ct);
+
+        Assert.True(moved.IsSuccess);
+        Assert.NotEqual(fromBefore, await Version(from));
+        Assert.NotEqual(toBefore, await Version(to));
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", to));
     }
 
     [Fact]
@@ -179,6 +235,13 @@ public sealed class Order : IAggregateRoot
     public static Order Open(Guid id, string tenant) => new(id, tenant);
 
     public void Add(Guid line, int amount) => _lines.Add(new OrderLine(line, Tenant, amount));
+
+    public void Take(Order from, Guid line)
+    {
+        var taken = from._lines.Single(l => l.Id == line);
+        from._lines.Remove(taken);
+        _lines.Add(taken);
+    }
 }
 
 public sealed class OrderLine(Guid id, string tenant, int amount)
@@ -225,6 +288,20 @@ internal class OrdersDb : DbContext
     }
 }
 
+/// <summary>Its root versioned by a token of the app's own, which nothing but the app moves.</summary>
+internal sealed class StampedOrdersDb(DbContextOptions<StampedOrdersDb> options) : OrdersDb(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
+    {
+    }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Order>().Property<string>("Stamp").IsConcurrencyToken();
+    }
+}
+
 internal sealed class UnversionedOrdersDb(DbContextOptions<UnversionedOrdersDb> options) : OrdersDb(options)
 {
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
@@ -243,6 +320,58 @@ public sealed record OpenOrder(string Tenant, Guid Id) : IOperation<Unit>, IScop
 public sealed record AddLineHeld(string Tenant, Guid Order, int Amount) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
+}
+
+[Operation("probe.order_add_line", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
+public sealed record AddLine(string Tenant, Guid Order, Guid Line) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+[Operation("probe.order_move_line", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record MoveLine(string Tenant, Guid From, Guid To, Guid Line) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+/// <summary>Held to one note's version, then edits that note and another, saving between.</summary>
+[Operation("probe.edit_two", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record EditTwo(string Tenant, Guid First, Guid Second, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class EditTwoHandler(INotes notes) : IOperationHandler<EditTwo, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(EditTwo operation, OperationContext context, CancellationToken ct)
+    {
+        (await notes.FindAsync(operation.First, ct))!.Edit("first, edited");
+        await notes.SaveAsync(ct);
+        (await notes.FindAsync(operation.Second, ct))!.Edit("second, edited");
+        await notes.SaveAsync(ct);
+        return Unit.Value;
+    }
+}
+
+internal sealed class AddLineHandler(IOrders orders) : IOperationHandler<AddLine, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLine operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(operation.Line, 1);
+        return Unit.Value;
+    }
+}
+
+internal sealed class MoveLineHandler(IOrders orders) : IOperationHandler<MoveLine, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(MoveLine operation, OperationContext context, CancellationToken ct)
+    {
+        var from = await orders.FindAsync(operation.From, ct);
+        (await orders.FindAsync(operation.To, ct)).Take(from, operation.Line);
+        return Unit.Value;
+    }
 }
 
 public interface IOrders : IRepository<Order>

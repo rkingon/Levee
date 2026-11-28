@@ -134,7 +134,8 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             MaxAttempts = options?.MaxAttempts,
             Unique = options is { Unique: true } ? new UniqueOptions { ByArgs = true, ByState = LiveStates } : null,
         };
-        var result = secret is null
+        // Sealed whenever jobs seal: its steps' results are sealed with its input, and any step may answer a secret.
+        var result = secret is null && !jobs.SealSecrets
             ? await client.InsertAsync(new ProcessJob(name, stored, subject, system, scope, unscoped), insert, ct)
             : await client.InsertAsync(new SealedProcessJob(name, stored, subject, system, scope, unscoped), insert, ct);
         return new Enqueued(result.Job.Id, result.UniqueSkippedAsDuplicate);
@@ -288,7 +289,8 @@ internal static class Run
         {
             Dispatcher.Confine(principal, new WorkScope(scope, ReadOnly: false) { Unscoped = unscoped });
         }
-        // Each write a step sends is held to this attempt, so a run the rescuer has since taken over can't commit one.
+        // Each write the run sends, through its context or a helper it hands the principal to, is held to this attempt, so a run
+        // the rescuer has since taken over can't commit one.
         async Task Lock(IServiceProvider services, CancellationToken token)
         {
             var (_, transaction) = services.GetRequiredService<IAmbientTransaction>().Current
@@ -302,7 +304,8 @@ internal static class Run
                 throw new AttemptSuperseded(superseded);
             }
         }
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, Lock, token),
+        Dispatcher.HoldToAttempt(principal, Lock);
+        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, token),
             current.Step, current.Sealed);
         var value = input.Deserialize(type, LeveeJson.Options)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");

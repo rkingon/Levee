@@ -71,6 +71,28 @@ public sealed class IdempotencyTests
     }
 
     [Fact]
+    public async Task No_one_holds_a_key_for_whoever_else_is_no_one()
+    {
+        var refused = await _dispatcher.SendAsync(new Count("acme", Name()), new AnonymousPrincipal(), "key-1", CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.InvalidIdempotencyKey, refused.Error!.Code);
+        Assert.Empty(_store.Begun);
+    }
+
+    [Fact]
+    public async Task A_dictionarys_entries_in_another_order_are_the_same_input()
+    {
+        var name = Name();
+
+        var first = await _dispatcher.SendAsync(new Tag("acme", name, new Dictionary<string, int> { ["a"] = 1, ["b"] = 2 }), Ada, "key-1", CancellationToken.None);
+        var again = await _dispatcher.SendAsync(new Tag("acme", name, new Dictionary<string, int> { ["b"] = 2, ["a"] = 1 }), Ada, "key-1", CancellationToken.None);
+        var other = await _dispatcher.SendAsync(new Tag("acme", name, new Dictionary<string, int> { ["a"] = 2, ["b"] = 1 }), Ada, "key-1", CancellationToken.None);
+
+        Assert.Equal(first.Value, again.Value);
+        Assert.Equal(LeveeErrors.IdempotencyMismatch, other.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_read_ignores_its_key()
     {
         var said = await _dispatcher.SendAsync(new Echo("hi"), Ada, "", CancellationToken.None);
@@ -108,4 +130,16 @@ internal sealed class IssueTokenHandler : IOperationHandler<IssueToken, IssuedTo
 {
     public Task<Result<IssuedToken>> HandleAsync(IssueToken operation, OperationContext context, CancellationToken ct) =>
         Task.FromResult<Result<IssuedToken>>(new IssuedToken(operation.Name, $"token-{operation.Name}"));
+}
+
+[Operation("probe.tag", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record Tag(string Tenant, string Name, Dictionary<string, int> Tags) : IOperation<int>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class TagHandler : IOperationHandler<Tag, int>
+{
+    public Task<Result<int>> HandleAsync(Tag operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<int>>(Counted.Runs.AddOrUpdate(operation.Name, 1, (_, n) => n + 1));
 }

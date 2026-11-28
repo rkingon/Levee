@@ -780,20 +780,18 @@ own code: a helper of its own that takes the scope and reads `Key` counts, one e
 needn't read it. Reading it is the build's to see; comparing it rightly is the policy's, and the access
 tests'.
 
-## LEVEE114: A versioned operation changes the root it loads
+## LEVEE114: A versioned operation writes
 
 An edit made against what its caller saw (`IVersionedOperation`) is held to the version of one aggregate: the one root
 it loads and changes. The version is compared as that root is written (Postgres's own `xmin` in the update's `where`), so
-an operation that names one has to write, and has to reach the root the only way the application does, through its
-repository. A read can't be stale, and a handler that takes no repository loads no root to compare.
+an operation that names one has to write: a read can't be stale.
 
 ```csharp
 // Wrong: a version held to nothing
 [Operation("notes.edit", "member")]
 public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation { ... }
-internal sealed class EditNoteHandler(IBannedWords banned) : IOperationHandler<EditNote, NoteView> { ... }
 
-// Right: it writes, and loads the root it changes through the root's repository
+// Right: it writes, and its handler loads the root it changes, changes it through its own method, and saves
 [Operation("notes.edit", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["note.missing"])]
 public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
 {
@@ -812,7 +810,8 @@ internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote
 }
 ```
 
-At run time, the one root the operation changes is held to the version (refused as 409 `store.stale` when it moved on);
-one it loaded but didn't change is compared as it was read. A versioned operation that loads no root, or changes more
-than one aggregate, is a bug, answered `internal`: one version names one aggregate, and what follows in another is an
-operation of its own.
+How the handler reaches the root (its repository, or a helper of Application's that holds it) is the build's to leave
+alone: it's held at run time. The one root the operation changes is held to the version (refused as 409 `store.stale`
+when it moved on); one it loaded but didn't change is compared as it was read. A versioned operation that loads no root,
+creates one, or changes more than one aggregate, across however many flushes, is a bug, answered `internal`: one version
+names one aggregate, and what follows in another is an operation of its own.

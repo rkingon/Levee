@@ -28,34 +28,28 @@ public sealed class VersionedOperationTests
         Assert.Equal(refused ? ["LEVEE114"] : [], contracts.Ids.Distinct());
     }
 
-    [Theory]
-    [InlineData("INotes notes", false)]
-    [InlineData("IRepository<Note> notes", false)]
-    [InlineData("IClock clock", true)]
-    public async Task A_versioned_operations_handler_takes_a_repository(string takes, bool refused)
+    [Fact]
+    public async Task How_its_handler_reaches_the_root_is_left_to_the_application()
     {
         var contracts = await Compile("Contracts", Edit(", Effects = Effects.Write, Idempotency = Idempotency.Idempotent"));
         var domain = await Compile("Domain", "public sealed class Note : Levee.IAggregateRoot;");
-        Assert.Empty(contracts.Errors);
-        Assert.Empty(domain.Errors);
 
-        var application = await Compile("Application", $$"""
+        // Through a helper of Application's that holds the repository: held at run time, not by the build.
+        var application = await Compile("Application", """
             using Levee;
             using System.Threading;
             using System.Threading.Tasks;
             public interface INotes : IRepository<Note>;
-            [Port] public interface IClock { int Hour { get; } }
-            internal sealed class EditNoteHandler({{takes}}) : IOperationHandler<EditNote, int>
+            internal sealed class NoteStore(INotes notes)
+            {
+                public INotes Notes => notes;
+            }
+            internal sealed class EditNoteHandler(NoteStore store) : IOperationHandler<EditNote, int>
             {
                 public Task<Result<int>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<int>>(1);
             }
             """, contracts.Reference(), domain.Reference());
 
-        Assert.Equal(refused ? ["LEVEE114"] : [], application.Ids.Distinct());
-        if (refused)
-        {
-            Assert.Contains("EditNoteHandler handles EditNote", application.Errors.Single().GetMessage(System.Globalization.CultureInfo.InvariantCulture),
-                StringComparison.Ordinal);
-        }
+        Assert.Empty(application.Errors);
     }
 }

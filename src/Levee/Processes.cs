@@ -68,6 +68,11 @@ public sealed class ProcessContext
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(run);
+        // Before it acts: a step whose result can't be recorded would act again on every run.
+        if (!_sealed && LeveeJson.FindSecret(typeof(T), LeveeJson.Options) is { } declared)
+        {
+            throw new InvalidOperationException(Unsealed(name, declared));
+        }
         try
         {
             var recorded = await _step(name, async token =>
@@ -79,9 +84,7 @@ public sealed class ProcessContext
                 }
                 if (!_sealed && result.Value is { } value && LeveeJson.FindSecretIn(value, typeof(T), LeveeJson.Options) is { } secret)
                 {
-                    throw new InvalidOperationException(
-                        $"Step {name}'s result {secret} is a secret, and a step's result is stored. Return a reference to it, "
-                        + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
+                    throw new InvalidOperationException(Unsealed(name, secret));
                 }
                 return JsonSerializer.SerializeToElement(result.Value, LeveeJson.Options);
             }, ct).ConfigureAwait(false);
@@ -92,6 +95,10 @@ public sealed class ProcessContext
             return failed.Error;
         }
     }
+
+    private static string Unsealed(string step, string secret) =>
+        $"Step {step}'s result {secret} is a secret, and a step's result is stored. Return a reference to it, "
+        + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.";
 
     /// <summary>Ends this run and runs the process again after <paramref name="delay"/>, from the top.</summary>
     [DoesNotReturn]

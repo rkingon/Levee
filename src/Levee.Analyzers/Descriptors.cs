@@ -195,8 +195,8 @@ internal static class Descriptors
         "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");
 
     public static readonly DiagnosticDescriptor VersionedLoadsNoRoot = Rule(
-        "LEVEE114", "A versioned operation changes the root it loads",
-        "{0} {1}, so there's no aggregate the version its caller saw could be held to. Fix: an IVersionedOperation names the version of the one aggregate it changes: declare Effects = Effects.Write, and handle it with a handler that takes the root's repository (an IRepository<T> port), loads the root, changes it through its own method, and saves");
+        "LEVEE114", "A versioned operation writes",
+        "{0} is held to the version its caller saw (IVersionedOperation) but declares no write, so there's no change the version could be held to. Fix: an IVersionedOperation names the version of the one aggregate it changes: declare Effects = Effects.Write, and have its handler load the root, change it through its own method, and save");
 
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =

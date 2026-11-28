@@ -13,7 +13,9 @@ public sealed class LeveeClientOptions
 
     /// <summary>
     /// How many times a transient failure (<see cref="Error.Transient"/>) is tried again before it's answered. A write is
-    /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result.
+    /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result. A
+    /// write that acts outside the platform (<see cref="Effects.External"/>) is retried only when it declares a repeat safe
+    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did outside may have happened.
     /// </summary>
     public int Retries { get; set; } = 2;
 
@@ -34,6 +36,11 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     /// Sends <paramref name="operation"/> and answers its result, or its failure. A write carries an idempotency key of its
     /// own, kept across its retries, so it's written once however many times it's sent.
     /// </summary>
+    /// <remarks>
+    /// Anything that isn't the platform's own answer (a connection refused, a body cut off, a proxy's page) is
+    /// <see cref="ErrorKind.Unavailable"/> <see cref="LeveeErrors.Unreachable"/>. The caller's cancellation is thrown, never
+    /// answered.
+    /// </remarks>
     public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
@@ -43,7 +50,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         }
         var body = JsonSerializer.SerializeToUtf8Bytes(operation, descriptor.InputType, LeveeJson.Options);
         var key = descriptor.ReadOnly ? null : Guid.CreateVersion7().ToString();
-        var answered = await WithRetriesAsync(async () =>
+        var retries = descriptor.ReadOnly || (descriptor.Effects & Effects.External) == 0 || descriptor.Idempotency == Idempotency.Idempotent
+            ? _options.Retries
+            : 0;
+        var answered = await WithRetriesAsync(retries, async () =>
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, Path(descriptor.Name)) { Content = new ByteArrayContent(body) };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -56,8 +66,19 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 return await FailureAsync(response, ct);
             }
+            if (response.Content.Headers.ContentType?.MediaType != "application/json")
+            {
+                return NotThePlatform(response);
+            }
             await using var content = await response.Content.ReadAsStreamAsync(ct);
-            return Result<object?>.Success(await JsonSerializer.DeserializeAsync(content, descriptor.ResultType, LeveeJson.Options, ct));
+            try
+            {
+                return Result<object?>.Success(await JsonSerializer.DeserializeAsync(content, descriptor.ResultType, LeveeJson.Options, ct));
+            }
+            catch (JsonException e)
+            {
+                return Error.Unavailable(LeveeErrors.Unreachable, $"{descriptor.Name} was answered with what its contract doesn't read: {e.Message}");
+            }
         }, ct);
         return answered.IsSuccess ? Result<TResult>.Success((TResult)answered.Value!) : answered.Error;
     }
@@ -71,17 +92,17 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{subscription.GetType().Name} isn't in the catalog this client was given.");
         }
         var input = Uri.EscapeDataString(JsonSerializer.Serialize(subscription, descriptor.InputType, LeveeJson.Options));
-        var opened = await WithRetriesAsync(async () =>
+        var opened = await WithRetriesAsync(_options.Retries, async () =>
         {
             var response = await http.SendAsync(new HttpRequestMessage(HttpMethod.Get, $"{Path(descriptor.Name)}/events?input={input}"),
                 HttpCompletionOption.ResponseHeadersRead, ct);
-            if (response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "text/event-stream")
             {
                 return Result<object?>.Success(response);
             }
             using (response)
             {
-                return await FailureAsync(response, ct);
+                return response.IsSuccessStatusCode ? NotThePlatform(response) : await FailureAsync(response, ct);
             }
         }, ct);
         return opened.IsSuccess
@@ -95,8 +116,21 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         using (response)
         {
             await using var stream = await response.Content.ReadAsStreamAsync(ct);
-            await foreach (var item in SseParser.Create(stream).EnumerateAsync(ct))
+            await using var items = SseParser.Create(stream).EnumerateAsync(ct).GetAsyncEnumerator(ct);
+            while (true)
             {
+                try
+                {
+                    if (!await items.MoveNextAsync())
+                    {
+                        yield break;
+                    }
+                }
+                catch (Exception e) when (e is IOException or HttpRequestException && !ct.IsCancellationRequested)
+                {
+                    throw new OperationFailedException(Error.Unavailable(LeveeErrors.Unreachable, $"{descriptor.Name}'s stream broke off: {e.Message}"));
+                }
+                var item = items.Current;
                 switch (item.EventType)
                 {
                     case "keepalive":
@@ -113,7 +147,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
 
     private string Path(string name) => $"{_options.Prefix.TrimEnd('/')}/{name}";
 
-    private async Task<Result<object?>> WithRetriesAsync(Func<Task<Result<object?>>> send, CancellationToken ct)
+    private async Task<Result<object?>> WithRetriesAsync(int retries, Func<Task<Result<object?>>> send, CancellationToken ct)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -122,7 +156,8 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 answered = await send();
             }
-            catch (HttpRequestException e)
+            // A body cut off is an IOException (HttpIOException) as it's read, past the status that said it was coming.
+            catch (Exception e) when (e is HttpRequestException or IOException && !ct.IsCancellationRequested)
             {
                 answered = Error.Unavailable(LeveeErrors.Unreachable, $"The platform couldn't be reached: {e.Message}");
             }
@@ -130,7 +165,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 answered = Error.Unavailable(LeveeErrors.Unreachable, "The platform didn't answer in time.");
             }
-            if (answered.IsSuccess || !answered.Error.Transient || attempt >= _options.Retries)
+            if (answered.IsSuccess || !answered.Error.Transient || attempt >= retries)
             {
                 return answered;
             }
@@ -157,6 +192,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         }
         return Error.Unavailable(LeveeErrors.Unreachable, $"The platform answered {(int)response.StatusCode} with no problem of its own.");
     }
+
+    private static Error NotThePlatform(HttpResponseMessage response) =>
+        Error.Unavailable(LeveeErrors.Unreachable,
+            $"Something answered {(int)response.StatusCode} as {response.Content.Headers.ContentType?.MediaType ?? "nothing"}, not the platform's contract (a sign-in page, a proxy).");
 }
 
 public static class LeveeClientServiceCollectionExtensions

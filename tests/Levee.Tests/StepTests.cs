@@ -56,11 +56,14 @@ public sealed class StepTests
     public async Task A_secret_is_recorded_only_where_step_results_are_sealed(bool sealedResults, bool refused)
     {
         var recorded = new Recorded();
+        var issued = 0;
 
         var step = Record.ExceptionAsync(() => Run(recorded, sealedResults).StepAsync("issue",
-            _ => Task.FromResult<Result<IssuedToken>>(new IssuedToken("ci", "token-ci")), CancellationToken.None));
+            _ => Task.FromResult<Result<IssuedToken>>(new IssuedToken("ci", $"token-{++issued}")), CancellationToken.None));
 
         Assert.Equal(refused, await step is InvalidOperationException);
         Assert.Equal(!refused, recorded.Steps.ContainsKey("issue"));
+        // Refused before it acts, so no token is issued that can't be recorded.
+        Assert.Equal(refused ? 0 : 1, issued);
     }
 }

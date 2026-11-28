@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Levee.EntityFrameworkCore;
 using Levee.Generated;
 using Levee.Oxbow;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,7 +17,7 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private IHost Build()
+    private IHost Build(bool seal = false)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = "none";
@@ -24,7 +25,8 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
-        builder.Services.AddLeveeOxbow(o => o.Queues["default"] = new QueueOptions { MaxWorkers = 2 }).AddLeveeJobs();
+        builder.Services.AddDataProtection();
+        builder.Services.AddLeveeOxbow(o => o.Queues["default"] = new QueueOptions { MaxWorkers = 2 }).AddLeveeJobs(sealSecrets: seal).AddArgsEncryption();
         builder.Services.AddSingleton<IAccessPolicy, TenantAccess>();
         builder.Services.AddScoped<IJobPrincipals, RestoreMembers>();
         return builder.Build();
@@ -57,30 +59,94 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         await host.StopAsync(Ct);
     }
 
-    [Fact]
-    public async Task A_superseded_attempts_write_rolls_back_and_ends_its_run_while_a_read_never_locks()
+    [Theory]
+    [InlineData(false, "levee_process")]
+    [InlineData(true, "levee_process_sealed")]
+    public async Task Where_jobs_seal_every_process_is_sealed_so_any_step_may_answer_a_secret(bool seal, string kind)
+    {
+        using var host = Build(seal);
+        var (tenant, ada) = NewTenant();
+        // A sealed job's args are ciphertext: it's told by its kind alone.
+        var before = await postgres.CountAsync("select count(*) from oxbow_job where kind = $1", kind);
+
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartSteps(tenant), ada, Ct)).IsSuccess);
+
+        Assert.Equal(before + 1, await postgres.CountAsync("select count(*) from oxbow_job where kind = $1", kind));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_superseded_attempt_reads_but_writes_nothing_however_it_sends(bool helper)
     {
         using var host = Build();
-        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        await host.StartAsync(Ct);
         var (tenant, ada) = NewTenant();
-        static Task Superseded(IServiceProvider services, CancellationToken ct) => throw new AttemptSuperseded(new InvalidOperationException("rescued"));
-        IAmbientTransaction? held = null;
-        Task Locks(IServiceProvider services, CancellationToken ct)
-        {
-            held = services.GetRequiredService<IAmbientTransaction>();
-            Assert.NotNull(held.Current);
-            return Task.CompletedTask;
-        }
+        var run = Superseded.For(tenant);
 
-        await Assert.ThrowsAsync<AttemptSuperseded>(() => dispatcher.SendAsStepAsync(new CreateNote(Guid.CreateVersion7(), tenant, "stale"), ada, Superseded, Ct));
-        var read = await dispatcher.SendAsStepAsync(new ListNotes(tenant), ada, Superseded, Ct);
-        var written = await dispatcher.SendAsStepAsync(new CreateNote(Guid.CreateVersion7(), tenant, "current"), ada, Locks, Ct);
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartSuperseded(tenant, helper), ada, Ct)).IsSuccess);
+        await run.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        // What the rescuer does: the job's attempt is another one now, and this run's is no longer current.
+        await postgres.ExecuteAsync($"update oxbow_job set attempted_at = attempted_at + interval '1 second' where kind = 'levee_process' and args::text like '%{tenant}%'");
+        run.Release.SetResult();
 
-        Assert.True(read.IsSuccess);
-        Assert.True(written.IsSuccess);
-        Assert.NotNull(held);
-        Assert.Equal(1, await postgres.CountAsync("select count(*) from notes where tenant = $1", tenant));
+        Assert.Equal("read; write refused", await run.Outcome.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", tenant));
+        await host.StopAsync(Ct);
     }
+}
+
+[Operation("probe.start_superseded", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartSuperseded(string Tenant, bool Helper) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+public sealed record SupersededInput(string Tenant, bool Helper);
+
+internal sealed class StartSupersededHandler(IJobs jobs) : IOperationHandler<StartSuperseded, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartSuperseded operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new SupersededInput(operation.Tenant, operation.Helper), new JobOptions(MaxAttempts: 1), ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Waits to be superseded, then reads and writes: through its context, or through the dispatcher as a helper would.</summary>
+internal sealed class SupersededProcess(Dispatcher dispatcher) : IProcess<SupersededInput>
+{
+    public async Task RunAsync(SupersededInput input, ProcessContext context, CancellationToken ct)
+    {
+        var run = Superseded.For(input.Tenant);
+        run.Started.TrySetResult();
+        await run.Release.Task.WaitAsync(ct);
+        var read = await context.SendAsync(new ListNotes(input.Tenant), ct);
+        var write = new CreateNote(Guid.CreateVersion7(), input.Tenant, "stale");
+        try
+        {
+            var written = input.Helper ? await dispatcher.SendAsync(write, context.Principal, ct) : await context.SendAsync(write, ct);
+            run.Outcome.TrySetResult($"{(read.IsSuccess ? "read" : "no read")}; write {(written.IsSuccess ? "committed" : written.Error.Code)}");
+        }
+        catch (Exception e)
+        {
+            run.Outcome.TrySetResult(e is AttemptSuperseded ? $"{(read.IsSuccess ? "read" : "no read")}; write refused" : e.ToString());
+            throw;
+        }
+    }
+}
+
+internal sealed class Superseded
+{
+    private static readonly ConcurrentDictionary<string, Superseded> Runs = new();
+
+    public static Superseded For(string tenant) => Runs.GetOrAdd(tenant, _ => new Superseded());
+
+    public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public TaskCompletionSource<string> Outcome { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 [Operation("probe.start_steps", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
