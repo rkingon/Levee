@@ -690,7 +690,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// a choice of them. Whatever else C# can say about a type (a constructor, an initializer, a base, a JSON attribute) is
     /// outside it, so there's nothing for the schema and the wire to disagree about.
     /// </summary>
-    internal static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
+    // stored: judged for a job to keep, where a record a Contracts project declares is that project's to hold (LEVEE104 judged
+    // it there), not this one's to own.
+    internal static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation,
+        bool stored = false)
     {
         var here = path.Length == 0 ? type.ToDisplayString() : path;
         if (!seen.Add(type))
@@ -699,7 +702,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (type is IArrayTypeSymbol array)
         {
-            return array.Rank == 1 ? Shapeless(array.ElementType, seen, path, input, compilation) : (here, $"is a many-dimensional array. Fix: an array of arrays");
+            return array.Rank == 1 ? Shapeless(array.ElementType, seen, path, input, compilation, stored) : (here, $"is a many-dimensional array. Fix: an array of arrays");
         }
         if (type is not INamedTypeSymbol named)
         {
@@ -707,7 +710,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
         {
-            return Shapeless(named.TypeArguments[0], seen, path, input, compilation);
+            return Shapeless(named.TypeArguments[0], seen, path, input, compilation, stored);
         }
         var name = MetadataName(named);
         if (named.TypeKind == TypeKind.Enum || ContractLanguage.Scalars.Contains(name)
@@ -722,7 +725,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (here, $"is a dictionary keyed by {key.ToDisplayString()}. Fix: key it by a string, number, Guid, date or enum");
             }
-            return named.TypeArguments.Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null);
+            return named.TypeArguments.Select(t => Shapeless(t, seen, path, input, compilation, stored)).FirstOrDefault(p => p is not null);
         }
         // A value object: one scalar, written by its own converter, on its type.
         var declared = named.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
@@ -744,6 +747,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"is {named.ToDisplayString()}, which isn't in the contract language. {Language}");
         }
+        if (stored && !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly) && Roles.Of(named.ContainingAssembly) == Role.Contracts)
+        {
+            return null;
+        }
         if (!SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly))
         {
             return (here, $"is {named.ContainingAssembly.Name}'s, not this contract's own. Fix: declare the contract's own record beside the operation (mapping in the handler), or carry the value as a value object or an enum");
@@ -762,7 +769,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (here, $"isn't a choice of shapes the wire reads: an abstract record with no members and no base, each subtype deriving from it and named by a discriminator. {Language}");
             }
-            return subtypes.Select(d => (ITypeSymbol)d.ConstructorArguments[0].Value!).Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null);
+            return subtypes.Select(d => (ITypeSymbol)d.ConstructorArguments[0].Value!).Select(t => Shapeless(t, seen, path, input, compilation, stored)).FirstOrDefault(p => p is not null);
         }
         if (named.BaseType is { SpecialType: not SpecialType.System_Object } baseType
             && !(baseType.IsAbstract && baseType.GetAttributes().Any(a => JsonAttribute(a, "JsonDerivedTypeAttribute") && SymbolEqualityComparer.Default.Equals(a.ConstructorArguments.FirstOrDefault().Value as ITypeSymbol, named))))
@@ -780,7 +787,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, $"carries [{onMember.AttributeClass!.Name.Replace("Attribute", "")}], which changes how the wire reads it apart from what its schema says. {Language}");
             }
-            if (Shapeless(member.Type, seen, at, input, compilation) is { } found)
+            if (Shapeless(member.Type, seen, at, input, compilation, stored) is { } found)
             {
                 return found;
             }

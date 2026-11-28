@@ -15,7 +15,9 @@ public sealed class LeveeClientOptions
     /// How many times a transient failure (<see cref="Error.Transient"/>) is tried again before it's answered. A write is
     /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result. A
     /// write that acts outside the platform (<see cref="Effects.External"/>) is retried only when it declares a repeat safe
-    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did outside may have happened.
+    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did outside may have happened. An
+    /// operation that sends another which commits on its own (a record kept whatever the first does) acts outside its
+    /// transaction too, and declares <see cref="Effects.External"/> for it.
     /// </summary>
     public int Retries { get; set; } = 2;
 
@@ -222,8 +224,8 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     }
 
     /// <summary>
-    /// An answer's body, read whole by its send's deadline; null once it's read. One that stalls past it is the platform out of
-    /// reach, as whatever answered said when to come back (its headers arrived).
+    /// An answer's body, read whole by its send's deadline; null once it's read. One that stalls past it, or breaks off, is the
+    /// platform out of reach, as whatever answered said when to come back (its headers arrived).
     /// </summary>
     private async Task<Error?> ReadWholeAsync(HttpResponseMessage response, CancellationTokenSource deadline, CancellationToken ct)
     {
@@ -235,6 +237,11 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return Unreachable("The platform didn't answer in time.", RetryAfter(response.Headers.RetryAfter, _options.Time));
+        }
+        // A body cut off is an IOException (HttpIOException) as it's read.
+        catch (Exception e) when (e is HttpRequestException or IOException && !ct.IsCancellationRequested)
+        {
+            return Unreachable($"The platform's answer broke off: {e.Message}", RetryAfter(response.Headers.RetryAfter, _options.Time));
         }
     }
 

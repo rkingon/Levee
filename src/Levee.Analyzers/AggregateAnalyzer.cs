@@ -41,23 +41,59 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         }
         for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            foreach (var member in t.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary }
-                && !m.IsImplicitlyDeclared && !m.IsStatic))
+            foreach (var member in Members(t).Where(Open))
             {
-                var open = member switch
+                var location = SymbolEqualityComparer.Default.Equals(t, type) ? member.Locations.FirstOrDefault() : type.Locations.FirstOrDefault();
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
+            }
+        }
+        // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside.
+        foreach (var part in Parts(type, root, context.Compilation))
+        {
+            foreach (var member in Members(part).Where(Open))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, member.Locations.FirstOrDefault(),
+                    $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
+            }
+        }
+    }
+
+    private static IEnumerable<ISymbol> Members(INamedTypeSymbol type) =>
+        type.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } && !m.IsImplicitlyDeclared && !m.IsStatic);
+
+    private static bool Open(ISymbol member) => member switch
+    {
+        // A method that hands out a mutable collection hands out the state inside it.
+        IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
+        IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
+            or Accessibility.ProtectedAndInternal) => true,
+        IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
+        IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
+        _ => false,
+    };
+
+    /// <summary>
+    /// The types of this project a root hands out, at any depth, through what it shows (a property's type, or the items of a
+    /// collection it shows): its parts. Another root is an aggregate of its own; a type of another project, its own to guard.
+    /// </summary>
+    private static IEnumerable<INamedTypeSymbol> Parts(INamedTypeSymbol type, INamedTypeSymbol root, Compilation compilation)
+    {
+        var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default) { type };
+        var pending = new Queue<INamedTypeSymbol>([type]);
+        while (pending.Count > 0)
+        {
+            var holder = pending.Dequeue();
+            foreach (var shown in holder.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && p.GetMethod?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal))
+            {
+                var held = shown.Type is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
+                    && named.AllInterfaces.Concat(named.TypeKind == TypeKind.Interface ? [named] : []).FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) is { } items
+                    ? items.TypeArguments[0]
+                    : shown.Type;
+                if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct } part && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
+                    && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))
                 {
-                    // A method that hands out a mutable collection hands out the state inside it.
-                    IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
-                    IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
-                        or Accessibility.ProtectedAndInternal) => true,
-                    IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
-                    IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
-                    _ => false,
-                };
-                if (open)
-                {
-                    var location = SymbolEqualityComparer.Default.Equals(t, type) ? member.Locations.FirstOrDefault() : type.Locations.FirstOrDefault();
-                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
+                    pending.Enqueue(part);
+                    yield return part;
                 }
             }
         }

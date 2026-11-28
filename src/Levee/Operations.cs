@@ -22,9 +22,9 @@ public interface IScopedOperation
 }
 
 /// <summary>
-/// An edit made against the version of an aggregate its caller saw: it commits only if the root is still at that version,
-/// and is refused as <see cref="LeveeErrors.Stale"/> otherwise, so an edit made on what someone else has since changed
-/// never overwrites it. Implemented explicitly over a positional parameter, as <see cref="IScopedOperation"/> is, on an
+/// An edit made against the version of an aggregate its caller saw: the root it updates or deletes is written only if it's
+/// still at that version, and the edit is refused as <see cref="LeveeErrors.Stale"/> otherwise, so an edit made on what
+/// someone else has since changed never overwrites it. One that writes nothing loses no one's edit, and is held to nothing. Implemented explicitly over a positional parameter, as <see cref="IScopedOperation"/> is, on an
 /// operation that writes (LEVEE114); its handler loads the one root it changes, which the unit of work holds to the version.
 /// </summary>
 public interface IVersionedOperation

@@ -565,7 +565,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
 
     /// <summary>What's wrong with a type a job keeps, as LEVEE104 judges an operation's: outside the contract language, it's read back as something else.</summary>
     private static string? Stored(ITypeSymbol type, Compilation compilation) =>
-        OperationGenerator.Shapeless(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", input: true, compilation) is { } shapeless
+        OperationGenerator.Shapeless(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", input: true, compilation, stored: true) is { } shapeless
             ? $"its {shapeless.Path} {shapeless.Problem}"
             : null;
 
@@ -576,15 +576,18 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnProcess(SymbolAnalysisContext context)
     {
         var type = (INamedTypeSymbol)context.Symbol;
-        if (type.AllInterfaces.FirstOrDefault(i => Known.Is(i, "IProcess", 1)) is not { } process)
+        var processes = type.AllInterfaces.Where(i => Known.Is(i, "IProcess", 1)).ToList();
+        if (processes.Count == 0)
         {
             return;
         }
-        // A generic base's input is judged where it's closed, by each process that names it.
-        if (type.Locations.FirstOrDefault() is { IsInSource: true } at && process.TypeArguments[0] is not ITypeParameterSymbol
-            && Stored(process.TypeArguments[0], context.Compilation) is { } input)
+        // Every input it's registered for. A generic base's input is judged where it's closed, by each process that names it.
+        foreach (var input in processes.Select(p => p.TypeArguments[0]).Where(i => i is not ITypeParameterSymbol))
         {
-            context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, at, $"{type.Name}'s input {process.TypeArguments[0].Name}", input));
+            if (type.Locations.FirstOrDefault() is { IsInSource: true } at && Stored(input, context.Compilation) is { } problem)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, at, $"{type.Name}'s input {input.Name}", problem));
+            }
         }
         var held = type.InstanceConstructors.SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
             .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))

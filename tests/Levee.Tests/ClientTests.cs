@@ -396,6 +396,34 @@ public sealed class ClientTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_gateway_that_says_when_to_come_back_then_breaks_off_is_waited_for_as_it_said()
+    {
+        var sent = 0;
+        var broken = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Dispose();
+            var down = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StreamContent(new Broken()) };
+            down.Headers.RetryAfter = new(TimeSpan.FromHours(1));
+            return down;
+        });
+
+        var said = await Client(between: broken).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
+    }
+
+    /// <summary>A body cut off as it's read.</summary>
+    private sealed class Broken : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            throw new IOException("the connection was reset");
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            throw new IOException("the connection was reset");
+    }
+
+    [Fact]
     public async Task A_streams_refusal_is_read_within_one_timeout_from_before_it_was_sent()
     {
         var slow = new Slowly(TimeSpan.FromMilliseconds(650));

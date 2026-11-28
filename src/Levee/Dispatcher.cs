@@ -181,6 +181,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             try
             {
                 json = ContractWire.WriteResult(descriptor, item);
+                // Read back as a result sent as JSON is: one its own contract can't read is the handler's bug, told here.
+                _ = Read(descriptor, json);
             }
             catch (Exception e)
             {

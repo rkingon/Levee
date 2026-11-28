@@ -16,6 +16,17 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
 `ShareAcrossScopes("plans")`.
 
+An aggregate is its root's row: every part of it a complex type on the root, its lines in a JSON column. The root shows
+them read-only (LEVEE007), so EF maps the private list and ignores the view:
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.Ignore(o => o.Lines);
+    e.ComplexCollection<List<Line>, Line>("_lines", l => l.ToJson("lines"));
+});
+```
+
 An installation from before alpha.3 is brought up to date by `migrationBuilder.UpgradeLeveeSchema()`
 (`LeveeSchema.Upgrade(schema)`), safe to run again, then Levee's grants once more. Not `dotnet levee db schema`, which prints a fresh installation.
 `LeveeSchema.Create(schema)` and `Grants(role, schema)` put Levee's objects in a schema other than `public` (Oxbow's tables

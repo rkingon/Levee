@@ -32,6 +32,14 @@ public sealed class MessageTests
     }
 
     [Fact]
+    public void Every_rule_is_one_LEVEE006_holds_the_build_configuration_to()
+    {
+        var held = (string[])typeof(OperationGenerator).Assembly.GetType("Levee.Analyzers.Descriptors")!.GetField("Ids")!.GetValue(null)!;
+
+        Assert.Equal(Rules.Select(r => r.Id).Distinct().Order(StringComparer.Ordinal), held.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void Every_rule_is_explained()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

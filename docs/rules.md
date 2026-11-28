@@ -187,7 +187,8 @@ so a directory of the app's own named like a generator isn't exempt. LEVEE006 it
 
 An aggregate root guards its invariants. A public setter or a mutable collection lets anyone skip them, whether it's
 declared on the root or on a class the root derives from; a type deriving `List<T>` or implementing a writable collection
-interface is a mutable collection.
+interface is a mutable collection. So does one on a part the root hands out (a line in the list it shows, a value it
+holds): a part is a record whose members are its parameters, or a class with no public setter.
 
 ```csharp
 // Wrong
@@ -198,6 +199,7 @@ public sealed class Order : IAggregateRoot
 }
 
 // Right
+public sealed record Line(Guid Id, int Units);
 public sealed class Order : IAggregateRoot
 {
     private readonly List<Line> _lines = [];

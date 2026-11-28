@@ -102,15 +102,15 @@ internal static class AggregateLanguage
             : null;
 
     /// <summary>
-    /// Another aggregate referring to <paramref name="root"/> by its id with a key whose delete writes it (EF's default for a
-    /// required one is a cascade): deleting this aggregate would change that one too, unseen and unversioned.
+    /// A key <paramref name="root"/> holds whose delete writes it (EF's default for a required one is a cascade), whatever it
+    /// refers to: deleting that (another aggregate, or a row a cascade reaches from one) would change this aggregate too,
+    /// unseen and unversioned.
     /// </summary>
     private static string? Reaching(IEntityType root) =>
-        root.GetReferencingForeignKeys().FirstOrDefault(k => Aggregates.IsRoot(k.DeclaringEntityType)
-            && k.DeleteBehavior is DeleteBehavior.Cascade or DeleteBehavior.SetNull) is { } reaching
-            ? $"{reaching.DeclaringEntityType.ClrType.Name} refers to {root.ClrType.Name} by a key whose delete {(reaching.DeleteBehavior == DeleteBehavior.Cascade ? "deletes" : "changes")} "
-                + "it: deleting one aggregate would write another, which no version covers. Fix: OnDelete(DeleteBehavior.Restrict) on that key; "
-                + "what follows from the delete is an operation on the other aggregate of its own."
+        root.GetForeignKeys().FirstOrDefault(k => k.DeleteBehavior is DeleteBehavior.Cascade or DeleteBehavior.SetNull) is { } reaching
+            ? $"{root.ClrType.Name} refers to {reaching.PrincipalEntityType.ClrType.Name} by a key whose delete {(reaching.DeleteBehavior == DeleteBehavior.Cascade ? "deletes" : "changes")} "
+                + $"{root.ClrType.Name}: deleting it would write this aggregate, which no version covers. Fix: OnDelete(DeleteBehavior.Restrict) on that key; "
+                + "what follows from the delete is an operation on this aggregate of its own."
             : null;
 }
 

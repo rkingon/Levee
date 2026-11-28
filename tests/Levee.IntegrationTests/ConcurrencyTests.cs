@@ -387,7 +387,8 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         { nameof(OwnedTableDb), "navigates to Slat" },
         { nameof(OwnedSplitDb), "navigates to Lid" },
         { nameof(LinkedDb), "navigates to CrateTag" },
-        { nameof(CascadingDb), "by a key whose delete deletes it" },
+        { nameof(CascadingDb), "by a key whose delete deletes Shelved" },
+        { nameof(CascadingThroughDb), "by a key whose delete deletes Shelved" },
         { nameof(RestrictedDb), null },
     };
 
@@ -407,6 +408,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
             nameof(OwnedTableDb) => Model<OwnedTableDb>(),
             nameof(OwnedSplitDb) => Model<OwnedSplitDb>(),
             nameof(CascadingDb) => Model<CascadingDb>(),
+            nameof(CascadingThroughDb) => Model<CascadingThroughDb>(),
             nameof(RestrictedDb) => Model<RestrictedDb>(),
             _ => Model<LinkedDb>(),
         };
@@ -478,6 +480,8 @@ internal sealed class EditHeldHandler(INotes notes, IFlush flush) : IOperationHa
 
 public sealed class Order : IAggregateRoot
 {
+    private readonly List<OrderLine> _lines = [];
+
     private Order(Guid id, string tenant)
     {
         Id = id;
@@ -489,7 +493,7 @@ public sealed class Order : IAggregateRoot
     public string Tenant { get; private set; }
 
     /// <summary>On the order's own row, so a change to one is a write of the order.</summary>
-    public List<OrderLine> Lines { get; private set; } = [];
+    public IReadOnlyList<OrderLine> Lines => _lines;
 
     public string? Label { get; private set; }
 
@@ -497,13 +501,13 @@ public sealed class Order : IAggregateRoot
 
     public void Name(string label) => Label = label;
 
-    public void Add(Guid line, int amount) => Lines.Add(new OrderLine(line, amount));
+    public void Add(Guid line, int amount) => _lines.Add(new OrderLine(line, amount));
 
     public void Take(Order from, Guid line)
     {
-        var taken = from.Lines.Single(l => l.Id == line);
-        from.Lines.Remove(taken);
-        Lines.Add(taken);
+        var taken = from._lines.Single(l => l.Id == line);
+        from._lines.Remove(taken);
+        _lines.Add(taken);
     }
 }
 
@@ -578,7 +582,9 @@ internal class OrdersDb : DbContext
             e.Property(o => o.Id).HasColumnName("id");
             e.Property(o => o.Tenant).HasColumnName("tenant");
             e.Property(o => o.Label).HasColumnName("label");
-            e.ComplexCollection(o => o.Lines, l => l.ToJson("lines"));
+            // The private list is what's mapped; what the order shows is a read-only view of it.
+            e.Ignore(o => o.Lines);
+            e.ComplexCollection<List<OrderLine>, OrderLine>("_lines", l => l.ToJson("lines"));
         });
     }
 }
@@ -1096,6 +1102,23 @@ internal class CascadingDb : DbContext
         modelBuilder.Entity<Rack>();
         modelBuilder.Entity<Shelved>().HasOne<Rack>().WithMany().HasForeignKey(c => c.Rack);
     }
+}
+
+/// <summary>A crate on a bay that isn't an aggregate, with EF's default for a required key: deleting the bay deletes it.</summary>
+internal sealed class CascadingThroughDb(DbContextOptions<CascadingThroughDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Bay>();
+        modelBuilder.Entity<Shelved>().HasOne<Bay>().WithMany().HasForeignKey(c => c.Rack);
+    }
+}
+
+public sealed class Bay
+{
+    public Guid Id { get; private set; }
 }
 
 /// <summary>The same reference, restricted: a shelf with crates on it isn't deleted.</summary>
