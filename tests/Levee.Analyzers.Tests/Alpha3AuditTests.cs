@@ -185,4 +185,39 @@ public sealed class Alpha3AuditTests
 
         Assert.Empty(output.Errors);
     }
+
+    [Fact]
+    public async Task A_roots_base_that_hands_out_its_state_to_its_project_is_guarded()
+    {
+        var output = await Probe.CompileAsync("Domain", """
+            using Levee;
+            using System.Collections.Generic;
+            public abstract class Adjusted { private readonly List<int> _adjustments = []; protected internal List<int> GetAdjustments() => _adjustments; }
+            public sealed class Order : Adjusted, IAggregateRoot;
+            """, "App.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration]);
+
+        Assert.Contains("LEVEE007", output.Ids);
+    }
+
+    [Fact]
+    public async Task A_part_inheriting_a_setter_from_a_project_built_beside_it_is_reported_on_the_part()
+    {
+        var shared = await Probe.CompileAsync("Domain", """
+            public abstract class Counted { public int Units { get; set; } }
+            """, "Shared.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration]);
+
+        // Referenced as a project in the same build is, by its source.
+        var output = await Probe.CompileAsync("Domain", """
+            using Levee;
+            using System.Collections.Generic;
+            public sealed class Line : Counted;
+            public sealed class Order : IAggregateRoot
+            {
+                private readonly List<Line> _lines = [];
+                public IReadOnlyList<Line> Lines => _lines;
+            }
+            """, "App.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, shared.Compilation.ToMetadataReference()]);
+
+        Assert.Equal(["LEVEE007"], output.Ids.Distinct());
+    }
 }

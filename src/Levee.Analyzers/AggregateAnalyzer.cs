@@ -39,25 +39,24 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregatePlacement, type.Locations.FirstOrDefault(), type.Name, role));
             return;
         }
+        // The root and its parts, as code elsewhere in this project reaches them.
+        var outside = new Outside(context.Compilation);
         for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            foreach (var member in Members(t).Where(Open))
+            foreach (var member in Members(t).Where(outside.Changes))
             {
-                var location = SymbolEqualityComparer.Default.Equals(t, type) ? member.Locations.FirstOrDefault() : type.Locations.FirstOrDefault();
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, outside.Here(member, type), member.Name, type.Name));
             }
         }
         // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside. A struct
         // handed out is a copy, so only what it holds by reference (a mutable collection) is shared.
-        var outside = new Outside(context.Compilation);
         foreach (var part in Parts(type, root, outside))
         {
             var byValue = part.TypeKind == TypeKind.Struct;
             foreach (var member in Reachable(part).Where(m => byValue ? outside.Shares(m) : outside.Changes(m)))
             {
-                // A member a base of another project declares is reported on the part that inherits it.
-                var location = member.Locations.FirstOrDefault(l => l.IsInSource) ?? part.Locations.FirstOrDefault();
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, outside.Here(member, part),
+                    $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
             }
         }
     }
@@ -78,11 +77,17 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// A part as code elsewhere in this project reaches it, asked of the compiler as that code would be: by each member's and
-    /// accessor's accessibility from this assembly, wherever it's declared (a base of another project's internal isn't).
+    /// A root or a part as code elsewhere in this project reaches it, asked of the compiler as that code would be: by each
+    /// member's and accessor's accessibility from this assembly, wherever it's declared (a base of another project's internal
+    /// isn't; a protected one is the type's own and its subclasses').
     /// </summary>
     private sealed class Outside(Compilation compilation)
     {
+        /// <summary>Where to say it: at the member when this project declares it, else at the type of this project that inherits it.</summary>
+        public Location? Here(ISymbol member, INamedTypeSymbol holder) =>
+            member.Locations.FirstOrDefault(l => l.SourceTree is { } tree && compilation.ContainsSyntaxTree(tree))
+            ?? holder.Locations.FirstOrDefault(l => l.SourceTree is { } tree && compilation.ContainsSyntaxTree(tree));
+
         public bool Reaches(ISymbol? symbol) => symbol is not null && compilation.IsSymbolAccessibleWithin(symbol, compilation.Assembly);
 
         /// <summary>A member through which the part's state changes: a setter, a writable field, a mutable collection handed out.</summary>
@@ -107,17 +112,6 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
 
     private static IEnumerable<ISymbol> Members(INamedTypeSymbol type) =>
         type.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } && !m.IsImplicitlyDeclared && !m.IsStatic);
-
-    private static bool Open(ISymbol member) => member switch
-    {
-        // A method that hands out a mutable collection hands out the state inside it.
-        IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
-        IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
-            or Accessibility.ProtectedAndInternal) => true,
-        IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
-        IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
-        _ => false,
-    };
 
     /// <summary>
     /// The types of this project a root hands out, at any depth, through what it shows (a property's type, or the items of a
