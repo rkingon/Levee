@@ -108,7 +108,8 @@ internal static class AggregateLanguage
                 return $"{holder.ClrType.Name}.{navigation.Name} reaches {target.ClrType.Name}, an entity of its own, from {root.ClrType.Name}'s aggregate: "
                     + $"a change to it is no write of {root.ClrType.Name}'s row, so the aggregate's version doesn't cover it. Fix: {fix}.";
             }
-            if (!target.IsMappedToJson() && (target.GetTableName() != root.GetTableName() || target.GetSchema() != root.GetSchema()))
+            if (!target.IsMappedToJson() && (target.GetTableName() != root.GetTableName() || target.GetSchema() != root.GetSchema()
+                || target.GetMappingFragments().Any()))
             {
                 return $"{holder.ClrType.Name}.{navigation.Name} owns {target.ClrType.Name} on a table of its own, off {root.ClrType.Name}'s row, so the "
                     + $"aggregate's version doesn't cover it. Fix: {fix}.";
@@ -129,7 +130,8 @@ internal static class AggregateLanguage
 /// The unit of work's saves, held to the aggregates they write. EF holds each root's row to the version it was read at, and
 /// the whole aggregate is that row. An operation that names the version its caller saw (<see cref="IVersionedOperation"/>)
 /// writes one aggregate, the one its caller saw at that version: told by whose version each save actually moved, so
-/// whatever made the change (the handler, a callback) is counted. Every save of a unit of work goes through
+/// whatever made the change (the handler, a callback) is counted. One that writes nothing is held to nothing: a write that
+/// changes nothing can't lose an update. Every save of a unit of work goes through
 /// <see cref="SaveAsync"/>, each with one ticket for EF's save, and the first that fails fails the unit: nothing it wrote,
 /// nor anything after it, commits.
 /// </summary>
@@ -210,38 +212,13 @@ internal sealed class Aggregates : SaveChangesInterceptor
             unit.Failure?.Throw();
             if (before is not null)
             {
-                Hold(unit, before);
+                Hold(db, unit, before);
             }
         }
         catch (Exception e)
         {
             unit.Failure ??= ExceptionDispatchInfo.Capture(e);
             throw;
-        }
-    }
-
-    /// <summary>
-    /// Before the commit, for a versioned operation no save held: the one root it loaded, compared with the store as it is
-    /// now, since nothing it wrote compared it. A versioned operation that loaded no root, or several, is a bug.
-    /// </summary>
-    public static async Task VerifyAsync(DbContext db, CancellationToken ct)
-    {
-        if (!Units.TryGetValue(db, out var unit) || unit.Expected is not { } expected || unit.Held is not null)
-        {
-            return;
-        }
-        var roots = db.ChangeTracker.Entries().Where(e => IsRoot(e.Metadata)).ToList();
-        if (roots is not [var root])
-        {
-            throw new InvalidOperationException(
-                $"The operation names the version its caller saw, but loaded {roots.Count} aggregate roots, so there's no one version to hold it to. "
-                + "Fix: an IVersionedOperation loads the one root it changes, through its repository.");
-        }
-        var stored = await root.GetDatabaseValuesAsync(ct);
-        if (stored is null || !Equals(stored[Token(root).Metadata], expected))
-        {
-            throw new DbUpdateConcurrencyException(
-                $"{root.Metadata.ClrType.Name} isn't at version {expected}, the one its caller saw: it changed since, or isn't there.");
         }
     }
 
@@ -289,10 +266,17 @@ internal sealed class Aggregates : SaveChangesInterceptor
 
     /// <summary>
     /// The aggregates a save wrote, told by the store: a root inserted or deleted, or whose version moved. A versioned
-    /// operation writes one, which it doesn't create, at the version its caller saw.
+    /// operation writes one, which it doesn't create, at the version its caller saw. A root the save itself began tracking
+    /// (a callback's) is one whose write can't be told apart from a read, so it's refused.
     /// </summary>
-    private static void Hold(Unit unit, List<Seen> before)
+    private static void Hold(DbContext db, Unit unit, List<Seen> before)
     {
+        if (db.ChangeTracker.Entries().FirstOrDefault(e => IsRoot(e.Metadata) && !before.Any(b => ReferenceEquals(b.Entry.Entity, e.Entity))) is { } arrived)
+        {
+            throw new InvalidOperationException(
+                $"The operation names the version its caller saw, but its save began tracking a {arrived.Metadata.ClrType.Name} (a callback's), so whose "
+                + "aggregate it wrote can't be told. Fix: an IVersionedOperation changes the one root it loaded, in its handler.");
+        }
         foreach (var written in before.Where(b => b.State is EntityState.Added or EntityState.Deleted || b.Entry.State == EntityState.Detached
                      || !Equals(Token(b.Entry).CurrentValue, b.Version)))
         {

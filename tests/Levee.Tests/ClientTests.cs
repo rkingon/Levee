@@ -32,7 +32,7 @@ public sealed class ClientTests : IAsyncDisposable
 
     /// <summary>The app's authentication, as a handler on the client; then whatever else stands between it and the platform.</summary>
     private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null, bool keys = true,
-        TimeSpan? window = null, TimeSpan? delay = null, TimeProvider? time = null)
+        TimeSpan? window = null, TimeSpan? delay = null, TimeProvider? time = null, TimeSpan? timeout = null)
     {
         HttpMessageHandler handler = _app.GetTestServer().CreateHandler();
         if (between is not null)
@@ -40,7 +40,7 @@ public sealed class ClientTests : IAsyncDisposable
             between.InnerHandler = handler;
             handler = between;
         }
-        var http = new HttpClient(new Bearer { InnerHandler = handler }) { BaseAddress = new Uri("http://platform") };
+        var http = new HttpClient(new Bearer { InnerHandler = handler }) { BaseAddress = new Uri("http://platform"), Timeout = timeout ?? TimeSpan.FromSeconds(100) };
         return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions
         {
             Retries = retries, RetryDelay = delay ?? TimeSpan.Zero, IdempotencyKeys = keys, RetryWindow = window ?? TimeSpan.FromSeconds(30),
@@ -308,6 +308,61 @@ public sealed class ClientTests : IAsyncDisposable
 
             public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
+    }
+
+    [Fact]
+    public async Task A_retry_the_platform_asks_for_at_a_time_past_the_window_isnt_sent()
+    {
+        var sent = 0;
+        var busy = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Headers.RetryAfter = new(DateTimeOffset.UtcNow.AddDays(1));
+            return answer;
+        });
+
+        var answered = await Client(between: busy).SendAsync(new Busy(), Ct);
+
+        Assert.Equal(("probe.busy", 1), (answered.Error!.Code, sent));
+    }
+
+    [Fact]
+    public async Task An_answer_whose_body_stalls_is_the_platform_out_of_reach_within_the_timeout()
+    {
+        var stalled = new Rewrite(answer =>
+        {
+            answer.Content = new StreamContent(new Stalled());
+            answer.Content.Headers.ContentType = new("application/json");
+            return answer;
+        });
+
+        var said = await Client(retries: 0, between: stalled, timeout: TimeSpan.FromMilliseconds(500)).SendAsync(new Echo("hi"), Ct)
+            .WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, said.Error!.Code);
+    }
+
+    /// <summary>A body that never sends a byte.</summary>
+    private sealed class Stalled : MemoryStream
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(Timeout.Infinite, cancellationToken);
+            return 0;
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+
+    [Fact]
+    public async Task A_problem_of_a_kind_the_platform_doesnt_name_isnt_the_platforms()
+    {
+        var problem = """{"title":"x","status":500,"detail":"x","code":"x.y","kind":"conflict, unavailable","transient":false,"trace":"t","errors":null}""";
+
+        var read = await Client(retries: 0, between: Answering(HttpStatusCode.InternalServerError, "application/problem+json", problem)).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, read.Error!.Code);
     }
 
     [Fact]

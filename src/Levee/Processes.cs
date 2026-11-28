@@ -21,19 +21,20 @@ public interface IProcess<in TInput>
 /// <summary>Who a process runs as and where, and its one way into the app.</summary>
 public sealed class ProcessContext
 {
-    private readonly Func<IOperation, CancellationToken, Task<Result<object?>>> _send;
+    private readonly Dispatcher _dispatcher;
     private readonly Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>> _step;
     private readonly bool _sealed;
 
-    // step: runs a step whose result is recorded under its name, or answers the one recorded (the job's own); sealedResults:
-    // whether what it records is sealed at rest, as a sealed process's input is.
-    internal ProcessContext(Principal principal, string? scope, int attempt, Func<IOperation, CancellationToken, Task<Result<object?>>> send,
+    // dispatcher: what it sends through, as its principal, which holds it to its scope and its attempt; step: runs a step whose
+    // result is recorded under its name, or answers the one recorded (the job's own); sealedResults: whether what it records
+    // is sealed at rest, as a sealed process's input is.
+    internal ProcessContext(Principal principal, string? scope, int attempt, Dispatcher dispatcher,
         Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>>? step = null, bool sealedResults = false)
     {
         Principal = principal;
         Scope = scope;
         Attempt = attempt;
-        _send = send;
+        _dispatcher = dispatcher;
         _step = step ?? ((_, run, ct) => run(ct));
         _sealed = sealedResults;
     }
@@ -48,12 +49,7 @@ public sealed class ProcessContext
     public int Attempt { get; }
 
     /// <summary>Sends <paramref name="operation"/> through the pipeline as the process's caller, in its scope: one step, committed on its own.</summary>
-    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(operation);
-        var result = await _send(operation, ct).ConfigureAwait(false);
-        return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
-    }
+    public Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, CancellationToken ct) => _dispatcher.SendAsync(operation, Principal, ct);
 
     /// <summary>
     /// One step of the process, recorded under <paramref name="name"/> once it succeeds: a later run (after a failed attempt,

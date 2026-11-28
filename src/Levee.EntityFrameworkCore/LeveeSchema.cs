@@ -106,8 +106,10 @@ public static class LeveeSchema
               with check (scope = {schema}.levee_scope());
             -- Claims the key for this transaction, or says what an earlier request with it committed. An equal claim still in
             -- flight is waited for: if it commits, this one reads its row; if it rolls back, this one takes the key. A row that
-            -- goes between the two (swept, or rolled back) is claimed again. Time is the clock's, not the transaction's start.
-            create or replace function {schema}.levee_idempotency_claim(p_subject text, p_operation text, p_key text, p_hash bytea)
+            -- goes between the two (swept, or rolled back) is claimed again. Time is the clock's, not the transaction's start. A
+            -- result that may not be replayed (its contract declares a secret) isn't read, whatever was kept.
+            drop function if exists {schema}.levee_idempotency_claim(text, text, text, bytea);
+            create or replace function {schema}.levee_idempotency_claim(p_subject text, p_operation text, p_key text, p_hash bytea, p_replayable boolean)
               returns jsonb language plpgsql security definer set search_path = {schema}, pg_temp
               as $$
               declare v_scope text := {schema}.levee_scope();
@@ -124,12 +126,13 @@ public static class LeveeSchema
                   if found then
                     return jsonb_build_object('state', 'claimed');
                   end if;
-                  select i.input_hash, i.result, i.kept into r from {schema}.{IdempotencyTable} i
+                  select i.input_hash, i.kept into r from {schema}.{IdempotencyTable} i
                     where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key;
                   if found then
                     return case when r.input_hash <> p_hash then jsonb_build_object('state', 'mismatch')
-                                when not r.kept then jsonb_build_object('state', 'replayed')
-                                else jsonb_build_object('state', 'kept', 'result', r.result) end;
+                                when not r.kept or not p_replayable then jsonb_build_object('state', 'replayed')
+                                else jsonb_build_object('state', 'kept', 'result', (select i.result from {schema}.{IdempotencyTable} i
+                                  where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key)) end;
                   end if;
                 end loop;
               end $$;
@@ -140,12 +143,12 @@ public static class LeveeSchema
               returns void language sql security definer set search_path = {schema}, pg_temp
               as $$ update {schema}.{IdempotencyTable} set result = p_result, kept = p_result is not null, expires_at = clock_timestamp() + p_lifetime
                     where scope = {schema}.levee_scope() and subject = p_subject and operation = p_operation and key = p_key $$;
-            revoke all on function {schema}.levee_idempotency_claim(text, text, text, bytea) from public;
+            revoke all on function {schema}.levee_idempotency_claim(text, text, text, bytea, boolean) from public;
             revoke all on function {schema}.levee_idempotency_complete(text, text, text, text, interval) from public;
             do $levee$
             begin
               if to_regprocedure('{schema}.levee_runtime()') is not null then
-                execute format('grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea), '
+                execute format('grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea, boolean), '
                   || '{schema}.levee_idempotency_complete(text, text, text, text, interval) to %I', {schema}.levee_runtime());
               end if;
             end $levee$;
@@ -298,8 +301,8 @@ public static class LeveeSchema
               execute 'grant execute on function {schema}.levee_scope(), {schema}.levee_platform() to {role}';
               execute 'grant execute on function {schema}.levee_audit_write(uuid, text, text, text, jsonb) to {role}';
               -- An installation from before alpha.3 has no idempotency keys until the owner adds them (LeveeSchema.Upgrade).
-              if to_regprocedure('{schema}.levee_idempotency_claim(text, text, text, bytea)') is not null then
-                execute 'grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea), '
+              if to_regprocedure('{schema}.levee_idempotency_claim(text, text, text, bytea, boolean)') is not null then
+                execute 'grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea, boolean), '
                   || '{schema}.levee_idempotency_complete(text, text, text, text, interval) to {role}';
               end if;
               execute $ddl$create or replace function {schema}.levee_runtime() returns text language sql immutable as $body$ select '{role}' $body$$ddl$;

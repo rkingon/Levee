@@ -5,6 +5,7 @@ namespace Levee;
 /// <summary>
 /// The contract on the wire, read and written the one way every side does it (the dispatcher, the projections, the client):
 /// an operation's input, its result or a stream's item, and a failure. What one side refuses, the other refuses the same way.
+/// Each read and write is synchronous, so no caller's cancellation reaches one: whatever a converter throws is refused here.
 /// </summary>
 internal static class ContractWire
 {
@@ -24,7 +25,7 @@ internal static class ContractWire
                 ? Result<IOperation>.Success(op)
                 : Error.Validation(LeveeErrors.InvalidInput, $"{descriptor.Name}: no input.");
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e)
         {
             return Refused(descriptor, e, refused);
         }
@@ -49,7 +50,7 @@ internal static class ContractWire
         {
             written = JsonSerializer.SerializeToElement(operation, descriptor.InputType, LeveeJson.Options);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e)
         {
             return Refused(descriptor, e, refused: null);
         }
@@ -85,7 +86,7 @@ internal static class ContractWire
         {
             value = wire.Deserialize(descriptor.ResultType, LeveeJson.Options);
         }
-        catch (Exception e) when (e is not OperationCanceledException)
+        catch (Exception e)
         {
             return unread($"{descriptor.Name}'s answer isn't its contract's {descriptor.ResultType.Name}: {e.Message}");
         }
@@ -102,7 +103,8 @@ internal static class ContractWire
     {
         ArgumentNullException.ThrowIfNull(problem);
         ArgumentNullException.ThrowIfNull(unread);
-        var agrees = problem.Status == status && problem.Status == ProblemView.StatusOf(problem.Kind)
+        // A kind the platform names (enum names read as flags would combine two into one it doesn't).
+        var agrees = Enum.IsDefined(problem.Kind) && problem.Status == status && problem.Status == ProblemView.StatusOf(problem.Kind)
             && problem.Transient == (problem.Kind is ErrorKind.Unavailable or ErrorKind.Internal);
         return agrees
             ? Error.FromProblem(problem, retryAfter)

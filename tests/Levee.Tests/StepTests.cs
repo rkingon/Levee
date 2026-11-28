@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using System.Text.Json;
 
 namespace Levee.Tests;
@@ -20,7 +21,7 @@ public sealed class StepTests
     }
 
     private static ProcessContext Run(Recorded recorded, bool sealedResults = false) =>
-        new(new Member("ada", "acme"), "acme", 1, (_, _) => throw new InvalidOperationException("sends nothing"), recorded.StepAsync, sealedResults);
+        new(new Member("ada", "acme"), "acme", 1, DispatcherTests.Services(new Store(), new Outcomes()).GetRequiredService<Dispatcher>(), recorded.StepAsync, sealedResults);
 
     [Fact]
     public async Task A_step_done_is_answered_from_its_record_on_every_later_run()
@@ -83,6 +84,28 @@ public sealed class StepTests
         Assert.Contains("isn't one a step can record and read back", step.Message, StringComparison.Ordinal);
         Assert.Equal(0, ran);
         Assert.Empty(recorded.Steps);
+    }
+
+    [Fact]
+    public async Task A_step_whose_result_the_wire_cant_construct_is_refused_before_it_acts()
+    {
+        var ran = 0;
+
+        var step = await Record.ExceptionAsync(() => Run(new Recorded()).StepAsync<Sealed>("make",
+            _ => Task.FromResult<Result<Sealed>>(Sealed.Make(++ran)), CancellationToken.None));
+
+        Assert.IsType<InvalidOperationException>(step);
+        Assert.Equal(0, ran);
+    }
+
+    /// <summary>Made only by its own factory: the wire has no constructor to call.</summary>
+    public sealed record Sealed
+    {
+        private Sealed()
+        {
+        }
+
+        public static Sealed Make(int _) => new();
     }
 
     public interface ISaid

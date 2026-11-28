@@ -39,6 +39,32 @@ public sealed class WirePathTests
     }
 
     [Fact]
+    public async Task A_typed_subscription_takes_its_input_once()
+    {
+        var opened = await _dispatcher.SubscribeAsync(new RunningSum(new Once([7])), Ada, Ct);
+        var read = new List<int>();
+
+        await foreach (var sum in opened.Value.WithCancellation(Ct))
+        {
+            read.Add(sum);
+        }
+
+        Assert.Equal([7], read);
+    }
+
+    [Fact]
+    public async Task An_input_whose_converter_throws_a_cancellation_is_refused_and_told()
+    {
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
+
+        var sent = await dispatcher.SendAsync(new Halting(new Halt(1)), Ada, Ct);
+
+        Assert.Equal(LeveeErrors.InvalidInput, sent.Error!.Code);
+        Assert.Contains(outcomes.Seen, o => o.Operation.Name == "probe.halting");
+    }
+
+    [Fact]
     public async Task A_member_sent_twice_in_two_cases_is_refused()
     {
         var input = JsonDocument.Parse("""{"tenant":"acme","stamp":1,"STAMP":2}""").RootElement;
@@ -112,6 +138,38 @@ public sealed record Sum(string Tenant, IEnumerable<int> Numbers) : IOperation<i
 internal sealed class SumHandler : IOperationHandler<Sum, int>
 {
     public Task<Result<int>> HandleAsync(Sum operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<int>>(operation.Numbers.Sum());
+}
+
+[Operation("probe.running_sum", "member", Platform = true)]
+public sealed record RunningSum(IEnumerable<int> Numbers) : ISubscription<int>;
+
+internal sealed class RunningSumHandler : ISubscriptionHandler<RunningSum, int>
+{
+    public async IAsyncEnumerable<int> SubscribeAsync(RunningSum subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Yield();
+        yield return subscription.Numbers.Sum();
+    }
+}
+
+/// <summary>A value whose converter throws a cancellation of its own as it's written: its bug, not the caller's cancel.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(HaltJson))]
+[ValueObject(typeof(int))]
+public sealed record Halt(int Value);
+
+public sealed class HaltJson : System.Text.Json.Serialization.JsonConverter<Halt>
+{
+    public override Halt Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new(reader.GetInt32());
+
+    public override void Write(Utf8JsonWriter writer, Halt value, JsonSerializerOptions options) => throw new OperationCanceledException("the converter's own");
+}
+
+[Operation("probe.halting", "member", Platform = true)]
+public sealed record Halting(Halt Halt) : IOperation<Unit>;
+
+internal sealed class HaltingHandler : IOperationHandler<Halting, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(Halting operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Unit>>(Unit.Value);
 }
 
 [Operation("probe.say_empty", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]

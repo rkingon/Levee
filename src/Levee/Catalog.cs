@@ -276,9 +276,10 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} derives from {type.BaseType!.Name}: a record's only base is the choice of shapes that names it." + Language;
             }
-            // Every member is a parameter of its one constructor (the compiler's copy constructor aside), and nothing else.
+            // Every member is a parameter of its one constructor (the compiler's copy constructor aside), a public one the wire
+            // can call, and nothing else.
             var constructors = type.GetConstructors(Instance).Where(c => !(c.GetParameters() is [var only] && only.ParameterType == type)).ToList();
-            if (constructors.Count != 1 || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider)))
+            if (constructors is not [{ IsPublic: true }] || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider)))
             {
                 return $"{type.Name} has a member or constructor besides its parameters, or a JSON attribute on one." + Language;
             }

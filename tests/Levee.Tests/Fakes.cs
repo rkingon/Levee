@@ -73,7 +73,7 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
             return Task.FromResult<IdempotencyClaim>(new IdempotencyClaim.Claimed());
         }
         return Task.FromResult<IdempotencyClaim>(!held.Hash.AsSpan().SequenceEqual(key.InputHash) ? new IdempotencyClaim.Mismatch()
-            : held.Result is null ? new IdempotencyClaim.Replayed()
+            : held.Result is null || !key.Replayable ? new IdempotencyClaim.Replayed()
             : new IdempotencyClaim.Kept(held.Result));
     }
 

@@ -38,6 +38,19 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         return (tenant, new Member($"ada@{tenant}", tenant));
     }
 
+    [Theory]
+    [InlineData("job")]
+    [InlineData("process")]
+    public async Task What_a_job_stores_is_the_input_as_it_was_taken_once(string kind)
+    {
+        using var host = Build();
+        var (tenant, ada) = NewTenant();
+
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new QueueTally(tenant, kind == "process"), ada, Ct)).IsSuccess);
+
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from oxbow_job where args::text like '%' || $1 || '%' and args::text like '%[7]%'", tenant));
+    }
+
     [Fact]
     public async Task A_process_resumes_through_its_steps_and_does_none_twice()
     {
@@ -310,5 +323,59 @@ internal sealed class StepProcess : IProcess<StepInput>
         {
             context.Snooze(TimeSpan.FromMilliseconds(50));
         }
+    }
+}
+
+/// <summary>A sequence that yields its numbers to the first that reads it, and nothing after.</summary>
+public sealed class OnceNumbers(int[] numbers) : IEnumerable<int>
+{
+    private bool _read;
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        var first = !_read;
+        _read = true;
+        return ((IEnumerable<int>)(first ? numbers : [])).GetEnumerator();
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+[Operation("probe.tally_numbers", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record TallyNumbers(string Tenant, IEnumerable<int> Numbers) : IOperation<int>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class TallyNumbersHandler : IOperationHandler<TallyNumbers, int>
+{
+    public Task<Result<int>> HandleAsync(TallyNumbers operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<int>>(operation.Numbers.Sum());
+}
+
+public sealed record TallyInput(string Tenant, IEnumerable<int> Numbers);
+
+internal sealed class TallyProcess : IProcess<TallyInput>
+{
+    public Task RunAsync(TallyInput input, ProcessContext context, CancellationToken ct) => Task.CompletedTask;
+}
+
+/// <summary>Queues a tally of numbers that can be read once, as a job's operation or as a process.</summary>
+[Operation("probe.queue_tally", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record QueueTally(string Tenant, bool AsProcess) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class QueueTallyHandler(IJobs jobs) : IOperationHandler<QueueTally, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(QueueTally operation, OperationContext context, CancellationToken ct)
+    {
+        if (operation.AsProcess)
+        {
+            await jobs.StartAsync(new TallyInput(operation.Tenant, new OnceNumbers([7])), null, ct);
+            return Unit.Value;
+        }
+        var queued = await jobs.EnqueueAsync(new TallyNumbers(operation.Tenant, new OnceNumbers([7])), null, ct);
+        return queued.IsSuccess ? Unit.Value : queued.Error;
     }
 }

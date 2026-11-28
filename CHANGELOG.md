@@ -7,8 +7,9 @@ Writes that hold under retries and races.
 ### Levee
 - `IVersionedOperation`: an edit held to the version of the aggregate its caller saw (`ExpectedVersion`, implemented
   explicitly over a positional parameter, as `IScopedOperation` is). Its root is held to that version as it's written,
-  and the edit is refused as 409 `store.stale` if it moved on; a root it loaded but didn't change is compared as read.
-  One that loads no root, creates one, or changes more than one aggregate, is a bug, answered `internal`.
+  and the edit is refused as 409 `store.stale` if it moved on. One that writes nothing is held to nothing, since a write
+  that changes nothing loses no one's edit. One that creates a root, or changes more than one aggregate, is a bug,
+  answered `internal`.
 - Idempotency keys for retryable writes: `Dispatcher.SendAsync(operation, principal, idempotencyKey, ct)`, and the
   `Idempotency-Key` header over HTTP. A write sent again with the same key, by the same caller in the same scope, answers
   its first result without running again, the wire it answered then; equal requests at once make one write; a key sent
@@ -22,10 +23,12 @@ Writes that hold under retries and races.
   (a stream's ends with it), typed or as JSON: the generator carries each result's declared nullability on its descriptor
   (`OperationDescriptor.ResultNullable`), and `/ops` shows a result that may be null as one. A result sent as JSON is
   written once and read back before it commits, so one its own contract can't read is a bug that rolls back. A keyed
-  request is compared by its input as it was received, and a typed send's input is taken once (written, and read back as
-  what its key, audit and handler all read), so neither a sequence read once nor a converter that writes anew makes it
-  another request. A member sent twice, in any case, is `input.invalid`. Whether a result may carry a secret, kept or
-  replayed, is judged by its contract's type, before anything kept is read.
+  request is compared by where it was asked (its scope's kind: a platform request and an unscoped one are two) and its
+  input as it was received. A typed input is taken once (written, and read back as what its key, its handler and its
+  audit's redaction read), whether it's sent, subscribed to, enqueued as a job or starts a process, so a sequence read
+  once is the same to all of them; a converter that writes anew each time still writes anew for the audit. A member sent
+  twice, in any case, is `input.invalid`, and so is an input whose converter throws, whatever it throws. Whether a result
+  may be replayed is judged by its contract's type and told to the claim, which never reads what was kept when it may not.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its success is recorded under its name, and every
   later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process written from the top
   resumes where it was. A failure records nothing. A step's result type is held to the contract language before the step
@@ -44,10 +47,11 @@ Writes that hold under retries and races.
     or an owned type on the root's table or in a JSON column of it. A change anywhere in it is a write of that row, which
     EF holds to the version it was read at. An entity of its own is an aggregate of its own, referenced by its id. A root
     in an inheritance hierarchy, split across tables, without the version, or holding a part off its row (a navigation to
-    another entity, an owned type on a table of its own, a many-to-many link) fails before the first operation, with its fix.
+    another entity, an owned type on a table of its own or split onto one, a many-to-many link) fails before the first
+    operation, with its fix.
   - One aggregate per operation is the convention, held for an `IVersionedOperation`: told by whose version its saves
-    actually moved (a callback's change counted), it changes one aggregate, which it doesn't create, at the version its
-    caller saw; one that changes nothing is compared with the store at commit. An unversioned operation may change
+    actually moved (a callback's change counted, and a root a callback began tracking refused), it changes one aggregate,
+    which it doesn't create, at the version its caller saw. An unversioned operation may change
     several, each held to its own version. What the unit of work doesn't see (raw SQL, `ExecuteUpdate`) moves a row's
     `xmin` but isn't held to a caller's version.
   - Every save of an operation goes through its unit of work, and the first that fails fails the operation: every later
@@ -78,10 +82,12 @@ Writes that hold under retries and races.
   `SendAsync(operation, ct)` answers `Result<TResult>`; an input refused as the platform would refuse it is
   `input.invalid` before anything is sent; a failure reads back as the platform's own `Error` when its problem agrees
   with its status; anything else (a connection refused, a body cut off, a sign-in page, what the contract doesn't read,
-  null where it promises a value) is `Unavailable` `platform.unreachable`.
+  null where it promises a value, a problem of a kind the platform doesn't name, a body that stalls past the
+  `HttpClient`'s timeout) is `Unavailable` `platform.unreachable`.
 - A write carries an idempotency key across its retries, so a retry after a lost answer finds the first result.
-  Transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait or a doubling delay, and
-  never past `RetryWindow` (30 seconds) from the first send; a write acting outside the platform (`Effects.External`) is
+  Transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait (`Retry-After`, as a
+  delay or a date) or a doubling delay, and never past `RetryWindow` (30 seconds) from the first send, however late a
+  wait ends; a write acting outside the platform (`Effects.External`) is
   retried only when it declares a repeat safe (`Idempotent`). `IdempotencyKeys = false` is for a client that sends as no
   one: its writes are sent once.
 - `SubscribeAsync` answers a `LeveeSubscription<TItem>`: its items as they come, ended by the platform's last failure as
@@ -95,7 +101,8 @@ Writes that hold under retries and races.
 - LEVEE114: an `IVersionedOperation` declares `Effects.Write`. That it changes the one root it loads is held at run time.
 - LEVEE104 refuses an operation that declares more than one contract (`IOperation<int>` and `IOperation<string>`): a
   caller sending it as one would read the result of the other.
-- LEVEE004 also refuses app SQL that calls the idempotency key functions; text that only names them (a message) is fine.
+- LEVEE004 also refuses app SQL that runs the idempotency key functions (`select`, `perform`, `call`); text that only names
+  them, as a call or not (a message), is fine.
 
 ### Levee.Cli
 - `dotnet levee new` scaffolds the context with `AddLeveeConventions()`.

@@ -138,6 +138,22 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
+    public async Task A_kept_result_that_may_not_be_replayed_is_never_read_back()
+    {
+        using var host = Build();
+        var (tenant, ada) = NewTenant();
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new SayNul(tenant), ada, "retry-1", Ct)).IsSuccess);
+        var hash = await postgres.TextAsync("select encode(input_hash, 'hex') from levee_idempotency where scope = $1", tenant);
+
+        Task<string> Claim(bool replayable) => postgres.TextAsync(
+            "select levee_idempotency_claim($2, 'probe.say_nul', 'retry-1', decode($3, 'hex'), $4)::text from (select set_config('levee.scope', $1, false)) s",
+            tenant, ada.Subject, hash, replayable);
+
+        Assert.Contains("\"kept\"", await Claim(replayable: true), StringComparison.Ordinal);
+        Assert.Equal("""{"state": "replayed"}""", await Claim(replayable: false));
+    }
+
+    [Fact]
     public async Task A_result_the_wire_writes_is_kept_as_it_was_written()
     {
         using var host = Build();
@@ -189,7 +205,7 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
             create role legacy_app login password 'legacy' nosuperuser nobypassrls;
             create schema legacy_keys;
             {LeveeSchema.Create("legacy_keys")}
-            drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea);
+            drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea, boolean);
             drop function legacy_keys.levee_idempotency_complete(text, text, text, text, interval);
             drop table legacy_keys.levee_idempotency;
             {LeveeSchema.Grants("legacy_app", "legacy_keys")}
@@ -198,7 +214,7 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
         await postgres.ExecuteAsync(LeveeSchema.Upgrade("legacy_keys"));
 
         Assert.Equal("True", await postgres.TextAsync(
-            "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea)', 'execute')"));
+            "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea, boolean)', 'execute')"));
         Assert.Equal("False", await postgres.TextAsync("select has_table_privilege('legacy_app', 'legacy_keys.levee_idempotency', 'select')"));
     }
 }

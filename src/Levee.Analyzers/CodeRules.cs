@@ -254,14 +254,21 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// A call of one of the functions the runtime role writes the audit or a key through, however its name is put together:
-    /// what can do harm is the call, since the role holds no privilege on the tables themselves. Text that only names one (a
-    /// message) calls nothing.
+    /// A call of one of the functions the runtime role writes the audit or a key through, however its name is put together,
+    /// by a statement that runs it: what can do harm is the call, since the role holds no privilege on the tables themselves.
+    /// Text that only names one, or writes it as a call in prose (a message), runs nothing.
     /// </summary>
-    private static bool CallsLevee(string text) =>
-        LeveeCall.IsMatch(new string(SqlComment.Replace(text, " ").ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or '|' or '+')).ToArray()));
+    private static bool CallsLevee(string text)
+    {
+        var clean = SqlComment.Replace(text, " ");
+        return Runs.IsMatch(clean)
+            && LeveeCall.IsMatch(new string(clean.ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or '|' or '+')).ToArray()));
+    }
 
     private static readonly Regex LeveeCall = new(@"levee_(?:audit_write|idempotency_[a-z_]+)\(", RegexOptions.CultureInvariant);
+
+    // What runs a function in SQL: a query of it, a PL/pgSQL PERFORM, a procedure's CALL.
+    private static readonly Regex Runs = new(@"\b(?:select|perform|call)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // pg_settings is the view set_config writes through.
     private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);

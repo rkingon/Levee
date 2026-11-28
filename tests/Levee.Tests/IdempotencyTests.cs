@@ -77,11 +77,19 @@ public sealed class IdempotencyTests
     [Fact]
     public async Task A_keyed_result_is_written_once()
     {
-        var before = WrittenJson.Count;
+        var before = KeptJson.Count;
 
         await _dispatcher.SendAsync(new WriteOnce("acme"), Ada, "key-1", CancellationToken.None);
 
-        Assert.Equal(1, WrittenJson.Count - before);
+        Assert.Equal(1, KeptJson.Count - before);
+    }
+
+    [Fact]
+    public void A_platform_request_and_an_unscoped_one_are_two_requests()
+    {
+        var input = System.Text.Json.JsonDocument.Parse("""{"name":"x"}""").RootElement;
+
+        Assert.NotEqual(Dispatcher.Hash(new WorkScope(null, false), input), Dispatcher.Hash(new WorkScope(null, false) { Unscoped = true }, input));
     }
 
     [Fact]
@@ -192,14 +200,34 @@ internal sealed class IssueTokenHandler : IOperationHandler<IssueToken, IssuedTo
 }
 
 [Operation("probe.write_once", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
-public sealed record WriteOnce(string Tenant) : IOperation<Written>, IScopedOperation
+public sealed record WriteOnce(string Tenant) : IOperation<Kept>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
 }
 
-internal sealed class WriteOnceHandler : IOperationHandler<WriteOnce, Written>
+internal sealed class WriteOnceHandler : IOperationHandler<WriteOnce, Kept>
 {
-    public Task<Result<Written>> HandleAsync(WriteOnce operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Written>>(new Written(1));
+    public Task<Result<Kept>> HandleAsync(WriteOnce operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Kept>>(new Kept(1));
+}
+
+/// <summary>Counts every time it's written, as <see cref="Written"/> does, for a keyed result alone.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(KeptJson))]
+[ValueObject(typeof(int))]
+public sealed record Kept(int Value);
+
+public sealed class KeptJson : System.Text.Json.Serialization.JsonConverter<Kept>
+{
+    private static int _count;
+
+    public static int Count => Volatile.Read(ref _count);
+
+    public override Kept Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => new(reader.GetInt32());
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Kept value, System.Text.Json.JsonSerializerOptions options)
+    {
+        Interlocked.Increment(ref _count);
+        writer.WriteNumberValue(value.Value);
+    }
 }
 
 [Operation("probe.tag", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]

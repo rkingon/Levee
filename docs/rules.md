@@ -110,8 +110,8 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them, and only it calls the idempotency key functions (`levee_idempotency_*`);
-text that names them without a statement in it (a message) is fine. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them, and only it runs the idempotency key functions (`levee_idempotency_*`,
+called by a `select`, `perform` or `call`); text that only names one, even as a call (a message), is fine. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
@@ -815,6 +815,6 @@ internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote
 
 How the handler reaches the root (its repository, or a helper of Application's that holds it) is the build's to leave
 alone: it's held at run time. The one root the operation changes is held to the version (refused as 409 `store.stale`
-when it moved on); one it loaded but didn't change is compared as it was read. A versioned operation that loads no root,
-creates one, or changes more than one aggregate, is a bug, answered `internal`: what follows in another aggregate is an
-operation of its own, enqueued as a job.
+when it moved on); one that writes nothing is held to nothing, since it loses no one's edit. A versioned operation that
+creates a root, or changes more than one aggregate, is a bug, answered `internal`: what follows in another aggregate is
+an operation of its own, enqueued as a job.

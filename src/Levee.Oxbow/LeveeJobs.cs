@@ -109,7 +109,9 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         {
             throw new InvalidOperationException($"{context.Descriptor.Name} declares only reads, and starting a process is an effect.");
         }
-        var secret = LeveeJson.FindSecretIn(input, typeof(TInput), LeveeJson.Options);
+        // Taken once, written and read back: what's judged for secrets is what's stored, a sequence read once included.
+        var stored = JsonSerializer.SerializeToElement(input, LeveeJson.Options);
+        var secret = LeveeJson.FindSecretIn(stored.Deserialize<TInput>(LeveeJson.Options)!, typeof(TInput), LeveeJson.Options);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(
@@ -126,7 +128,6 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         var scope = context.Scope.Key;
         var unscoped = context.Scope.Unscoped;
         var name = ProcessInputs.NameOf(typeof(TInput));
-        var stored = JsonSerializer.SerializeToElement(input, LeveeJson.Options);
         var insert = new InsertOptions
         {
             ScheduledAt = options?.RunAt,
@@ -162,8 +163,15 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             throw new InvalidOperationException(
                 $"{descriptor.Name} can't run as a job: jobs run at least once, and it declares that repeating it isn't safe (Idempotency.None).");
         }
+        // Taken once, as a typed send's input is: what's judged, authorized and stored is the same input.
+        var snapshot = ContractWire.Snapshot(descriptor, operation);
+        if (!snapshot.IsSuccess)
+        {
+            return snapshot.Error;
+        }
+        var (input, read) = snapshot.Value;
         // By its type and by what its members actually are: an implementation behind an interface may carry the mark.
-        var secret = LeveeJson.FindSecretIn(operation, descriptor.InputType, LeveeJson.Options);
+        var secret = LeveeJson.FindSecretIn(read, descriptor.InputType, LeveeJson.Options);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(
@@ -171,7 +179,7 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
                 + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
         }
         // The scope it's authorized in is the one stored: the caller's credentials read once, not again after.
-        var authorized = await dispatcher.AuthorizeScopeAsync(operation, caller, ct);
+        var authorized = await dispatcher.AuthorizeScopeAsync(read, caller, ct);
         if (!authorized.IsSuccess)
         {
             return authorized.Error;
@@ -186,7 +194,6 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         // A caller-scoped job runs where its caller could: the scope its credentials carried at enqueue.
         var scope = descriptor.CallerScoped ? authorized.Value.Key
             : caller is IScopedPrincipal scoped && !string.IsNullOrWhiteSpace(scoped.ScopeKey) ? scoped.ScopeKey : null;
-        var input = JsonSerializer.SerializeToElement(operation, operation.GetType(), LeveeJson.Options);
         var insert = new InsertOptions
         {
             ScheduledAt = options?.RunAt,
@@ -305,8 +312,7 @@ internal static class Run
             }
         }
         Dispatcher.HoldToAttempt(principal, Lock);
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, token),
-            current.Step, current.Sealed);
+        var context = new ProcessContext(principal, scope, attempt, dispatcher, current.Step, current.Sealed);
         var value = input.Deserialize(type, LeveeJson.Options)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");
         await using var services = scopes.CreateAsyncScope();

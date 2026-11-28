@@ -77,10 +77,11 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 request.Headers.Add("Idempotency-Key", key);
             }
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            // Read whole within the client's timeout: a body that stalls after its headers is a platform out of reach.
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
             if (!response.IsSuccessStatusCode)
             {
-                return await FailureAsync(response, ct);
+                return await FailureAsync(response, _options.Time, ct);
             }
             if (!Is(response, "application/json"))
             {
@@ -125,7 +126,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             }
             using (response)
             {
-                return response.IsSuccessStatusCode ? NotThePlatform(response) : await FailureAsync(response, ct);
+                return response.IsSuccessStatusCode ? NotThePlatform(response) : await FailureAsync(response, _options.Time, ct);
             }
         }, ct);
         return opened.IsSuccess ? new LeveeSubscription<TItem>(opened.Value, descriptor) : opened.Error;
@@ -181,7 +182,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     }
 
     /// <summary>The platform's problem, read back into its error; anything else (a proxy's page) is the platform out of reach.</summary>
-    private static async Task<Error> FailureAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<Error> FailureAsync(HttpResponseMessage response, TimeProvider time, CancellationToken ct)
     {
         if (Is(response, "application/problem+json"))
         {
@@ -190,7 +191,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
                 await using var content = await response.Content.ReadAsStreamAsync(ct);
                 if (await JsonSerializer.DeserializeAsync<ProblemView>(content, LeveeJson.Options, ct) is { } problem)
                 {
-                    return ContractWire.ReadProblem(problem, (int)response.StatusCode, response.Headers.RetryAfter?.Delta, Unreachable);
+                    return ContractWire.ReadProblem(problem, (int)response.StatusCode, RetryAfter(response.Headers.RetryAfter, time), Unreachable);
                 }
             }
             catch (JsonException)
@@ -199,6 +200,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         }
         return Unreachable($"The platform answered {(int)response.StatusCode} with no problem of its own.");
     }
+
+    /// <summary>When the platform says to come back: after a delay, or at a time, which is a delay from now.</summary>
+    private static TimeSpan? RetryAfter(RetryConditionHeaderValue? header, TimeProvider time) =>
+        header?.Delta ?? (header?.Date is { } at ? (at - time.GetUtcNow() is { Ticks: > 0 } wait ? wait : TimeSpan.Zero) : null);
 
     internal static bool Is(HttpResponseMessage response, string mediaType) =>
         string.Equals(response.Content.Headers.ContentType?.MediaType, mediaType, StringComparison.OrdinalIgnoreCase);

@@ -180,8 +180,12 @@ public interface IAmbientTransaction
 
 internal sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subject, string Operation, string Input);
 
-/// <summary>A retried write's key: one request, by who sent it, what to, and the hash of its input.</summary>
-internal sealed record IdempotencyKey(string Subject, string Operation, string Key, byte[] InputHash, TimeSpan Lifetime);
+/// <summary>
+/// A retried write's key: one request, by who sent it, what to, and the hash of its input. <paramref name="Replayable"/> says
+/// whether its result may be answered again at all (not when its contract declares a secret), so what was kept is never read
+/// when it may not be.
+/// </summary>
+internal sealed record IdempotencyKey(string Subject, string Operation, string Key, byte[] InputHash, TimeSpan Lifetime, bool Replayable);
 
 /// <summary>What claiming a key found: one of four, and only a kept result carries the wire it answered.</summary>
 internal abstract record IdempotencyClaim

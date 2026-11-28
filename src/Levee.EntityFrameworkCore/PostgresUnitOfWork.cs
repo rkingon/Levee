@@ -531,8 +531,8 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     {
         ArgumentNullException.ThrowIfNull(key);
         var answer = await db.Database.SqlQuery<string>(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}})::text as \"Value\"",
-            key.Subject, key.Operation, key.Key, key.InputHash)).SingleAsync(ct);
+            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}}, {{4}})::text as \"Value\"",
+            key.Subject, key.Operation, key.Key, key.InputHash, key.Replayable)).SingleAsync(ct);
         using var claim = System.Text.Json.JsonDocument.Parse(answer);
         return claim.RootElement.GetProperty("state").GetString() switch
         {
@@ -561,7 +561,6 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async Task CommitAsync(CancellationToken ct)
     {
         await Aggregates.SaveAsync(db, ct);
-        await Aggregates.VerifyAsync(db, ct);
         // Last before COMMIT, so a key's lifetime starts as its write lands, not as its handler returned.
         if (_kept is var (key, result))
         {

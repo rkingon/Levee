@@ -64,7 +64,13 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{subscription.GetType().Name} isn't in the catalog.");
         }
-        var opened = await OpenAsync(descriptor, subscription, principal, ct);
+        // Taken once, as a typed send's input is: what its scope, admissions, outcome and handler read is the same.
+        var snapshot = ContractWire.Snapshot(descriptor, subscription);
+        if (!snapshot.IsSuccess)
+        {
+            return snapshot.Error;
+        }
+        var opened = await OpenAsync(descriptor, snapshot.Value.Read, principal, ct);
         return opened.IsSuccess ? Result<IAsyncEnumerable<TItem>>.Success(Items<TItem>(opened.Value, CancellationToken.None)) : opened.Error;
     }
 
@@ -310,17 +316,6 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// <see cref="AttemptSuperseded"/> when the attempt is no longer the one running.
     /// </summary>
     internal static void HoldToAttempt(Principal principal, Func<IServiceProvider, CancellationToken, Task> enlist) => Attempts.AddOrUpdate(principal, enlist);
-
-    /// <summary>A process's step: an operation it holds, as its principal.</summary>
-    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(operation);
-        if (catalog.Find(operation.GetType()) is not { } descriptor)
-        {
-            return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
-        }
-        return await RunAsync(descriptor, operation, principal, wire: null, pinned: null, key: null, ct);
-    }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
         scoped.IsSuccess && Confined.TryGetValue(principal, out var to) && (scoped.Value.Key != to.Key || scoped.Value.Unscoped != to.Unscoped)
@@ -607,7 +602,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             }
             // After the admissions, so a refused caller learns nothing of what a key did; before the handler, so a repeat never runs it.
             var claimed = key is not null && !scope.ReadOnly
-                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(sent), options.IdempotencyKeyLifetime)
+                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(scope, sent), options.IdempotencyKeyLifetime, Replayable: !DeclaresSecret(descriptor))
                 : null;
             if (claimed is not null)
             {
@@ -620,12 +615,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                     case IdempotencyClaim.Replayed:
                         return replayed;
                     case IdempotencyClaim.Kept kept:
-                        // Done already: its first answer, the wire it was kept as, and nothing written or audited again. A secret is
-                        // shown once, whatever was kept before the contract said so: judged before what was kept is read at all.
-                        if (DeclaresSecret(descriptor))
-                        {
-                            return replayed;
-                        }
+                        // Done already: its first answer, the wire it was kept as, and nothing written or audited again. One whose
+                        // contract declares a secret was answered Replayed, without what was kept being read.
                         var first = Parse(kept.Result);
                         return Result<object?>.Success(wire is not null ? first : Read(descriptor, first));
                 }
@@ -665,7 +656,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 var copy = Read(descriptor, written);
                 if (claimed is not null)
                 {
-                    unit.Keep(claimed, DeclaresSecret(descriptor) ? null : written.GetRawText());
+                    unit.Keep(claimed, claimed.Replayable ? written.GetRawText() : null);
                 }
                 result = Result<object?>.Success(wire is not null ? written : copy);
             }
@@ -748,12 +739,12 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static bool DeclaresSecret(OperationDescriptor descriptor) => LeveeJson.FindSecret(descriptor.ResultType, LeveeJson.Options) is not null;
 
     /// <summary>
-    /// The input as the wire carried it (as it was received, or written once from a typed send), its objects' members in one
-    /// order (a dictionary's entries in any order are the same input; a member sent twice was refused as it was read), its
-    /// arrays' as they are: what a key's repeat is compared by. Never read and written again, so a converter that writes
-    /// something new each time can't make a repeat another request.
+    /// Where it was asked (its scope's kind), and the input as the wire carried it (as it was received, or written once from
+    /// a typed send), its objects' members in one order (a dictionary's entries in any order are the same input; a member
+    /// sent twice was refused as it was read), its arrays' as they are: what a key's repeat is compared by. Never read and
+    /// written again, so a converter that writes something new each time can't make a repeat another request.
     /// </summary>
-    private static byte[] Hash(JsonElement input)
+    internal static byte[] Hash(WorkScope scope, JsonElement input)
     {
         // From the element, not a JsonObject: members that differ only in case ("ABC", "abc") are two members on the wire.
         static void Write(Utf8JsonWriter writer, JsonElement element)
@@ -785,6 +776,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         var buffer = new System.Buffers.ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
+            // Where it was asked, by kind: a platform's and an unscoped request share an empty scope key, and aren't one request.
+            writer.WriteStartArray();
+            writer.WriteStringValue(scope.Platform ? "platform" : scope.Unscoped ? "unscoped" : "scoped");
             // No input at all reads as an empty object, so it's that.
             if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
             {
@@ -795,6 +789,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 Write(writer, input);
             }
+            writer.WriteEndArray();
         }
         return System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan);
     }
