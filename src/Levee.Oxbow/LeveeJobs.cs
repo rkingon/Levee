@@ -227,7 +227,7 @@ internal sealed class ProcessJobWorker(IServiceScopeFactory scopes, Dispatcher d
 {
     public Task WorkAsync(Job<ProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Args.Unscoped, job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, new Attempt(job.StepAsync, job.LockAttemptAsync, Sealed: false), cancellationToken);
 }
 
 internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
@@ -235,8 +235,14 @@ internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispat
 {
     public Task WorkAsync(Job<SealedProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Args.Unscoped, job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, new Attempt(job.StepAsync, job.LockAttemptAsync, Sealed: true), cancellationToken);
 }
+
+/// <summary>A process's job attempt: its steps, recorded by Oxbow, and the lock that holds a write to it.</summary>
+internal sealed record Attempt(
+    Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>> Step,
+    Func<System.Data.Common.DbTransaction, CancellationToken, Task> Lock,
+    bool Sealed);
 
 /// <summary>
 /// The inputs of every registered process, by the name a job stores: a stored name resolves to one of these or to nothing,
@@ -264,7 +270,8 @@ internal sealed class ProcessInputs(IServiceCollection services)
 internal static class Run
 {
     public static async Task ProcessAsync(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
-        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, bool unscoped, int attempt, CancellationToken ct)
+        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, bool unscoped, int attempt, Attempt current,
+        CancellationToken ct)
     {
         var type = inputs.Find(process) ?? throw new JobCancelException($"No process takes {process}: renamed or removed since it was started.");
         var job = new JobPrincipal(subject, system, scope);
@@ -281,7 +288,22 @@ internal static class Run
         {
             Dispatcher.Confine(principal, new WorkScope(scope, ReadOnly: false) { Unscoped = unscoped });
         }
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, token));
+        // Each write a step sends is held to this attempt, so a run the rescuer has since taken over can't commit one.
+        async Task Lock(IServiceProvider services, CancellationToken token)
+        {
+            var (_, transaction) = services.GetRequiredService<IAmbientTransaction>().Current
+                ?? throw new InvalidOperationException("A process's write has no transaction to hold to its attempt.");
+            try
+            {
+                await current.Lock(transaction, token);
+            }
+            catch (JobAttemptSupersededException superseded)
+            {
+                throw new AttemptSuperseded(superseded);
+            }
+        }
+        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, Lock, token),
+            current.Step, current.Sealed);
         var value = input.Deserialize(type, LeveeJson.Options)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");
         await using var services = scopes.CreateAsyncScope();
@@ -292,6 +314,11 @@ internal static class Run
         catch (ProcessSnoozed snoozed)
         {
             throw new JobSnoozeException(snoozed.Delay);
+        }
+        catch (AttemptSuperseded superseded)
+        {
+            // Oxbow's own, so it ignores this attempt from here: its rescuer's run is the process now.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(superseded.InnerException!);
         }
     }
 

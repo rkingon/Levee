@@ -64,6 +64,7 @@ hole in a rule, or a capability two apps need; a consumer whose convention is lo
 | Concurrency, on by default at the aggregate | a trial | Removing `.IsConcurrencyToken()` still built clean and passed a sequential stale-edit test, while overlapping requests both returned 200 and one edit was lost. Every root's version is `xmin` now (`AddLeveeConventions()`, refused at start when missing), a child's change is its root's, and an `IVersionedOperation` holds its one root to the version its caller saw (LEVEE114). Proved by two requests held to read the same version before either writes: one commits, one is `store.stale`. In the context's own conventions, not the options, so a Tool's or a migration's model is the host's. |
 | Idempotency keys for retryable writes | the maintainer, with the plan's retries | A client that retries after a lost response would write twice. A key is claimed in the write's own transaction, by caller and scope, so its first result commits with it, and an equal request in flight waits for it. A result carrying a `[Secret]` isn't kept: a key is an application layer's promise, and replaying a secret would break the domain's "shown once". Not for jobs, which run on the idempotency their operation declares, nor MCP. |
 | A typed client for `/ops` | all three | All three apps' webs are thin consumers of an SDK over the wire, each its own, and alpha.6's `Web` role reaches the platform only through one. `Levee.Client` reads the contract from a Contracts project's catalog and a failure back into Levee's own `Error`, and keys each write across its retries. Its own package, an adapter outside the hexagon: the reference graph (LEVEE008) keeps it out of the core roles, with no rule of its own. |
+| Durable process steps | the maintainer, from Oxbow's steps | A process that resumed by reading its state needed an operation for every point it could stop at. `ProcessContext.StepAsync` records each step's success with Oxbow (0.2.0-alpha.5), as Inngest and Temporal do, answering a `Result` so a failure is retried rather than recorded; each write a process sends locks its attempt first, so a superseded run can't commit. |
 
 ## Trust model
 
@@ -121,13 +122,9 @@ Where the apps disagreed before Levee, and what it chose.
 | An MCP projection | `Levee.Mcp`, on the official MCP SDK | A and B both wrote one. It's internal, like `/ops`, so generated: names by a fixed rule (dots to underscores, clashes fail at startup), a filter for which operations an agent sees, the principal from the request. |
 | A hand-built wire for the app's own clients (A's own envelope) | `MapLeveeOperations` | Only the app's own SDK called it: that's what `/ops` is for. |
 
-## Planned: 0.0.1-alpha.3
+## How a release ships
 
-| Feature | Shape |
-|---|---|
-| Durable process steps | `ProcessContext.StepAsync(name, run)` over Oxbow's `job.StepAsync` (0.2.0-alpha.5): a step's result is recorded under its name and a later run (after a failed attempt, a snooze, a rescue) gets it back instead of running it again, so a process written from the top resumes where it was, as Inngest's and Temporal's do. At least once: a step that acted but died before its result was recorded runs again, so a provider call takes an idempotency key. Results travel as `LeveeJson.Options` writes them, `[Secret]` sealed as a sealed process's input is. Each operation a process sends locks its attempt (`job.LockAttemptAsync`) in the unit of work's own transaction, first, so a superseded run can't commit. Needs Oxbow's schema version 3 and its grants. |
-
-How it ships, from alpha.2: the release gate is the red team's bar, what an agent following the scaffold and the `Fix:`
+From alpha.2: the release gate is the red team's bar, what an agent following the scaffold and the `Fix:`
 messages would write; an independent audit (Astra) runs alongside as continuous hardening, each finding a regression test
 and a fix in the next alpha rather than a hold. A finding that keeps recurring in one area is answered by narrowing the
 language there, not by another check. An audit prompt is framed as a correctness review: framed as an attack, Astra's

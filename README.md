@@ -180,6 +180,8 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   them; the access policy decides again). Jobs run at least once, so an operation declaring `Idempotency.None` can't be
   enqueued, nor one with a `[Secret]` anywhere in its input (job inputs are stored) unless jobs seal them
   ([docs/jobs.md](docs/jobs.md)).
+- A process (`IProcess<TInput>`) resumes through its steps: `context.StepAsync(name, run, ct)` records each one's
+  success, so a later run gets it back instead of doing it again, and every write it sends is held to its attempt.
 - Oxbow is enlisted in the unit of work (`AddLeveeOxbow()`): the app's own job kinds, through the scoped `IOxbowClient`,
   commit or roll back with the operation too. `.AddLeveeJobs()` adds operations as jobs on top.
 - `Internal = true`: the platform's own operations (sign-in, bootstrap), through the same pipeline, never projected. The

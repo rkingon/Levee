@@ -1,12 +1,14 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json;
 
 namespace Levee;
 
 /// <summary>
 /// A process: long-running work an operation starts (an agent's turn that runs for minutes, a backfill between pauses), run
 /// as a job, outside any transaction. It reaches the app only by sending operations, as the caller that started it and in
-/// the scope it was started in, so each step commits on its own and nothing is held open while it waits. Its state is
-/// what those operations commit: a run that's retried or snoozed starts again from the top and reads where it was.
+/// the scope it was started in, so each one commits on its own and nothing is held open while it waits. A run that's
+/// retried or snoozed starts again from the top, and resumes where it was through its steps
+/// (<see cref="ProcessContext.StepAsync{T}"/>): each one done is answered from its record, not done again.
 /// Implemented in Application, its I/O through ports; started with <see cref="IJobs.StartAsync{TInput}"/>.
 /// </summary>
 /// <typeparam name="TInput">What it's started with, stored with the job: renaming it strands runs still queued.</typeparam>
@@ -20,13 +22,20 @@ public interface IProcess<in TInput>
 public sealed class ProcessContext
 {
     private readonly Func<IOperation, CancellationToken, Task<Result<object?>>> _send;
+    private readonly Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>> _step;
+    private readonly bool _sealed;
 
-    internal ProcessContext(Principal principal, string? scope, int attempt, Func<IOperation, CancellationToken, Task<Result<object?>>> send)
+    // step: runs a step whose result is recorded under its name, or answers the one recorded (the job's own); sealedResults:
+    // whether what it records is sealed at rest, as a sealed process's input is.
+    internal ProcessContext(Principal principal, string? scope, int attempt, Func<IOperation, CancellationToken, Task<Result<object?>>> send,
+        Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>>? step = null, bool sealedResults = false)
     {
         Principal = principal;
         Scope = scope;
         Attempt = attempt;
         _send = send;
+        _step = step ?? ((_, run, ct) => run(ct));
+        _sealed = sealedResults;
     }
 
     /// <summary>The caller that started it, restored.</summary>
@@ -46,10 +55,60 @@ public sealed class ProcessContext
         return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
     }
 
+    /// <summary>
+    /// One step of the process, recorded under <paramref name="name"/> once it succeeds: a later run (after a failed attempt,
+    /// a snooze, a rescue) gets the recorded result back instead of running it again, so a process written from the top
+    /// resumes where it was. A failure records nothing, so the next run tries it again. At least once: a run that dies after
+    /// the step acted but before its result was recorded runs it again, so a vendor call takes an idempotency key.
+    /// </summary>
+    /// <param name="name">What the step does, unique in the process: its result's identity, so renaming it runs it again.</param>
+    /// <param name="run">The step: an operation sent (<see cref="SendAsync{TResult}"/>), or a port's call.</param>
+    /// <param name="ct">Passed to <paramref name="run"/>.</param>
+    public async Task<Result<T>> StepAsync<T>(string name, Func<CancellationToken, Task<Result<T>>> run, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(run);
+        try
+        {
+            var recorded = await _step(name, async token =>
+            {
+                var result = await run(token).ConfigureAwait(false);
+                if (!result.IsSuccess)
+                {
+                    throw new StepFailed(result.Error);
+                }
+                if (!_sealed && result.Value is { } value && LeveeJson.FindSecretIn(value, typeof(T), LeveeJson.Options) is { } secret)
+                {
+                    throw new InvalidOperationException(
+                        $"Step {name}'s result {secret} is a secret, and a step's result is stored. Return a reference to it, "
+                        + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
+                }
+                return JsonSerializer.SerializeToElement(result.Value, LeveeJson.Options);
+            }, ct).ConfigureAwait(false);
+            return Result<T>.Success(recorded.Deserialize<T>(LeveeJson.Options)!);
+        }
+        catch (StepFailed failed)
+        {
+            return failed.Error;
+        }
+    }
+
     /// <summary>Ends this run and runs the process again after <paramref name="delay"/>, from the top.</summary>
     [DoesNotReturn]
     public void Snooze(TimeSpan delay) => throw new ProcessSnoozed(delay, Principal.Subject);
 }
+
+/// <summary>A step that failed: through the job's step unrecorded, then answered as the failure it was.</summary>
+internal sealed class StepFailed(Error error) : Exception($"{error.Code}: {error.Message}")
+{
+    public Error Error { get; } = error;
+}
+
+/// <summary>
+/// The process's attempt is no longer the one running (it was rescued and runs again elsewhere): the operation it was
+/// sending rolled back, and the run ends here.
+/// </summary>
+internal sealed class AttemptSuperseded(Exception inner) : Exception("The process's attempt was superseded.", inner);
 
 /// <summary>A snoozed run, for the job runner to schedule again.</summary>
 internal sealed class ProcessSnoozed(TimeSpan delay, string subject) : Exception($"{subject}'s process snoozed for {delay}.")

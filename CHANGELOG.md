@@ -15,6 +15,17 @@
   `idempotency.replayed`, since a secret is shown once. A key holds for `LeveeOptions.IdempotencyKeyLifetime` (24 hours);
   a read ignores it.
 
+- `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its result is recorded under its name once it
+  succeeds, and every later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process
+  written from the top resumes where it was. A failure records nothing; a result carrying a `[Secret]` is refused unless
+  jobs seal their inputs. Every write a process sends takes its attempt's lock first, in the operation's own transaction,
+  so a run the rescuer has taken over can't commit.
+
+### Levee.Oxbow
+- **Breaking:** needs Oxbow 0.2.0-alpha.5 and its schema version 3 (`job_step`), with its grants: apply Oxbow's migrations
+  and run `dotnet levee db grants <role> --jobs` again. Step results are Oxbow's job steps, sealed with a sealed process's
+  input.
+
 ### Levee.EntityFrameworkCore
 - **Breaking:** every aggregate root has a version. `configurationBuilder.AddLeveeConventions()`, from the app's context's
   `ConfigureConventions`, maps each root's version to Postgres's `xmin`, a concurrency token no migration creates: two

@@ -7,8 +7,8 @@
     <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.0" />
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
-    <PackageVersion Include="Oxbow" Version="0.2.0-alpha.3" />
-    <PackageVersion Include="Oxbow.EntityFrameworkCore" Version="0.2.0-alpha.3" />
+    <PackageVersion Include="Oxbow" Version="0.2.0-alpha.5" />
+    <PackageVersion Include="Oxbow.EntityFrameworkCore" Version="0.2.0-alpha.5" />
     <PackageVersion Include="System.Reflection.MetadataLoadContext" Version="10.0.0" />
     <PackageVersion Include="ModelContextProtocol" Version="2.4.0" />
 
@@ -22,7 +22,7 @@
     <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.0" />
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.15" />
     <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.15" />
-    <PackageVersion Include="Oxbow.DataProtection" Version="0.2.0-alpha.3" />
+    <PackageVersion Include="Oxbow.DataProtection" Version="0.2.0-alpha.5" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.17.0" />

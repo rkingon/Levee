@@ -73,6 +73,31 @@ Its state is what its operations commit (a process manager's aggregate): a run t
 (`context.Snooze(delay)`) to come back later, starts again from the top and reads where it was. A snooze isn't an
 attempt, so `context.Attempt` doesn't say where a process is: its state does.
 
+### Steps
+
+Reading where it was needs an operation that knows; a step needs none. `context.StepAsync(name, run, ct)` records a
+step's result under its name once it succeeds, and every later run (after a failed attempt, a snooze, a rescue) gets the
+recorded result back instead of running it again, so a process written from the top resumes where it was:
+
+```csharp
+var reply = await context.StepAsync("ask the model", ct => runner.RunAsync(state.Prompt, ct), ct);   // done once
+if (!reply.IsSuccess) context.Snooze(TimeSpan.FromSeconds(30));                                       // nothing recorded: asked again
+await context.StepAsync("finish", ct => context.SendAsync(new FinishTurn(turn.TurnId, reply.Value), ct), ct);
+```
+
+- **A step answers a `Result`.** Only a success is recorded; a failure is answered as it is and the next run tries the
+  step again. A port's call and `SendAsync` both answer one.
+- **At least once.** A result is recorded after its step runs, so a run that dies in between runs it again: a vendor call
+  takes an idempotency key.
+- **Names identify results.** Name a step for what it does, unique in the process; renaming it runs it again.
+- **Results travel on the contract wire** (`LeveeJson.Options`), kept with the job (Oxbow's `job_step`). A result
+  carrying a `[Secret]` is refused unless jobs seal their inputs, which seals step results too.
+- **A superseded run can't write.** An attempt that outlives its timeout or heartbeat can be rescued while it still runs.
+  Every write a process sends takes Oxbow's attempt lock first, in the operation's own transaction, so a run the rescuer
+  has taken over rolls back and ends there; its rescuer's run is the process now. A read takes no lock.
+
+Needs Oxbow's schema version 3 (0.2.0-alpha.5) and its grants: `dotnet levee db schema --jobs` and `db grants --jobs`.
+
 A process started in a scope (or in none) stays there: every step runs in that scope, whatever the step declares (its
 input's, its caller's, the platform's), even when the access policy would let its caller elsewhere. Its principal is
 held to that scope, not its context: handed to anything else that sends, it's refused outside the scope all the same. One the platform started may act

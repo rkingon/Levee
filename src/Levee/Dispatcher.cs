@@ -294,14 +294,17 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     internal static void Confine(Principal principal, WorkScope scope) => Confined.AddOrUpdate(principal, scope);
 
     /// <summary>A process's step: an operation it holds, as its principal.</summary>
-    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, CancellationToken ct)
+    // enlist: run first in a write's transaction, what holds it to the process's attempt (Oxbow's attempt lock), so a superseded
+    // run's write can't commit. It throws AttemptSuperseded when the attempt is no longer the one running.
+    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, Func<IServiceProvider, CancellationToken, Task>? enlist,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         if (catalog.Find(operation.GetType()) is not { } descriptor)
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct);
+        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct, enlist);
     }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
@@ -312,7 +315,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             : scoped;
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct)
+        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct, Func<IServiceProvider, CancellationToken, Task>? enlist = null)
     {
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
@@ -342,7 +345,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, key, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, key, enlist, ct) : scoped.Error);
+        }
+        catch (AttemptSuperseded)
+        {
+            // Rolled back with the transaction the lock failed; the process's run ends, and its rescuer's goes on.
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, input ?? SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+                Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was sent by a process whose attempt was superseded.")), CancellationToken.None);
+            throw;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -529,7 +539,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        Func<object?, object?>? answer, string? key, CancellationToken ct)
+        Func<object?, object?>? answer, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -541,6 +551,12 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         try
         {
             await using var unit = await factory.BeginAsync(scope, ct);
+            // First, before anything else reads or writes: a read commits nothing a stale run could leave, and Postgres takes
+            // no row lock in a read-only transaction.
+            if (enlist is not null && !scope.ReadOnly)
+            {
+                await enlist(services.ServiceProvider, ct);
+            }
             if (operation is IVersionedOperation versioned)
             {
                 unit.Expect(versioned.ExpectedVersion);
