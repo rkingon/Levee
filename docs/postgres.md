@@ -74,7 +74,9 @@ app has checked isn't seen until it restarts.
 3. With an idempotency key, for a write: the key claimed, or what its first request committed answered without running
    the handler again. An equal request still in flight is waited for, so equal requests at once make one write.
 4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. Every aggregate
-   root's version (`xmin`) is checked as it's written, and a changed child marks its root.
+   root's version (`xmin`) is checked as it's written, and a changed child writes its root's. A flush that fails fails
+   the operation: every later flush, and the commit, throws the same failure, however the handler caught it. A save of
+   the context's own (`SaveChanges`, which LEVEE004 refuses) is refused inside an operation.
 5. The audit record, for a write, through `levee_audit_write`.
 6. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 
@@ -82,8 +84,9 @@ Postgres's refusals come back classified: a write in a read-only transaction is 
 moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write
 changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
 set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count
-(it runs as it's called, past the change tracker: one on a root's own table moves that root's `xmin`, but isn't held to
-the version a caller saw, and one on a child's table moves no root's version at all), a duplicate is `conflict`, any other constraint
+(it runs as it's called, past the change tracker: an update of a root's own table moves that root's `xmin` but isn't held
+to the version a caller saw, a delete of it leaves no version to see, and one on a child's table moves no root's version
+at all), a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 

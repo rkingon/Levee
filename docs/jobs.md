@@ -82,8 +82,16 @@ recorded result back instead of running it again, so a process written from the 
 ```csharp
 var reply = await context.StepAsync("ask the model", ct => runner.RunAsync(state.Prompt, ct), ct);   // done once
 if (!reply.IsSuccess) context.Snooze(TimeSpan.FromSeconds(30));                                       // nothing recorded: asked again
-await context.StepAsync("finish", ct => context.SendAsync(new FinishTurn(turn.TurnId, reply.Value), ct), ct);
+var finished = await context.StepAsync("finish", ct => context.SendAsync(new FinishTurn(turn.TurnId, reply.Value), ct), ct);
+if (!finished.IsSuccess)
+{
+    if (finished.Error.Transient) context.Snooze(TimeSpan.FromSeconds(30));           // the store was busy: finish later
+    throw new InvalidOperationException(finished.Error.Message);                      // refused: the run fails, and is retried
+}                                                                                     // until its attempts run out
 ```
+
+A process that returns has completed, so a step's failure is never just dropped: snooze to come back, or throw to fail
+the run.
 
 - **A step answers a `Result`.** Only a success is recorded; a failure is answered as it is and the next run tries the
   step again. A port's call and `SendAsync` both answer one.

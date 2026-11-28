@@ -31,7 +31,8 @@ public sealed class ClientTests : IAsyncDisposable
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     /// <summary>The app's authentication, as a handler on the client; then whatever else stands between it and the platform.</summary>
-    private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null, bool keys = true)
+    private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null, bool keys = true,
+        TimeSpan? window = null, TimeSpan? delay = null)
     {
         HttpMessageHandler handler = _app.GetTestServer().CreateHandler();
         if (between is not null)
@@ -40,7 +41,10 @@ public sealed class ClientTests : IAsyncDisposable
             handler = between;
         }
         var http = new HttpClient(new Bearer { InnerHandler = handler }) { BaseAddress = new Uri("http://platform") };
-        return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions { Retries = retries, RetryDelay = TimeSpan.Zero, IdempotencyKeys = keys });
+        return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions
+        {
+            Retries = retries, RetryDelay = delay ?? TimeSpan.Zero, IdempotencyKeys = keys, RetryWindow = window ?? TimeSpan.FromSeconds(30),
+        });
     }
 
     private sealed class Bearer : DelegatingHandler
@@ -218,6 +222,51 @@ public sealed class ClientTests : IAsyncDisposable
         {
             answer.Dispose();
             var stream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("data: {\"number\":\n\n") };
+            stream.Content.Headers.ContentType = new("text/event-stream");
+            return stream;
+        });
+        var opened = await Client(between: garbled).SubscribeAsync(new Ticks(1), Ct);
+
+        var failed = await Assert.ThrowsAsync<OperationFailedException>(async () =>
+        {
+            await foreach (var _ in opened.Value.WithCancellation(Ct))
+            {
+            }
+        });
+
+        Assert.Equal(LeveeErrors.Unreachable, failed.Error.Code);
+    }
+
+    [Fact]
+    public async Task No_retry_is_sent_past_the_window_a_key_is_kept_for()
+    {
+        var lost = new LoseFirstAnswer();
+
+        var counted = await Client(between: lost, window: TimeSpan.FromMilliseconds(50), delay: TimeSpan.FromMilliseconds(100))
+            .SendAsync(new Count("acme", $"n{Guid.NewGuid():N}"), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, counted.Error!.Code);
+        Assert.Single(lost.Keys);
+    }
+
+    [Fact]
+    public async Task An_input_its_own_type_refuses_is_refused_before_anything_is_sent()
+    {
+        var lost = new LoseFirstAnswer();
+
+        var refused = await Client(between: lost).SendAsync(new Echo(null!), Ct);
+
+        Assert.Equal((ErrorKind.Validation, LeveeErrors.InvalidInput), (refused.Error!.Kind, refused.Error.Code));
+        Assert.Empty(lost.Keys);
+    }
+
+    [Fact]
+    public async Task An_error_event_that_isnt_a_problem_ends_the_stream_as_a_failure()
+    {
+        var garbled = new Rewrite(answer =>
+        {
+            answer.Dispose();
+            var stream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("event: error\ndata: null\n\n") };
             stream.Content.Headers.ContentType = new("text/event-stream");
             return stream;
         });

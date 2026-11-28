@@ -7,7 +7,8 @@
   explicitly over a positional parameter, as `IScopedOperation` is). It commits only if the one root it changes is still
   at that version, and is refused as 409 `store.stale` otherwise; a root it loaded but didn't change is compared as read.
   One that loads no root, creates one, or changes more than one aggregate (across however many flushes), is a bug,
-  answered `internal`.
+  answered `internal`. A flush that fails fails the operation, however its handler caught it: every later flush, and the
+  commit, throws the same failure, so nothing the operation wrote commits.
 - Idempotency keys for retryable writes: `Dispatcher.SendAsync(operation, principal, idempotencyKey, ct)`, and over HTTP
   the `Idempotency-Key` header. A write sent again with the same key, by the same caller in the same scope, answers the
   first result without running again; equal requests at once make one write, the later waiting for the first; a key
@@ -15,10 +16,12 @@
   rolled back left nothing to replay. A result carrying a `[Secret]` isn't kept: its repeat is 409
   `idempotency.replayed`, since a secret is shown once. A key holds for `LeveeOptions.IdempotencyKeyLifetime` (24 hours)
   from its write's commit (stamped after its last write and its audit, just before COMMIT); a read ignores it. Inputs are compared as the wire carries them, a dictionary's entries in any
-  order. An anonymous caller's key is refused (`idempotency.invalid_key`): every anonymous caller is one subject.
+  order. An anonymous caller's key is refused (`idempotency.invalid_key`): every anonymous caller is one subject. A keyed
+  write's result is serialized once: what it answers is what a replay answers, kept as the wire wrote it.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its result is recorded under its name once it
   succeeds, and every later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process
-  written from the top resumes where it was. A failure records nothing; a result carrying a `[Secret]` is refused unless
+  written from the top resumes where it was. A step's result is held to the contract language, so it reads back as it was
+  written, before the step acts. A failure records nothing; a result carrying a `[Secret]` is refused unless
   jobs seal their inputs: before the step acts when its declared type carries one, and after, unrecorded, when only the
   value does (a step declared `object`). Every write a process's run sends, through its context or a helper it hands
   its principal to, takes its attempt's lock first, in the operation's own transaction, so a run the rescuer has taken
@@ -42,8 +45,9 @@
   roots aren't versioned by `xmin` fails before the first operation, naming the call to add: a token of the app's own,
   which nothing but the app moves, isn't one. An aggregate is mapped in a small language Levee can hold to one version,
   and anything else fails before the first operation with its fix: a root is a class of its own on one table (no
-  inheritance), with a key a write may set (not an identity always, not computed); a child is reached from one root's
-  aggregate by the navigations it holds, and belongs to that one only. An entity no root reaches (a lookup) is in no
+  inheritance, no table splitting), with a key a write may set (not an identity always, not computed); a child is reached
+  from one root's aggregate by the navigations it holds, and belongs to that one only; no many-to-many link is part of an
+  aggregate. A `SaveChanges` of the context's own is refused inside an operation: `IFlush` writes pending changes. An entity no root reaches (a lookup) is in no
   aggregate. A set-based `ExecuteUpdate` or `ExecuteDelete` isn't held to an expected version, and on a child's table
   moves no root's. In the context itself, so every model of it (the host's, a Tool's, a
   migration's) is the same.
@@ -61,8 +65,10 @@
   `platform.unreachable`. A write carries an idempotency key of its own across its retries, so a retry after a lost
   answer is written once; transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait
   or a doubling delay, except a write acting outside the platform (`Effects.External`) that doesn't declare a repeat
-  safe (`Idempotent`), whose outside effect a rollback doesn't undo. `LeveeClientOptions.IdempotencyKeys = false` is for a
-  client that sends as no one: its writes carry no key and are sent once. `SubscribeAsync` streams a subscription's items, ended by the
+  safe (`Idempotent`), whose outside effect a rollback doesn't undo. Retries stop at `LeveeClientOptions.RetryWindow` (30
+  seconds), well inside the platform's key lifetime, so a write is sent once within it. An input its own type refuses is
+  `input.invalid` before anything is sent. `LeveeClientOptions.IdempotencyKeys = false` is for a client that sends as no
+  one: its writes carry no key and are sent once. `SubscribeAsync` streams a subscription's items, ended by the
   platform's last failure as `OperationFailedException`. `AddLeveeClient(catalog, http => ...)` registers it through
   `IHttpClientFactory`; the app's authentication is a handler on what it returns. The core roles can't reference it
   (LEVEE008).

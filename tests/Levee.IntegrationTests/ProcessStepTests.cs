@@ -74,6 +74,23 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         Assert.Equal(before + 1, await postgres.CountAsync("select count(*) from oxbow_job where kind = $1", kind));
     }
 
+    [Fact]
+    public async Task A_sealed_process_replays_a_secret_step_it_keeps_only_as_ciphertext()
+    {
+        using var host = Build(seal: true);
+        await host.StartAsync(Ct);
+        var (tenant, ada) = NewTenant();
+
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartSecretSteps(tenant), ada, Ct)).IsSuccess);
+
+        var tokens = await SecretStepProcess.Seen.GetOrAdd(tenant, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task
+            .WaitAsync(TimeSpan.FromSeconds(10), Ct);
+        // Issued once, and the second run read it back from the record.
+        Assert.Equal((1, tokens.First), (SecretStepProcess.Issued[tenant], tokens.Second));
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from oxbow_job_step where output::text like '%' || $1 || '%'", tokens.First));
+        await host.StopAsync(Ct);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -93,6 +110,47 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         Assert.Equal("read; write refused", await run.Outcome.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct));
         Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", tenant));
         await host.StopAsync(Ct);
+    }
+}
+
+[Operation("probe.start_secret_steps", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartSecretSteps(string Tenant) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+public sealed record SecretStepsInput(string Tenant);
+
+internal sealed class StartSecretStepsHandler(IJobs jobs) : IOperationHandler<StartSecretSteps, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartSecretSteps operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new SecretStepsInput(operation.Tenant), null, ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Issues a key in a step, snoozes, and on its next run reads the same key back from the step's record.</summary>
+internal sealed class SecretStepProcess : IProcess<SecretStepsInput>
+{
+    public static ConcurrentDictionary<string, int> Issued { get; } = new();
+
+    public static ConcurrentDictionary<string, TaskCompletionSource<(string First, string Second)>> Seen { get; } = new();
+
+    private static readonly ConcurrentDictionary<string, string> First = new();
+
+    public async Task RunAsync(SecretStepsInput input, ProcessContext context, CancellationToken ct)
+    {
+        var issued = await context.StepAsync("issue the key", _ =>
+        {
+            Issued.AddOrUpdate(input.Tenant, 1, (_, n) => n + 1);
+            return Task.FromResult<Result<IssuedKey>>(new IssuedKey($"key-{Guid.NewGuid():N}"));
+        }, ct);
+        if (First.TryAdd(input.Tenant, issued.Value.Token))
+        {
+            context.Snooze(TimeSpan.FromMilliseconds(50));
+        }
+        Seen.GetOrAdd(input.Tenant, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult((First[input.Tenant], issued.Value.Token));
     }
 }
 

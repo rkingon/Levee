@@ -1310,14 +1310,14 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddLeveePostgres<PlansDb>();
         builder.Services.AddLeveeOxbow();
         using var host = builder.Build();
-        async Task<Error?> Refused(Func<PlansDb, Task> work)
+        async Task<Error?> Refused(Func<PlansDb, IFlush, Task> work)
         {
             await using var scope = host.Services.CreateAsyncScope();
             var factory = scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>();
             await using var unit = await factory.BeginAsync(new WorkScope("acme", ReadOnly: false), Ct);
             try
             {
-                await work(scope.ServiceProvider.GetRequiredService<PlansDb>());
+                await work(scope.ServiceProvider.GetRequiredService<PlansDb>(), scope.ServiceProvider.GetRequiredService<IFlush>());
                 return null;
             }
             catch (Exception e)
@@ -1327,13 +1327,13 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
 
         // A scope's write to a shared row: row-level security hides it from the update, so no row changes.
-        var stale = await Refused(async db =>
+        var stale = await Refused(async (db, flush) =>
         {
             db.Update(new Ledger(Guid.Parse("00000000-0000-0000-0000-000000000001"), "mine"));
-            await db.SaveChangesAsync(Ct);
+            await flush.FlushAsync(Ct);
         });
-        var value = await Refused(db => db.Database.ExecuteSqlRawAsync("select 'not-a-uuid'::uuid", Ct));
-        var bug = await Refused(db => db.Database.ExecuteSqlRawAsync("select 1/0", Ct));
+        var value = await Refused((db, _) => db.Database.ExecuteSqlRawAsync("select 'not-a-uuid'::uuid", Ct));
+        var bug = await Refused((db, _) => db.Database.ExecuteSqlRawAsync("select 1/0", Ct));
 
         Assert.Equal(LeveeErrors.Stale, stale?.Code);
         Assert.Equal(LeveeErrors.InvalidValue, value?.Code);

@@ -152,7 +152,8 @@ public interface IOperationOutcome
 /// <summary>
 /// Sends the operation's pending writes to the store inside its open transaction, so a query or a set-based statement after
 /// them sees them. It never commits: the dispatcher commits once, and outside an operation this refuses. What an adapter
-/// calls instead of saving.
+/// calls instead of saving. A flush that fails fails the operation, however it's caught: every later flush, and the commit,
+/// throws the same failure, so nothing the operation wrote commits.
 /// </summary>
 public interface IFlush
 {

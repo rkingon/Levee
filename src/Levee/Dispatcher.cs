@@ -632,11 +632,11 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             }
             if (claimed is not null)
             {
-                // A secret is shown once: a result that carries one is never kept to show again.
-                var kept = result.Value is null || LeveeJson.FindSecretIn(result.Value, descriptor.ResultType, LeveeJson.Options) is null
-                    ? JsonSerializer.Serialize(result.Value, descriptor.ResultType, LeveeJson.Options)
-                    : null;
-                unit.Keep(claimed, kept);
+                // Written once and read back: the first answer and every replay are the same wire, however the handler's
+                // result enumerates. A secret is shown once: a result that carries one is never kept to show again.
+                var wire = JsonSerializer.Serialize(result.Value, descriptor.ResultType, LeveeJson.Options);
+                result = Result<object?>.Success(JsonSerializer.Deserialize(wire, descriptor.ResultType, LeveeJson.Options));
+                unit.Keep(claimed, result.Value is null || LeveeJson.FindSecretIn(result.Value, descriptor.ResultType, LeveeJson.Options) is null ? wire : null);
             }
             if (answer is not null)
             {

@@ -68,7 +68,11 @@ public sealed class ProcessContext
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(run);
-        // Before it acts: a step whose result can't be recorded would act again on every run.
+        // Before it acts: a step whose result can't be recorded, or read back once it is, would act again on every run.
+        if (OperationCatalog.Unreadable(typeof(T)) is { } unreadable)
+        {
+            throw new InvalidOperationException($"Step {name}'s result {typeof(T).Name} isn't one a step can record and read back: {unreadable}");
+        }
         if (!_sealed && LeveeJson.FindSecret(typeof(T), LeveeJson.Options) is { } declared)
         {
             throw new InvalidOperationException(Unsealed(name, declared));
@@ -86,7 +90,11 @@ public sealed class ProcessContext
                 {
                     throw new InvalidOperationException(Unsealed(name, secret));
                 }
-                return JsonSerializer.SerializeToElement(result.Value, LeveeJson.Options);
+                var written = JsonSerializer.SerializeToElement(result.Value, LeveeJson.Options);
+                // Read back before it's recorded: a value the language allows can still be one its type doesn't read (a choice's
+                // subtype it doesn't name), and a record no run can read would stand for good.
+                written.Deserialize<T>(LeveeJson.Options);
+                return written;
             }, ct).ConfigureAwait(false);
             return Result<T>.Success(recorded.Deserialize<T>(LeveeJson.Options)!);
         }

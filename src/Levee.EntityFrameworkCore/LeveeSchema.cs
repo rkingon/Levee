@@ -86,7 +86,7 @@ public static class LeveeSchema
               operation text not null,
               key text not null,
               input_hash bytea not null,
-              result jsonb,
+              result text,
               kept boolean not null default false,
               expires_at timestamptz not null,
               primary key (scope, subject, operation, key)
@@ -127,19 +127,20 @@ public static class LeveeSchema
                   end if;
                 end loop;
               end $$;
-            -- The result the claimed key's request commits with, null when it isn't kept (it carries a secret, shown once), and
-            -- the key's lifetime from now, as good as its commit.
-            create or replace function {schema}.levee_idempotency_complete(p_subject text, p_operation text, p_key text, p_result jsonb, p_lifetime interval)
+            -- The result the claimed key's request commits with, as the wire wrote it (text, so what jsonb refuses, a \u0000,
+            -- is kept too), null when it isn't kept (it carries a secret, shown once); and the key's lifetime from now, the
+            -- last thing before its commit.
+            create or replace function {schema}.levee_idempotency_complete(p_subject text, p_operation text, p_key text, p_result text, p_lifetime interval)
               returns void language sql security definer set search_path = {schema}, pg_temp
               as $$ update {schema}.{IdempotencyTable} set result = p_result, kept = p_result is not null, expires_at = clock_timestamp() + p_lifetime
                     where scope = {schema}.levee_scope() and subject = p_subject and operation = p_operation and key = p_key $$;
             revoke all on function {schema}.levee_idempotency_claim(text, text, text, bytea) from public;
-            revoke all on function {schema}.levee_idempotency_complete(text, text, text, jsonb, interval) from public;
+            revoke all on function {schema}.levee_idempotency_complete(text, text, text, text, interval) from public;
             do $levee$
             begin
               if to_regprocedure('{schema}.levee_runtime()') is not null then
                 execute format('grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea), '
-                  || '{schema}.levee_idempotency_complete(text, text, text, jsonb, interval) to %I', {schema}.levee_runtime());
+                  || '{schema}.levee_idempotency_complete(text, text, text, text, interval) to %I', {schema}.levee_runtime());
               end if;
             end $levee$;
             """;
@@ -294,7 +295,7 @@ public static class LeveeSchema
               -- An installation from before alpha.3 has no idempotency keys until the owner adds them (LeveeSchema.Idempotency).
               if to_regprocedure('{schema}.levee_idempotency_claim(text, text, text, bytea)') is not null then
                 execute 'grant execute on function {schema}.levee_idempotency_claim(text, text, text, bytea), '
-                  || '{schema}.levee_idempotency_complete(text, text, text, jsonb, interval) to {role}';
+                  || '{schema}.levee_idempotency_complete(text, text, text, text, interval) to {role}';
               end if;
               execute $ddl$create or replace function {schema}.levee_runtime() returns text language sql immutable as $body$ select '{role}' $body$$ddl$;
               execute $ddl$create or replace function {schema}.levee_runtime_sequences(t regclass) returns void language plpgsql as $body$

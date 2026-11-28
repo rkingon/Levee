@@ -172,7 +172,15 @@ public sealed class OperationCatalog
         }
     }
 
-    private static string? Unwired(Type type, bool input, System.Reflection.Assembly owner)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, string?> Readable = new();
+
+    /// <summary>
+    /// Why <paramref name="type"/> isn't one the contract wire reads back as it wrote it, or null: the contract language, its
+    /// records from any assembly. What a value kept to be read again later (a process step's result) is held to.
+    /// </summary>
+    internal static string? Unreadable(Type type) => Readable.GetOrAdd(type, t => Unwired(t, input: true, owner: null));
+
+    private static string? Unwired(Type type, bool input, System.Reflection.Assembly? owner)
     {
         try
         {
@@ -192,7 +200,7 @@ public sealed class OperationCatalog
     /// own metadata, for whatever the build didn't see. Values, lists and dictionaries of them, plain positional records (every
     /// member a parameter, no other constructor, no JSON attribute, no base but the choice naming them), and a choice of them.
     /// </summary>
-    private static string? Outside(Type root, bool input, System.Reflection.Assembly owner)
+    private static string? Outside(Type root, bool input, System.Reflection.Assembly? owner)
     {
         const string Language = " Fix: values, lists and dictionaries of them, plain positional records whose members are their parameters, and an "
             + "abstract record with no members whose [JsonDerivedType] subtypes are such records (LEVEE104).";
@@ -237,7 +245,7 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} isn't in the contract language." + Language;
             }
-            if (type.Assembly != owner)
+            if (owner is not null && type.Assembly != owner)
             {
                 return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own." + Language;
             }

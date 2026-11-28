@@ -137,6 +137,21 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
         Assert.Equal(1, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.issue_key'", tenant));
     }
 
+    [Fact]
+    public async Task A_result_the_wire_writes_is_kept_as_it_was_written()
+    {
+        using var host = Build();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+
+        // jsonb refuses \u0000; the wire writes it.
+        var first = await dispatcher.SendAsync(new SayNul(tenant), ada, "retry-1", Ct);
+        var again = await dispatcher.SendAsync(new SayNul(tenant), ada, "retry-1", Ct);
+
+        Assert.Equal("a\u0000b", first.Value);
+        Assert.Equal(first.Value, again.Value);
+    }
+
     [Theory]
     [InlineData(800, 0)]
     [InlineData(0, 800)]
@@ -175,7 +190,7 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
             create schema legacy_keys;
             {LeveeSchema.Create("legacy_keys")}
             drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea);
-            drop function legacy_keys.levee_idempotency_complete(text, text, text, jsonb, interval);
+            drop function legacy_keys.levee_idempotency_complete(text, text, text, text, interval);
             drop table legacy_keys.levee_idempotency;
             {LeveeSchema.Grants("legacy_app", "legacy_keys")}
             """);
@@ -216,4 +231,16 @@ internal sealed class SlowIssueHandler : IOperationHandler<SlowIssue, int>
         await Task.Delay(operation.Takes, ct);
         return 42;
     }
+}
+
+[Operation("probe.say_nul", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record SayNul(string Tenant) : IOperation<string>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class SayNulHandler : IOperationHandler<SayNul, string>
+{
+    public Task<Result<string>> HandleAsync(SayNul operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<string>>("a\u0000b");
 }

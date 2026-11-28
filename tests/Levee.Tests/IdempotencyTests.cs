@@ -106,6 +106,16 @@ public sealed class IdempotencyTests
     }
 
     [Fact]
+    public async Task A_keyed_write_answers_what_it_keeps_however_its_result_enumerates()
+    {
+        var first = await _dispatcher.SendAsync(new Mint("acme"), Ada, "key-1", CancellationToken.None);
+        var again = await _dispatcher.SendAsync(new Mint("acme"), Ada, "key-1", CancellationToken.None);
+
+        Assert.Equal(first.Value.ToList(), first.Value.ToList());
+        Assert.Equal(first.Value, again.Value);
+    }
+
+    [Fact]
     public async Task A_read_ignores_its_key()
     {
         var said = await _dispatcher.SendAsync(new Echo("hi"), Ada, "", CancellationToken.None);
@@ -155,4 +165,23 @@ internal sealed class TagHandler : IOperationHandler<Tag, int>
 {
     public Task<Result<int>> HandleAsync(Tag operation, OperationContext context, CancellationToken ct) =>
         Task.FromResult<Result<int>>(Counted.Runs.AddOrUpdate(operation.Name, 1, (_, n) => n + 1));
+}
+
+/// <summary>Its result made anew each time it's enumerated: a generator, not a list.</summary>
+[Operation("probe.mint", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record Mint(string Tenant) : IOperation<IEnumerable<Guid>>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class MintHandler : IOperationHandler<Mint, IEnumerable<Guid>>
+{
+    public Task<Result<IEnumerable<Guid>>> HandleAsync(Mint operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult(Result<IEnumerable<Guid>>.Success(Minted()));
+
+    private static IEnumerable<Guid> Minted()
+    {
+        yield return Guid.NewGuid();
+        yield return Guid.NewGuid();
+    }
 }

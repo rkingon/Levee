@@ -186,6 +186,59 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_stale_save_caught_and_reloaded_around_stays_refused()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        var stale = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture) - 1;
+
+        var added = await dispatcher.SendAsync(new AddLineVersioned(tenant, order, stale, "reloaded after a failed save"), ada, Ct);
+
+        Assert.Equal(LeveeErrors.Stale, added.Error!.Code);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.order_add_line_versioned'", tenant));
+    }
+
+    [Fact]
+    public async Task A_failed_save_caught_by_its_handler_fails_the_operation_and_moves_no_version()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var (order, other, line) = (Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7());
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, other), ada, Ct)).IsSuccess);
+        // The line's id is another order's, so the database refuses it after the order's version was written.
+        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, other, line), ada, Ct)).IsSuccess);
+        var before = await postgres.TextAsync("select xmin::text from orders where id = $1", order);
+
+        var caught = await dispatcher.SendAsync(new AddLineCaught(tenant, order, line), ada, Ct);
+
+        Assert.Equal(LeveeErrors.Conflict, caught.Error!.Code);
+        Assert.Equal(before, await postgres.TextAsync("select xmin::text from orders where id = $1", order));
+    }
+
+    [Fact]
+    public async Task A_save_around_the_unit_of_work_is_refused()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+
+        var saved = await dispatcher.SendAsync(new AddLineSavedItself(tenant, order), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, saved.Error!.Kind);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+    }
+
+    [Fact]
     public async Task The_same_root_loaded_again_is_the_same_aggregate()
     {
         await OrdersAsync();
@@ -210,6 +263,8 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         { nameof(IdentityAlwaysDb), "is one Postgres won't let a write set" },
         { nameof(IdentityByDefaultDb), null },
         { nameof(SharedChildDb), "is a child of both" },
+        { nameof(SplitOrdersDb), "split across several" },
+        { nameof(LinkedOrdersDb), "is a many-to-many link" },
     };
 
     [Theory]
@@ -223,6 +278,8 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
             nameof(DerivedRootDb) => Model<DerivedRootDb>(),
             nameof(IdentityAlwaysDb) => Model<IdentityAlwaysDb>(),
             nameof(IdentityByDefaultDb) => Model<IdentityByDefaultDb>(),
+            nameof(SplitOrdersDb) => Model<SplitOrdersDb>(),
+            nameof(LinkedOrdersDb) => Model<LinkedOrdersDb>(),
             _ => Model<SharedChildDb>(),
         };
 
@@ -420,6 +477,49 @@ public sealed record MoveLine(string Tenant, Guid From, Guid To, Guid Line) : IO
     string IScopedOperation.ScopeKey => Tenant;
 }
 
+/// <summary>Adds a line whose id is taken, catches the save's refusal, drops the line, and goes on as if it had written.</summary>
+[Operation("probe.order_add_line_caught", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
+public sealed record AddLineCaught(string Tenant, Guid Order, Guid Line) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class AddLineCaughtHandler(IOrders orders) : IOperationHandler<AddLineCaught, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineCaught operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(operation.Line, 1);
+        try
+        {
+            await orders.SaveAsync(ct);
+        }
+        catch (DbUpdateException)
+        {
+            // Swallowed, and the line let go of: the order's version was written before the line failed, and the commit has
+            // nothing left to write.
+            orders.Forget();
+        }
+        return Unit.Value;
+    }
+}
+
+/// <summary>Adds a line and saves through EF itself.</summary>
+[Operation("probe.order_add_line_saved_itself", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AddLineSavedItself(string Tenant, Guid Order) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class AddLineSavedItselfHandler(IOrders orders) : IOperationHandler<AddLineSavedItself, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineSavedItself operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        await orders.SaveItselfAsync(ct);
+        return Unit.Value;
+    }
+}
+
 /// <summary>Held to one note's version, then edits that note and another, saving between.</summary>
 [Operation("probe.edit_two", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
 public sealed record EditTwo(string Tenant, Guid First, Guid Second, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
@@ -470,6 +570,9 @@ public interface IOrders : IRepository<Order>
 
     /// <summary>Lets go of what's loaded, as a repository that reads afresh would.</summary>
     void Forget();
+
+    /// <summary>Saves through EF itself, around the unit of work: what LEVEE004 refuses the spelling of.</summary>
+    Task SaveItselfAsync(CancellationToken ct);
 }
 
 [Adapter]
@@ -482,6 +585,8 @@ internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
     public Task SaveAsync(CancellationToken ct) => flush.FlushAsync(ct);
 
     public void Forget() => db.ChangeTracker.Clear();
+
+    public Task SaveItselfAsync(CancellationToken ct) => db.SaveChangesAsync(ct);
 }
 
 /// <summary>Held to a version, adds a line and saves; then, as <see cref="Again"/> says, saves again after a failed save, or reloads and adds another.</summary>
@@ -498,7 +603,7 @@ internal sealed class AddLineVersionedHandler(IOrders orders) : IOperationHandle
     public async Task<Result<Unit>> HandleAsync(AddLineVersioned operation, OperationContext context, CancellationToken ct)
     {
         (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
-        if (operation.Again == "after a failed save")
+        if (operation.Again is "after a failed save" or "reloaded after a failed save")
         {
             try
             {
@@ -506,7 +611,13 @@ internal sealed class AddLineVersionedHandler(IOrders orders) : IOperationHandle
             }
             catch (DbUpdateConcurrencyException)
             {
-                // Saved again by the commit: it must be refused as this one was.
+                // Caught, and gone on from: the commit must still refuse what this save refused.
+            }
+            if (operation.Again == "reloaded after a failed save")
+            {
+                orders.Forget();
+                await orders.FindAsync(operation.Order, ct);
+                await orders.SaveAsync(ct);
             }
             return Unit.Value;
         }
@@ -626,4 +737,29 @@ public sealed class Shelf
     public Guid Id { get; private set; }
 
     public List<OrderLine> Lines { get; } = [];
+}
+
+/// <summary>An order whose tenant lives in a table of its own: an edit there is no write of the order's row.</summary>
+internal sealed class SplitOrdersDb(DbContextOptions<SplitOrdersDb> options) : OrdersDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Order>().SplitToTable("order_tenants", t => t.Property(o => o.Tenant));
+    }
+}
+
+/// <summary>An order's lines linked to tags many-to-many: the link is a row of a join table.</summary>
+internal sealed class LinkedOrdersDb(DbContextOptions<LinkedOrdersDb> options) : OrdersDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<OrderLine>().HasMany<LineTag>().WithMany();
+    }
+}
+
+public sealed class LineTag
+{
+    public Guid Id { get; private set; }
 }

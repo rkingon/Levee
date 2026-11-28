@@ -50,6 +50,28 @@ public sealed class StepTests
         Assert.Equal(2, retried.Value);
     }
 
+    [Fact]
+    public async Task A_step_whose_result_couldnt_be_read_back_is_refused_before_it_acts()
+    {
+        var recorded = new Recorded();
+        var ran = 0;
+
+        var step = await Record.ExceptionAsync(() => Run(recorded).StepAsync<ISaid>("say",
+            _ => Task.FromResult<Result<ISaid>>(new Said($"said {++ran}")), CancellationToken.None));
+
+        Assert.IsType<InvalidOperationException>(step);
+        Assert.Contains("isn't one a step can record and read back", step.Message, StringComparison.Ordinal);
+        Assert.Equal(0, ran);
+        Assert.Empty(recorded.Steps);
+    }
+
+    public interface ISaid
+    {
+        string Text { get; }
+    }
+
+    public sealed record Said(string Text) : ISaid;
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]

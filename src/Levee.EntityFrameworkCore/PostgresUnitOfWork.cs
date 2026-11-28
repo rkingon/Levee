@@ -320,7 +320,7 @@ internal sealed class EfFlush<TContext>(TContext db) : IFlush
     public Task FlushAsync(CancellationToken ct) =>
         db.Database.CurrentTransaction is null
             ? throw new InvalidOperationException("A flush outside an operation's unit of work would commit on its own; flush only inside an operation.")
-            : db.SaveChangesAsync(ct);
+            : Aggregates.SaveAsync(db, ct);
 }
 
 internal sealed class AmbientTransaction : IAmbientTransaction
@@ -505,6 +505,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                 Isolated.TryAdd((db.Model, target), 0);
             }
             ambient.Current = (db.Database.GetDbConnection(), tx.GetDbTransaction());
+            Aggregates.Begin(db);
             return new PostgresUnitOfWork(db, tx, scope, ambient);
         }
         catch
@@ -538,7 +539,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
             "claimed" => new IdempotencyClaim(IdempotencyState.Claimed),
             "mismatch" => new IdempotencyClaim(IdempotencyState.Mismatch),
             "replayed" => new IdempotencyClaim(IdempotencyState.Replayed),
-            _ => new IdempotencyClaim(IdempotencyState.Kept, claim.RootElement.GetProperty("result").GetRawText()),
+            _ => new IdempotencyClaim(IdempotencyState.Kept, claim.RootElement.GetProperty("result").GetString()),
         };
     }
 
@@ -558,13 +559,13 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public async Task CommitAsync(CancellationToken ct)
     {
-        await db.SaveChangesAsync(ct);
+        await Aggregates.SaveAsync(db, ct);
         Aggregates.Verify(db);
         // Last before COMMIT, so a key's lifetime starts as its write lands, not as its handler returned.
         if (_kept is var (key, result))
         {
             await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-                $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb, {{4}})",
+                $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}, {{4}})",
                 key.Subject, key.Operation, key.Key, new NpgsqlParameter<string?>("result", NpgsqlTypes.NpgsqlDbType.Text) { TypedValue = result }, key.Lifetime), ct);
         }
         await tx.CommitAsync(ct);
@@ -574,7 +575,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async ValueTask DisposeAsync()
     {
         ambient.Current = null;
-        Aggregates.Forget(db);
+        Aggregates.End(db);
         LeveeTransactions.Remove(tx.GetDbTransaction());
         if (!_committed)
         {
