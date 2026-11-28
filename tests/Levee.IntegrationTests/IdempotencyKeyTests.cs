@@ -192,8 +192,6 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
             drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea);
             drop function legacy_keys.levee_idempotency_complete(text, text, text, text, interval);
             drop table legacy_keys.levee_idempotency;
-            drop function legacy_keys.levee_aggregate_root_written();
-            drop function legacy_keys.levee_aggregate_child_written();
             {LeveeSchema.Grants("legacy_app", "legacy_keys")}
             """);
 
@@ -202,7 +200,6 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
         Assert.Equal("True", await postgres.TextAsync(
             "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea)', 'execute')"));
         Assert.Equal("False", await postgres.TextAsync("select has_table_privilege('legacy_app', 'legacy_keys.levee_idempotency', 'select')"));
-        Assert.Equal("True", await postgres.TextAsync("select to_regprocedure('legacy_keys.levee_aggregate_root_written()') is not null"));
     }
 }
 

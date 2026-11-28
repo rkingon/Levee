@@ -102,8 +102,18 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
             .WaitAsync(TimeSpan.FromSeconds(10), Ct);
         // Issued once, and the second run read it back from the record.
         Assert.Equal((1, tokens.First), (SecretStepProcess.Issued[tenant], tokens.Second));
+        // Read as an unsealed step's record is (the wire's bytes, base64): a sealed one's doesn't hold the token that way either.
+        var outputs = (await postgres.TextAsync("select coalesce(string_agg(output #>> '{}', E'\\n'), '') from oxbow_job_step where jsonb_typeof(output) = 'string'"))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.DoesNotContain(outputs, o => Decoded(o).Contains(tokens.First, StringComparison.Ordinal));
         Assert.Equal(0, await postgres.CountAsync("select count(*) from oxbow_job_step where output::text like '%' || $1 || '%'", tokens.First));
         await host.StopAsync(Ct);
+
+        static string Decoded(string output)
+        {
+            var bytes = new byte[output.Length];
+            return Convert.TryFromBase64String(output, bytes, out var written) ? System.Text.Encoding.UTF8.GetString(bytes, 0, written) : "";
+        }
     }
 
     [Theory]

@@ -28,11 +28,12 @@ internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned) : IOp
 {
     public async Task<Result<NoteView>> HandleAsync(CreateNote operation, OperationContext context, CancellationToken ct)
     {
-        if (NoteText.Refusal(operation.Text, banned) is { } refused)
+        var text = NoteTexts.Allowed(operation.Text, banned);
+        if (!text.IsSuccess)
         {
-            return refused;
+            return text.Error;
         }
-        var note = Note.Create(operation.Id, operation.Tenant, operation.Text, context.Now);
+        var note = Note.Create(operation.Id, operation.Tenant, text.Value, context.Now);
         notes.Add(note);
         await notes.SaveAsync(ct);
         return View(note);
@@ -45,15 +46,16 @@ internal sealed class EditNoteHandler(INotes notes, IBannedWords banned) : IOper
 {
     public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
     {
-        if (NoteText.Refusal(operation.Text, banned) is { } refused)
+        var text = NoteTexts.Allowed(operation.Text, banned);
+        if (!text.IsSuccess)
         {
-            return refused;
+            return text.Error;
         }
         if (await notes.FindAsync(operation.Id, ct) is not { } note)
         {
             return Error.NotFound("note.missing", "There's no such note.");
         }
-        note.Edit(operation.Text);
+        note.Edit(text.Value);
         await notes.SaveAsync(ct);
         return CreateNoteHandler.View(note);
     }
@@ -74,11 +76,12 @@ internal sealed class CreateNoteLaterHandler(IJobs jobs) : IOperationHandler<Cre
     }
 }
 
-/// <summary>What a note's text must be, written once and held alike wherever text is set: a note is never written as one that isn't.</summary>
-internal static class NoteText
+/// <summary>A note's text as the domain holds it, and free of the words this app bans: which those are is a setting, not the note's.</summary>
+internal static class NoteTexts
 {
-    public static Error? Refusal(string text, IBannedWords banned) =>
-        string.IsNullOrWhiteSpace(text) ? Error.Validation("note.empty", "A note needs text.")
-        : banned.Contains(text) ? Error.Validation("note.banned", "That note holds a banned word.")
-        : null;
+    public static Result<NoteText> Allowed(string text, IBannedWords banned)
+    {
+        var held = NoteText.From(text);
+        return held.IsSuccess && banned.Contains(held.Value.Value) ? Error.Validation("note.banned", "That note holds a banned word.") : held;
+    }
 }

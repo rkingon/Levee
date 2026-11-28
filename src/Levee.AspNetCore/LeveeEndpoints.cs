@@ -242,7 +242,7 @@ public static class LeveeEndpointRouteBuilderExtensions
 
     private static OperationView View(OperationDescriptor d, IReadOnlyList<string> refusals, JsonSerializerOptions json) => new(
         d.Name, d.Summary, d.Access, d.Effects, d.Idempotency, d.ReadOnly, d.Streams,
-        LeveeJson.Schema(d.InputType, json), LeveeJson.Schema(d.ResultType, json), d.Errors, refusals,
+        LeveeJson.Schema(d.InputType, json), LeveeJson.Schema(d.ResultType, json, d.ResultNullable), d.Errors, refusals,
         d.Metadata.ToDictionary(m => m.GetType().Name.EndsWith("Attribute", StringComparison.Ordinal) ? m.GetType().Name[..^"Attribute".Length] : m.GetType().Name, m => Values(m, json)));
 
     private static JsonObject Values(Attribute metadata, JsonSerializerOptions json)

@@ -54,6 +54,18 @@ public sealed class HttpTests : IAsyncDisposable
         Assert.Equal("outside", speak.GetProperty("metadata").GetProperty("Turn").GetProperty("reach").GetString());
     }
 
+    [Fact]
+    public async Task A_result_its_contract_lets_be_null_is_shown_as_one()
+    {
+        using var response = await _http.GetAsync(new Uri("/ops", UriKind.Relative), TestContext.Current.CancellationToken);
+        var operations = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+
+        string[] Types(string name) => [.. operations.EnumerateArray().Single(o => o.GetProperty("name").GetString() == name)
+            .GetProperty("result").GetProperty("type").EnumerateArray().Select(t => t.GetString()!)];
+
+        Assert.Equal(["string", "null"], Types("probe.maybe_said"));
+    }
+
     private async Task<(HttpResponseMessage Response, JsonElement Problem)> Post(string name, string body)
     {
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");

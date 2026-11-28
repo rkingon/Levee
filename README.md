@@ -195,9 +195,8 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   `now()`, so a caller can't backdate it.
 - Every aggregate root has a version, Postgres's `xmin`, mapped by `configurationBuilder.AddLeveeConventions()` in the
   context's `ConfigureConventions`: two operations changing one aggregate at once can't both commit (409 `store.stale`),
-  and a change to a child is a change to its root. An operation changes one aggregate, and a child changes only with its
-  root: Postgres holds both, whatever writes them, through the triggers each table's migration adds
-  (`MakeAggregateRoot`, `MakeAggregateChild`). An edit held to what its caller saw is an `IVersionedOperation`: its
+  and a change to a child, through the unit of work, writes its root's version too. An edit held to what its caller saw
+  is an `IVersionedOperation`, which changes one aggregate: its
   `ExpectedVersion` (a view's `Version`, read from `uint Version { get; private set; }` on the root) is compared as the
   root is written. A repository whose `Save` flushes gives the view the version just written.
 - A write is retryable with an idempotency key (`SendAsync(operation, principal, key, ct)`, the `Idempotency-Key`

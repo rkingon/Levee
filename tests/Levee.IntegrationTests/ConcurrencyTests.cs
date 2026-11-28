@@ -40,8 +40,6 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
                 create table order_lines (id uuid primary key, order_id uuid not null references orders(id), tenant text not null, amount int not null);
                 {LeveeSchema.Isolation("orders", "tenant")}
                 {LeveeSchema.Isolation("order_lines", "tenant")}
-                {LeveeSchema.AggregateRoot("orders", "id")}
-                {LeveeSchema.AggregateChild("order_lines", "orders", "order_id")}
                 """);
         }
     }
@@ -149,7 +147,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
-    public async Task A_child_moved_between_aggregates_is_two_aggregates_changed_and_refused()
+    public async Task A_child_moved_between_aggregates_changes_both()
     {
         await OrdersAsync();
         using var host = Build<OrdersDb>();
@@ -164,65 +162,9 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
 
         var moved = await dispatcher.SendAsync(new MoveLine(tenant, from, to, line), ada, Ct);
 
-        Assert.Equal(ErrorKind.Internal, moved.Error!.Kind);
-        Assert.Equal((fromBefore, toBefore), (await Version(from), await Version(to)));
-        Assert.Equal(1, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", from));
-    }
-
-    [Fact]
-    public async Task Postgres_refuses_a_child_written_around_its_root()
-    {
-        await OrdersAsync();
-        using var host = Build<OrdersDb>();
-        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
-        var (tenant, ada) = NewTenant();
-        var (order, line) = (Guid.CreateVersion7(), Guid.CreateVersion7());
-        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
-        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, order, line), ada, Ct)).IsSuccess);
-
-        // As a cascade, raw SQL or a callback's change would: past every save Levee makes.
-        var removed = await dispatcher.SendAsync(new RemoveLineBySql(tenant, line), ada, Ct);
-
-        Assert.Equal(ErrorKind.Internal, removed.Error!.Kind);
-        Assert.Equal(1, await postgres.CountAsync("select count(*) from order_lines where id = $1", line));
-    }
-
-    [Fact]
-    public async Task Postgres_refuses_two_aggregates_in_one_operation_however_they_are_written()
-    {
-        using var host = Build<SampleDbContext>();
-        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
-        var (tenant, ada) = NewTenant();
-
-        var both = await dispatcher.SendAsync(new CreateTwoNotes(tenant), ada, Ct);
-
-        Assert.Equal(ErrorKind.Internal, both.Error!.Kind);
-        Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", tenant));
-    }
-
-    [Fact]
-    public async Task A_context_whose_aggregates_postgres_doesnt_hold_is_refused_at_start()
-    {
-        await postgres.ExecuteAsync($"""
-            create table if not exists bare_orders (id uuid primary key, tenant text not null);
-            create table if not exists bare_order_lines (id uuid primary key, order_id uuid not null references bare_orders(id), tenant text not null, amount int not null);
-            {LeveeSchema.Isolation("bare_orders", "tenant")}
-            {LeveeSchema.Isolation("bare_order_lines", "tenant")}
-            """);
-        try
-        {
-            using var host = Build<BareOrdersDb>();
-
-            var refused = await dispatcher(host).SendAsync(new OpenOrder("t", Guid.CreateVersion7()), new Member("ada@t", "t"), Ct);
-
-            Assert.Equal(ErrorKind.Internal, refused.Error!.Kind);
-        }
-        finally
-        {
-            await postgres.ExecuteAsync("drop table bare_order_lines; drop table bare_orders;");
-        }
-
-        static Dispatcher dispatcher(IHost host) => host.Services.GetRequiredService<Dispatcher>();
+        Assert.True(moved.IsSuccess, moved.Error?.Message);
+        Assert.NotEqual(fromBefore, await Version(from));
+        Assert.NotEqual(toBefore, await Version(to));
     }
 
     [Fact]
@@ -296,6 +238,22 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_save_a_callback_makes_inside_the_unit_of_works_own_fails_it_though_caught()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+
+        var echoed = await dispatcher.SendAsync(new AddLineEchoed(tenant, order), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, echoed.Error!.Kind);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+    }
+
+    [Fact]
     public async Task The_same_root_loaded_again_is_the_same_aggregate()
     {
         await OrdersAsync();
@@ -321,10 +279,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         { nameof(IdentityByDefaultDb), null },
         { nameof(SharedChildDb), "is a child of both" },
         { nameof(SplitOrdersDb), "split across several" },
-        { nameof(LinkedOrdersDb), "is a many-to-many link" },
-        { nameof(HeldDetailDb), "by a key Desk holds" },
         { nameof(CompositeDb), "key is more than one column" },
-        { nameof(GrandchildDb), "isn't one of its children holding its key" },
     };
 
     [Theory]
@@ -339,10 +294,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
             nameof(IdentityAlwaysDb) => Model<IdentityAlwaysDb>(),
             nameof(IdentityByDefaultDb) => Model<IdentityByDefaultDb>(),
             nameof(SplitOrdersDb) => Model<SplitOrdersDb>(),
-            nameof(HeldDetailDb) => Model<HeldDetailDb>(),
             nameof(CompositeDb) => Model<CompositeDb>(),
-            nameof(GrandchildDb) => Model<GrandchildDb>(),
-            nameof(LinkedOrdersDb) => Model<LinkedOrdersDb>(),
             _ => Model<SharedChildDb>(),
         };
 
@@ -416,7 +368,7 @@ internal sealed class EditHeldHandler(INotes notes) : IOperationHandler<EditHeld
     {
         var note = (await notes.FindAsync(operation.Id, ct))!;
         await Overlap.MeetAsync(operation.Id, ct);
-        note.Edit(operation.Text);
+        note.Edit(Sample.Domain.NoteText.From(operation.Text).Value);
         await notes.SaveAsync(ct);
         return note.Text;
     }
@@ -464,7 +416,26 @@ internal class OrdersDb : DbContext
     public OrdersDb(DbContextOptions<OrdersDb> options)
         : base(options)
     {
+        SavedChanges += (_, _) =>
+        {
+            if (Echo is { } echo)
+            {
+                Echo = null;
+                echo.Order.Add(echo.Line, 1);
+                try
+                {
+                    SaveChanges();
+                }
+                catch (InvalidOperationException)
+                {
+                    // Caught, as a callback that means well would: the operation must fail all the same.
+                }
+            }
+        };
     }
+
+    /// <summary>A line a callback adds and saves after the unit of work's own save: a save inside a save.</summary>
+    public (Order Order, Guid Line)? Echo { get; set; }
 
     protected OrdersDb(DbContextOptions options)
         : base(options)
@@ -583,6 +554,24 @@ internal sealed class AddLineSavedItselfHandler(IOrders orders) : IOperationHand
     }
 }
 
+/// <summary>Adds a line and saves, while the context's callback saves another inside that save.</summary>
+[Operation("probe.order_add_line_echoed", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record AddLineEchoed(string Tenant, Guid Order) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class AddLineEchoedHandler(IOrders orders) : IOperationHandler<AddLineEchoed, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineEchoed operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        orders.EchoOnSave(operation.Order, context.NewId());
+        await orders.SaveAsync(ct);
+        return Unit.Value;
+    }
+}
+
 /// <summary>Held to one note's version, then edits that note and another, saving between.</summary>
 [Operation("probe.edit_two", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
 public sealed record EditTwo(string Tenant, Guid First, Guid Second, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
@@ -596,9 +585,9 @@ internal sealed class EditTwoHandler(INotes notes) : IOperationHandler<EditTwo, 
 {
     public async Task<Result<Unit>> HandleAsync(EditTwo operation, OperationContext context, CancellationToken ct)
     {
-        (await notes.FindAsync(operation.First, ct))!.Edit("first, edited");
+        (await notes.FindAsync(operation.First, ct))!.Edit(Sample.Domain.NoteText.From("first, edited").Value);
         await notes.SaveAsync(ct);
-        (await notes.FindAsync(operation.Second, ct))!.Edit("second, edited");
+        (await notes.FindAsync(operation.Second, ct))!.Edit(Sample.Domain.NoteText.From("second, edited").Value);
         await notes.SaveAsync(ct);
         return Unit.Value;
     }
@@ -637,8 +626,9 @@ public interface IOrders : IRepository<Order>
     /// <summary>Saves through EF itself, around the unit of work: what LEVEE004 refuses the spelling of.</summary>
     Task SaveItselfAsync(CancellationToken ct);
 
-    /// <summary>Removes a line by SQL of its own, past the order: what a cascade would do.</summary>
-    Task RemoveLineBySqlAsync(Guid line, CancellationToken ct);
+    /// <summary>Has the context's own callback add a line to an order and save it, once the next save is written.</summary>
+    void EchoOnSave(Guid order, Guid line);
+
 }
 
 [Adapter]
@@ -654,39 +644,8 @@ internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
 
     public Task SaveItselfAsync(CancellationToken ct) => db.SaveChangesAsync(ct);
 
-    public Task RemoveLineBySqlAsync(Guid line, CancellationToken ct) => db.Database.ExecuteSqlAsync($"delete from order_lines where id = {line}", ct);
-}
+    public void EchoOnSave(Guid order, Guid line) => db.Echo = (db.Set<Order>().Local.Single(o => o.Id == order), line);
 
-[Operation("probe.order_remove_line_by_sql", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
-public sealed record RemoveLineBySql(string Tenant, Guid Line) : IOperation<Unit>, IScopedOperation
-{
-    string IScopedOperation.ScopeKey => Tenant;
-}
-
-internal sealed class RemoveLineBySqlHandler(IOrders orders) : IOperationHandler<RemoveLineBySql, Unit>
-{
-    public async Task<Result<Unit>> HandleAsync(RemoveLineBySql operation, OperationContext context, CancellationToken ct)
-    {
-        await orders.RemoveLineBySqlAsync(operation.Line, ct);
-        return Unit.Value;
-    }
-}
-
-/// <summary>Writes two notes in one operation: two aggregates.</summary>
-[Operation("probe.notes_create_two", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
-public sealed record CreateTwoNotes(string Tenant) : IOperation<Unit>, IScopedOperation
-{
-    string IScopedOperation.ScopeKey => Tenant;
-}
-
-internal sealed class CreateTwoNotesHandler(Sample.Application.INotes notes) : IOperationHandler<CreateTwoNotes, Unit>
-{
-    public Task<Result<Unit>> HandleAsync(CreateTwoNotes operation, OperationContext context, CancellationToken ct)
-    {
-        notes.Add(Sample.Domain.Note.Create(context.NewId(), operation.Tenant, "one", context.Now));
-        notes.Add(Sample.Domain.Note.Create(context.NewId(), operation.Tenant, "two", context.Now));
-        return Task.FromResult<Result<Unit>>(Unit.Value);
-    }
 }
 
 /// <summary>Held to a version, adds a line and saves; then, as <see cref="Again"/> says, saves again after a failed save, or reloads and adds another.</summary>
@@ -849,52 +808,6 @@ internal sealed class SplitOrdersDb(DbContextOptions<SplitOrdersDb> options) : O
     }
 }
 
-/// <summary>An order's lines linked to tags many-to-many: the link is a row of a join table.</summary>
-internal sealed class LinkedOrdersDb(DbContextOptions<LinkedOrdersDb> options) : OrdersDb(options)
-{
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        base.OnModelCreating(modelBuilder);
-        modelBuilder.Entity<OrderLine>().HasMany<LineTag>().WithMany();
-    }
-}
-
-public sealed class LineTag
-{
-    public Guid Id { get; private set; }
-}
-
-/// <summary>The orders model on tables with no aggregate triggers.</summary>
-internal sealed class BareOrdersDb(DbContextOptions<BareOrdersDb> options) : OrdersDb(options)
-{
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        base.OnModelCreating(modelBuilder);
-        modelBuilder.Entity<Order>().ToTable("bare_orders");
-        modelBuilder.Entity<OrderLine>().ToTable("bare_order_lines");
-    }
-}
-
-/// <summary>A desk holding the key of a lamp it navigates to: the lamp is part of no aggregate's version.</summary>
-internal sealed class HeldDetailDb(DbContextOptions<HeldDetailDb> options) : DbContext(options)
-{
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Desk>().HasOne(d => d.Lamp).WithMany();
-}
-
-public sealed class Desk : IAggregateRoot
-{
-    public Guid Id { get; private set; }
-
-    public Lamp? Lamp { get; private set; }
-}
-
-public sealed class Lamp
-{
-    public Guid Id { get; private set; }
-}
-
 internal sealed class CompositeDb(DbContextOptions<CompositeDb> options) : DbContext(options)
 {
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
@@ -907,31 +820,4 @@ public sealed class Ledger : IAggregateRoot
     public string Tenant { get; private set; } = "";
 
     public int Number { get; private set; }
-}
-
-/// <summary>A parcel's own labels on a table of their own: they hold the parcel's key, not the shipment's.</summary>
-internal sealed class GrandchildDb(DbContextOptions<GrandchildDb> options) : DbContext(options)
-{
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Shipment>();
-}
-
-public sealed class Shipment : IAggregateRoot
-{
-    public Guid Id { get; private set; }
-
-    public List<Parcel> Parcels { get; } = [];
-}
-
-public sealed class Parcel
-{
-    public Guid Id { get; private set; }
-
-    public List<ParcelLabel> Labels { get; } = [];
-}
-
-public sealed class ParcelLabel
-{
-    public Guid Id { get; private set; }
 }

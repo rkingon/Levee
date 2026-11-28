@@ -160,11 +160,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// SQL that sets the settings row-level security and the aggregate triggers trust (<c>levee.scope</c>, <c>levee.platform</c>,
-    /// <c>levee.aggregate</c>), or writes the audit or an idempotency key by hand: however the string is put together (a
-    /// literal, a concatenation, an interpolation, SQL's own concatenation), it would move the operation into another tenant's
-    /// rows, past its aggregate's version, or forge its record. Reading them is fine. A setting's bare
-    /// name is judged where it's used: by the SQL it's passed with.
+    /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit or
+    /// an idempotency key by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own
+    /// concatenation), it would move the operation into another tenant's rows, or forge its record. Reading them is fine, and so
+    /// is text that names them without being SQL (a message). A setting's bare name is judged where it's used: by the SQL it's
+    /// passed with.
     /// </summary>
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
@@ -185,8 +185,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
         var flat = Flat(text);
         var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
-            || flat.Contains("levee.aggr") || flat.Contains("leveeaggregate") || flat.Contains("levee." + Hole);
-        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write") || flat.Contains("levee_idempotency")
+            || flat.Contains("levee." + Hole);
+        var refused = (names && Sets(text)) || (flat.Contains("levee_audit_write") || flat.Contains("levee_idempotency")) && IsSql(text)
             || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
             || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
@@ -252,6 +252,12 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var clean = SqlComment.Replace(text, " ");
         return Flat(clean).Contains("set_config") || SettingStatement.IsMatch(clean.Replace("\"", "").Replace("'", ""));
     }
+
+    /// <summary>Text with a statement in it: what names Levee's own tables or functions only to say so (a message) isn't.</summary>
+    private static bool IsSql(string text) => SqlStatement.IsMatch(SqlComment.Replace(text, " "));
+
+    private static readonly Regex SqlStatement = new(@"\b(?:select|perform|call|insert|update|delete|truncate|merge)\b",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // pg_settings is the view set_config writes through.
     private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);

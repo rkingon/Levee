@@ -42,7 +42,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ScopeSetting = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",
-        "This SQL sets what row-level security and the aggregate triggers trust (levee.scope, levee.platform, levee.aggregate), or writes the audit or an idempotency key, all the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited, and a retried one keyed, by the dispatcher");
+        "This SQL sets what row-level security trusts (levee.scope, levee.platform), or writes the audit or an idempotency key, all the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited, and a retried one keyed, by the dispatcher");
 
     public static readonly DiagnosticDescriptor SignalByHand = Rule(
         "LEVEE022", "Change signals go only through IChangeSignals",

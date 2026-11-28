@@ -3,9 +3,5 @@ Levee.EntityFrameworkCore.LeveeConventionsExtensions
 static Levee.EntityFrameworkCore.LeveeConventionsExtensions.AddLeveeConventions(this Microsoft.EntityFrameworkCore.ModelConfigurationBuilder! configurationBuilder) -> Microsoft.EntityFrameworkCore.ModelConfigurationBuilder!
 const Levee.EntityFrameworkCore.LeveeSchema.IdempotencyTable = "levee_idempotency" -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Upgrade(string! schema = "public") -> string!
-static Levee.EntityFrameworkCore.LeveeSchema.AggregateRoot(string! table, string! keyColumn, string! schema = "public") -> string!
-static Levee.EntityFrameworkCore.LeveeSchema.AggregateChild(string! table, string! rootTable, string! rootColumn, string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.SweepExpiredKeys(string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.UpgradeLeveeSchema(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
-static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.MakeAggregateRoot(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! keyColumn, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
-static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.MakeAggregateChild(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! rootTable, string! rootColumn, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!

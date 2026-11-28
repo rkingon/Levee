@@ -37,7 +37,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        var result = await RunAsync(descriptor, operation, principal, json: false, pinned: null, idempotencyKey, ct);
+        var result = await RunAsync(descriptor, operation, principal, wire: null, pinned: null, idempotencyKey, ct);
         return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
     }
 
@@ -246,7 +246,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 throw new OperationFailedException(Unexpected(e, descriptor), e);
             }
-            yield return items.Current;
+            var item = items.Current;
+            try
+            {
+                ContractWire.Check(descriptor, item);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new OperationFailedException(Unexpected(e, descriptor), e);
+            }
+            yield return item;
         }
     }
 
@@ -276,7 +285,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return operation.Error;
         }
-        var result = await RunAsync(descriptor, operation.Value, principal, json: true, pinned, key, ct);
+        var result = await RunAsync(descriptor, operation.Value, principal, input, pinned, key, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
@@ -310,7 +319,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, json: false, pinned: null, key: null, ct);
+        return await RunAsync(descriptor, operation, principal, wire: null, pinned: null, key: null, ct);
     }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
@@ -320,8 +329,9 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 + "outside the scope its process was started in.")
             : scoped;
 
+    // wire: the input as it was received, for an operation sent as JSON, which is answered as JSON; null for one sent typed.
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        bool json, string? pinned, string? key, CancellationToken ct)
+        JsonElement? wire, string? pinned, string? key, CancellationToken ct)
     {
         var enlist = Attempts.TryGetValue(principal, out var attempt) ? attempt : null;
         using var activity = Source.StartActivity(descriptor.Name);
@@ -361,7 +371,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, json, key, enlist, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, wire, key, enlist, ct) : scoped.Error);
         }
         catch (AttemptSuperseded)
         {
@@ -555,7 +565,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        bool json, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
+        JsonElement? wire, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -588,7 +598,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             }
             // After the admissions, so a refused caller learns nothing of what a key did; before the handler, so a repeat never runs it.
             var claimed = key is not null && !scope.ReadOnly
-                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(operation, descriptor), options.IdempotencyKeyLifetime)
+                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(wire ?? JsonSerializer.SerializeToElement(operation, descriptor.InputType, LeveeJson.Options)), options.IdempotencyKeyLifetime)
                 : null;
             if (claimed is not null)
             {
@@ -605,7 +615,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                         // shown once, whatever was kept before the contract said so.
                         var first = Parse(kept.Result);
                         var read = Read(descriptor, first);
-                        return Secret(descriptor, read) ? replayed : Result<object?>.Success(json ? first : read);
+                        return Secret(descriptor, read) ? replayed : Result<object?>.Success(wire is not null ? first : read);
                 }
             }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
@@ -630,23 +640,22 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 }
                 return result;
             }
-            // Written once, before the commit: a result that can't be is a bug the write rolls back with. A keyed write's first
-            // answer and every replay are that one wire, however the handler's result enumerates or its converters write.
-            if (!json && claimed is null)
+            // Written once and read back, before the commit: a result its own contract can't read is a bug the write rolls back
+            // with. A keyed write's first answer and every replay are that one wire, however the handler's result enumerates or
+            // its converters write.
+            if (wire is null && claimed is null)
             {
                 ContractWire.Check(descriptor, result.Value);
             }
             else
             {
-                var wire = ContractWire.WriteResult(descriptor, result.Value);
-                var answered = (object?)wire;
+                var written = ContractWire.WriteResult(descriptor, result.Value);
+                var copy = Read(descriptor, written);
                 if (claimed is not null)
                 {
-                    var copy = Read(descriptor, wire);
-                    unit.Keep(claimed, Secret(descriptor, copy) ? null : wire.GetRawText());
-                    answered = json ? wire : copy;
+                    unit.Keep(claimed, Secret(descriptor, copy) ? null : written.GetRawText());
                 }
-                result = Result<object?>.Success(answered);
+                result = Result<object?>.Success(wire is not null ? written : copy);
             }
             if (descriptor.Audited)
             {
@@ -727,10 +736,11 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         result is not null && LeveeJson.FindSecretIn(result, descriptor.ResultType, LeveeJson.Options) is not null;
 
     /// <summary>
-    /// The input as the wire carries it, its objects' members in one order (a dictionary's entries in any order are the same
-    /// input), its arrays' as they are: what a key's repeat is compared by.
+    /// The input as the wire carried it (as it was received, or written once from a typed send), its objects' members in one
+    /// order (a dictionary's entries in any order are the same input), its arrays' as they are: what a key's repeat is compared
+    /// by. Never read and written again, so a converter that writes something new each time can't make a repeat another request.
     /// </summary>
-    private static byte[] Hash(IOperation operation, OperationDescriptor descriptor)
+    private static byte[] Hash(JsonElement input)
     {
         // From the element, not a JsonObject: members that differ only in case ("ABC", "abc") are two members on the wire.
         static void Write(Utf8JsonWriter writer, JsonElement element)
@@ -762,7 +772,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         var buffer = new System.Buffers.ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
-            Write(writer, JsonSerializer.SerializeToElement(operation, descriptor.InputType, LeveeJson.Options));
+            // No input at all reads as an empty object, so it's that.
+            if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            {
+                writer.WriteStartObject();
+                writer.WriteEndObject();
+            }
+            else
+            {
+                Write(writer, input);
+            }
         }
         return System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan);
     }

@@ -250,6 +250,22 @@ public sealed class ClientTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_retry_the_platform_asks_for_past_the_window_isnt_waited_for()
+    {
+        var busy = new Rewrite(answer =>
+        {
+            answer.Headers.RetryAfter = new(TimeSpan.FromDays(60));
+            return answer;
+        });
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+
+        var answered = await Client(between: busy).SendAsync(new Busy(), Ct);
+
+        Assert.Equal("probe.busy", answered.Error!.Code);
+        Assert.True(waited.Elapsed < TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task An_input_its_own_type_refuses_is_refused_before_anything_is_sent()
     {
         var lost = new LoseFirstAnswer();

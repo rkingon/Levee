@@ -8,7 +8,7 @@ Writes that hold under retries and races.
 - `IVersionedOperation`: an edit held to the version of the aggregate its caller saw (`ExpectedVersion`, implemented
   explicitly over a positional parameter, as `IScopedOperation` is). Its root is held to that version as it's written,
   and the edit is refused as 409 `store.stale` if it moved on; a root it loaded but didn't change is compared as read.
-  One that loads no root, or creates one, is a bug, answered `internal`.
+  One that loads no root, creates one, or changes more than one aggregate, is a bug, answered `internal`.
 - Idempotency keys for retryable writes: `Dispatcher.SendAsync(operation, principal, idempotencyKey, ct)`, and the
   `Idempotency-Key` header over HTTP. A write sent again with the same key, by the same caller in the same scope, answers
   its first result without running again, the wire it answered then; equal requests at once make one write; a key sent
@@ -18,8 +18,11 @@ Writes that hold under retries and races.
   hours), counted from just before its commit: work that runs at COMMIT (a deferred constraint) runs inside it. An
   anonymous caller can't hold one (`idempotency.invalid_key`), since every anonymous caller is one subject. A read
   ignores its key.
-- A result, or a stream's item, that its contract says isn't null and is, is a bug of the handler, answered `internal`:
-  the generator carries each result's declared nullability on its descriptor (`OperationDescriptor.ResultNullable`).
+- A result, or a stream's item, that its contract says isn't null and is, is a bug of the handler, answered `internal`
+  (a stream's ends with it), typed or as JSON: the generator carries each result's declared nullability on its descriptor
+  (`OperationDescriptor.ResultNullable`), and `/ops` shows a result that may be null as one. A result sent as JSON is
+  written once and read back before it commits, so one its own contract can't read is a bug that rolls back. A keyed
+  request is compared by its input as it was received (written once, for a typed send), never written again.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its success is recorded under its name, and every
   later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process written from the top
   resumes where it was. A failure records nothing. A step's result type is held to the contract language before the step
@@ -29,30 +32,28 @@ Writes that hold under retries and races.
   has taken over can't commit.
 
 ### Levee.EntityFrameworkCore
-- **Breaking:** aggregates, held by the unit of work and by Postgres.
+- **Breaking:** aggregates, versioned by the unit of work.
   - Every root's version is Postgres's `xmin`: `configurationBuilder.AddLeveeConventions()` in the context's
     `ConfigureConventions` maps it (on `uint Version { get; private set; }` when the root declares one, a shadow property
     otherwise), and no migration creates it. Two operations changing one aggregate at once can't both commit: the second
-    is 409 `store.stale`.
-  - A child added, changed or removed writes its root's version too, so the root's version covers its aggregate.
-  - An operation changes one aggregate, and a child changes only with its root: Postgres holds both, whatever writes them
-    (the unit of work, a cascade, raw SQL, a `SaveChanges` callback), through two triggers each table's migration adds,
-    `MakeAggregateRoot(table, key)` and `MakeAggregateChild(table, rootTable, column)`. One that breaks either is refused
-    as it commits, a bug answered `internal`. Moving a child between aggregates is two aggregates.
-  - Aggregates are mapped in a small language, and anything outside it fails before the first operation with its fix: a
-    root is a class of its own on one table (no inheritance, no splitting), its key one column a write may set, `xmin`
-    its version as its table maps it; a child is reached from its root directly, holds the root's key on a table of its
-    own (or lives on its parent's row as an owned type), and belongs to one aggregate; an aggregate refers to anything
-    else by its id, and holds no many-to-many link. A context whose roots or children lack Levee's triggers fails too.
+    is 409 `store.stale`. A context whose root has no such version fails before the first operation, with its fix.
+  - A child added, changed, moved or removed through the unit of work writes its root's version too, held to the version
+    the root was read at, so the root's version covers its aggregate. A child changed without its root loaded is a bug,
+    answered `internal`. A root is a class of its own on one table (no inheritance, no splitting), its key one column a
+    write may set; a child belongs to one aggregate. Anything else fails before the first operation, with its fix.
+  - One aggregate per operation is the convention (an `IVersionedOperation` is held to it): an unversioned operation may
+    change several, each held to its own version. What the unit of work doesn't see (raw SQL, a cascade,
+    `ExecuteUpdate`) moves a row's `xmin` but no root's.
   - Every save of an operation goes through its unit of work, and the first that fails fails the operation: every later
     flush, and the commit, throws the same failure, however the handler caught it. A `SaveChanges` of the context's own
-    inside an operation is refused, and fails it the same way: `IFlush` writes pending changes.
-  - A set-based `ExecuteUpdate` of a root's table moves its `xmin` but isn't held to an expected version; one on a
-    child's table is refused by Postgres, as any child write without its root is.
+    inside an operation, a callback's inside the unit of work's own save included, is refused and fails it the same way:
+    `IFlush` writes pending changes.
 - **Upgrading** an installation from before alpha.3, as the owner: `migrationBuilder.UpgradeLeveeSchema()` (or
-  `LeveeSchema.Upgrade(schema)`) adds the idempotency keys and the aggregate triggers' functions, and is safe where
-  `AddLeveeSchema()` already made them, so a fresh database replaying both migrations gets them once. Then a migration
-  adds each root's and child's trigger. `LeveeSchema.SweepExpiredKeys()` removes keys past their lifetime.
+  `LeveeSchema.Upgrade(schema)`) adds the idempotency keys, and is safe where `AddLeveeSchema()` already made them, so a
+  fresh database replaying both migrations gets them once. `LeveeSchema.SweepExpiredKeys()` removes keys past their
+  lifetime.
+- **Rolling out** keys: an alpha.2 server ignores `Idempotency-Key`, so a write retried against it can run twice. Upgrade
+  every instance serving `/ops` before clients retry writes.
 
 ### Levee.Oxbow
 - **Breaking:** needs Oxbow 0.2.0-alpha.5 and its schema version 3 (`job_step`): apply Oxbow's pending migrations
@@ -81,8 +82,12 @@ Writes that hold under retries and races.
   handler on what it returns. The core roles can't reference it (LEVEE008).
 
 ### Generator and analyzers
-- LEVEE114: an `IVersionedOperation` declares `Effects.Write`. That it loads the one root it changes is held at run time.
-- LEVEE004 also refuses app SQL that sets `levee.aggregate` or calls the idempotency key functions.
+- **Breaking:** `OperationDescriptor.Create` and `CreateSubscription` take the result's nullability: rebuild every
+  Contracts assembly against alpha.3, since a catalog generated by alpha.2 calls the old signatures.
+- LEVEE114: an `IVersionedOperation` declares `Effects.Write`. That it changes the one root it loads is held at run time.
+- LEVEE104 refuses an operation that declares more than one contract (`IOperation<int>` and `IOperation<string>`): a
+  caller sending it as one would read the result of the other.
+- LEVEE004 also refuses app SQL that calls the idempotency key functions; text that only names them (a message) is fine.
 
 ### Levee.Cli
 - `dotnet levee new` scaffolds the context with `AddLeveeConventions()`.

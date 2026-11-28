@@ -3,7 +3,6 @@ using System.Data;
 using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -433,42 +432,6 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
         }
     }
 
-    /// <summary>
-    /// Postgres holds every aggregate the context maps: each root's table carries Levee's root trigger on its key, and each
-    /// child's table its child trigger on the root's key, so a write the unit of work never sees is held all the same.
-    /// </summary>
-    private async Task VerifyAggregatesAsync(CancellationToken ct)
-    {
-        static string Quote(StoreObjectIdentifier table) =>
-            (table.Schema is { } schema ? $"\"{schema.Replace("\"", "\"\"", StringComparison.Ordinal)}\"." : "")
-            + $"\"{table.Name.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
-        var map = AggregateMap.Of(db.Model);
-        string[] roots = [.. map.Roots.Select(r => Quote(r.Table))];
-        string[] keys = [.. map.Roots.Select(r => r.Key)];
-        string[] children = [.. map.Children.Select(c => Quote(c.Table))];
-        string[] parents = [.. map.Children.Select(c => Quote(c.Of.Table))];
-        string[] columns = [.. map.Children.Select(c => c.Column)];
-        var missing = await db.Database.SqlQuery<string>($"""
-            select r.t || ': a root without its trigger, LeveeSchema.AggregateRoot(' || r.t || ', ' || r.k || ')' as "Value"
-            from unnest({roots}, {keys}) as r(t, k)
-            where not exists (select 1 from pg_catalog.pg_trigger g where g.tgrelid = to_regclass(r.t) and g.tgname = 'levee_aggregate_root'
-                and pg_catalog.pg_get_triggerdef(g.oid) like '%levee_aggregate_root_written(''' || r.k || ''')')
-            union all
-            select c.t || ': a child of ' || c.p || ' without its trigger, LeveeSchema.AggregateChild(' || c.t || ', ' || c.p || ', ' || c.c || ')'
-            from unnest({children}, {parents}, {columns}) as c(t, p, c)
-            where not exists (select 1 from pg_catalog.pg_trigger g where g.tgrelid = to_regclass(c.t) and g.tgname = 'levee_aggregate_child'
-                and pg_catalog.pg_get_triggerdef(g.oid) like '%levee_aggregate_child_written(''' || to_regclass(c.p)::oid || ''', ''' || c.c || ''')')
-            """).ToListAsync(ct);
-        if (missing.Count > 0)
-        {
-            throw new InvalidOperationException(
-                "Postgres doesn't hold every aggregate the app's context maps, so a write outside the unit of work (a cascade, raw SQL) could change one "
-                + $"without its version: {string.Join("; ", missing.Select(m => m.Replace("\"", "", StringComparison.Ordinal)).Order(StringComparer.Ordinal))}. "
-                + "Fix: in the migration that creates each table, MakeAggregateRoot(table, key) for a root's, and MakeAggregateChild(table, rootTable, column) "
-                + "for a child's.");
-        }
-    }
-
     private void Verify()
     {
         if (OneContextValidation.Unfit(db) is { } problem)
@@ -539,7 +502,6 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
             if (!Isolated.ContainsKey((db.Model, target)))
             {
                 await VerifyIsolationAsync(ct);
-                await VerifyAggregatesAsync(ct);
                 Isolated.TryAdd((db.Model, target), 0);
             }
             ambient.Current = (db.Database.GetDbConnection(), tx.GetDbTransaction());

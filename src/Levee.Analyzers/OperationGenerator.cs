@@ -472,6 +472,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report("an operation is sealed, so no subclass carries more than its contract. Fix: declare it a public sealed record");
             return null;
         }
+        if (type.AllInterfaces.Count(i => Known.Is(i, "IOperation", 1) || Known.Is(i, "ISubscription", 1)) > 1)
+        {
+            Report("it declares more than one contract, so a caller sending it as one reads the result of another. Fix: implement exactly one "
+                + "IOperation<TResult> or ISubscription<TItem>; what else it answers is an operation of its own");
+            return null;
+        }
         if (compilation is not null && Untyped(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } untyped)
         {
             Report($"its input's {untyped} is untyped, so its schema, redaction and the strict wire can't see what it holds. Fix: give it a type of its own");

@@ -161,16 +161,13 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 answered = Unreachable("The platform didn't answer in time.");
             }
-            if (answered.IsSuccess || !answered.Error.Transient || attempt >= retries)
+            var delay = answered.IsSuccess ? TimeSpan.Zero : answered.Error.RetryAfter ?? _options.RetryDelay * Math.Pow(2, attempt);
+            // A retry that would be sent past the window isn't waited for: the failure is the answer now.
+            if (answered.IsSuccess || !answered.Error.Transient || attempt >= retries || since.Elapsed + delay > _options.RetryWindow)
             {
                 return answered;
             }
-            await Task.Delay(answered.Error.RetryAfter ?? _options.RetryDelay * Math.Pow(2, attempt), ct);
-            // Checked as it's about to send again, not as it went to wait: a delay that ran long is past the window too.
-            if (since.Elapsed > _options.RetryWindow)
-            {
-                return answered;
-            }
+            await Task.Delay(delay, ct);
         }
     }
 

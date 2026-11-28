@@ -721,7 +721,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         var raw = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
         // Two rows: EF wraps them in a transaction of its own, which isn't an operation's.
-        db.Set<Note>().AddRange(Note.Create(Guid.CreateVersion7(now), tenant, "one", now), Note.Create(Guid.CreateVersion7(now), tenant, "two", now));
+        db.Set<Note>().AddRange(Note.Create(Guid.CreateVersion7(now), tenant, Sample.Domain.NoteText.From("one").Value, now), Note.Create(Guid.CreateVersion7(now), tenant, Sample.Domain.NoteText.From("two").Value, now));
         var saved = await Assert.ThrowsAnyAsync<Exception>(() => db.SaveChangesAsync(Ct));
         db.ChangeTracker.Clear();
 

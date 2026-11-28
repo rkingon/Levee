@@ -136,6 +136,23 @@ public static class LeveeJson
     }
 
     /// <summary>The JSON Schema of a contract type as the wire carries it, <see cref="SecretAttribute"/> inputs write-only: what every projection shows.</summary>
+    /// <summary>
+    /// The schema of <paramref name="type"/> on the wire; <paramref name="nullable"/> says whether a reference type at its top
+    /// may be null, which the type alone can't (a contract's <c>string?</c> result is a <c>string</c>).
+    /// </summary>
+    internal static JsonNode Schema(Type type, JsonSerializerOptions? options, bool nullable) =>
+        Schema(type, options) is var node && nullable && !AllowsNull(node) && node is not JsonObject { Count: 0 }
+            ? node is JsonObject { } typed && typed["type"] is JsonValue single
+                ? Retyped(typed, single.GetValue<string>())
+                : new JsonObject { ["anyOf"] = new JsonArray(node, new JsonObject { ["type"] = "null" }) }
+            : node;
+
+    private static JsonObject Retyped(JsonObject node, string type)
+    {
+        node["type"] = new JsonArray(type, "null");
+        return node;
+    }
+
     internal static JsonNode Schema(Type type, JsonSerializerOptions? options = null)
 
     {

@@ -14,14 +14,10 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 ```
 
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
-`ShareAcrossScopes("plans")`. Each aggregate's tables get their triggers in the migration that creates them:
-`MakeAggregateRoot("orders", "id")` for a root's, `MakeAggregateChild("order_lines", "orders", "order_id")` for each child's.
-The root's trigger names the aggregate a transaction writes and refuses a second; a child's, at commit, refuses a change
-to a child whose root the transaction didn't write. Outside an operation (the owner's own work, a Tool) neither holds.
+`ShareAcrossScopes("plans")`.
 
 An installation from before alpha.3 is brought up to date by `migrationBuilder.UpgradeLeveeSchema()`
-(`LeveeSchema.Upgrade(schema)`), safe to run again, then a migration adding each aggregate table's trigger, then Levee's
-grants once more. Not `dotnet levee db schema`, which prints a fresh installation.
+(`LeveeSchema.Upgrade(schema)`), safe to run again, then Levee's grants once more. Not `dotnet levee db schema`, which prints a fresh installation.
 `LeveeSchema.Create(schema)` and `Grants(role, schema)` put Levee's objects in a schema other than `public` (Oxbow's tables
 stay in `public`), each qualified by it, so they hold whatever a role's `search_path` is. For `Isolation`, `Shared` and
 their migration helpers, `schema` names where Levee's functions are, not the table: pass the table qualified
@@ -81,9 +77,11 @@ app has checked isn't seen until it restarts.
 3. With an idempotency key, for a write: the key claimed, or what its first request committed answered without running
    the handler again. An equal request still in flight is waited for, so equal requests at once make one write.
 4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. Every aggregate
-   root's version (`xmin`) is checked as it's written, and a changed child writes its root's. A flush that fails fails
+   root's version (`xmin`) is checked as it's written, and a changed child writes its root's; what the unit of work
+   doesn't see (raw SQL, a cascade, `ExecuteUpdate`) moves a row's `xmin` but no root's. A flush that fails fails
    the operation: every later flush, and the commit, throws the same failure, however the handler caught it. A save of
-   the context's own (`SaveChanges`, which LEVEE004 refuses) is refused inside an operation.
+   the context's own (`SaveChanges`, which LEVEE004 refuses), a callback's inside the unit of work's own save included, is
+   refused inside an operation and fails it the same way.
 5. The audit record, for a write, through `levee_audit_write`.
 6. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 

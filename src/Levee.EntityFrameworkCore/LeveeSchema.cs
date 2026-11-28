@@ -68,85 +68,14 @@ public static class LeveeSchema
     }
 
     /// <summary>
-    /// What 0.0.1-alpha.3 adds to an installation from before it (idempotency keys, the aggregate triggers' functions): part
-    /// of <see cref="Create"/>, and run alone by the owner to bring an earlier installation up to date
-    /// (<see cref="LeveeMigrationBuilderExtensions.UpgradeLeveeSchema"/>). Safe to run again, so a migration history that has
-    /// both makes them once.
+    /// What 0.0.1-alpha.3 adds to an installation from before it (idempotency keys): part of <see cref="Create"/>, and run
+    /// alone by the owner to bring an earlier installation up to date (<see cref="LeveeMigrationBuilderExtensions.UpgradeLeveeSchema"/>).
+    /// Safe to run again, so a migration history that has both makes them once.
     /// </summary>
     public static string Upgrade(string schema = "public")
     {
         Identifier(schema, nameof(schema));
-        return Idempotency(schema) + Aggregates(schema);
-    }
-
-    /// <summary>
-    /// What Postgres holds an aggregate to, whatever writes it (Levee's saves, a cascade, raw SQL): an operation changes one
-    /// aggregate, and a child changes only with its root's version. Its root's trigger names the aggregate the transaction
-    /// writes, in <c>levee.aggregate</c>, and refuses a second; its children's, deferred to the commit, refuse a change to a
-    /// child whose root it doesn't name. Outside an operation (a Tool's migrations, the owner's own work) neither holds.
-    /// </summary>
-    private static string Aggregates(string schema) => $"""
-        create or replace function {schema}.levee_aggregate_root_written() returns trigger language plpgsql set search_path = {schema}, pg_temp
-          as $$
-          declare v_root text;
-          declare v_held text := coalesce(current_setting('levee.aggregate', true), '');
-          begin
-            if coalesce(current_setting('levee.platform', true), '') = '' then
-              return null;
-            end if;
-            v_root := tg_relid::text || '/' || (case when tg_op = 'DELETE' then to_jsonb(old) else to_jsonb(new) end ->> tg_argv[0]);
-            if v_held <> '' and v_held <> v_root then
-              raise exception 'One operation changed two aggregates: % and then %.', v_held, v_root
-                using errcode = 'LV001', hint = 'Fix: an operation changes one aggregate; what follows in another is its own operation, enqueued as a job in this one.';
-            end if;
-            perform set_config('levee.aggregate', v_root, true);
-            return null;
-          end $$;
-        create or replace function {schema}.levee_aggregate_child_written() returns trigger language plpgsql set search_path = {schema}, pg_temp
-          as $$
-          declare v_held text := coalesce(current_setting('levee.aggregate', true), '');
-          begin
-            if coalesce(current_setting('levee.platform', true), '') = '' then
-              return null;
-            end if;
-            if (tg_op <> 'INSERT' and v_held is distinct from tg_argv[0] || '/' || (to_jsonb(old) ->> tg_argv[1]))
-              or (tg_op <> 'DELETE' and v_held is distinct from tg_argv[0] || '/' || (to_jsonb(new) ->> tg_argv[1])) then
-              raise exception '% changed without its aggregate''s root, so the root''s version didn''t move with it.', tg_table_name
-                using errcode = 'LV002', hint = 'Fix: change a child through its root, loaded through its repository; what reaches it from outside its aggregate (a cascade, raw SQL) is an operation on that aggregate of its own.';
-            end if;
-            return null;
-          end $$;
-        """;
-
-    /// <summary>
-    /// <paramref name="table"/> holds an aggregate's roots, keyed by <paramref name="keyColumn"/>: an operation writes one of
-    /// them, and its children only with it (<see cref="AggregateChild"/>). In the migration that creates the table; the host
-    /// refuses to start while a root the context maps has no such trigger.
-    /// </summary>
-    public static string AggregateRoot(string table, string keyColumn, string schema = "public")
-    {
-        Identifier(keyColumn, nameof(keyColumn));
-        Identifier(schema, nameof(schema));
-        return $"create trigger levee_aggregate_root after insert or update or delete on {table} for each row "
-            + $"execute function {schema}.levee_aggregate_root_written('{keyColumn}');";
-    }
-
-    /// <summary>
-    /// <paramref name="table"/> holds children of the aggregates rooted in <paramref name="rootTable"/>, each holding its
-    /// root's key in <paramref name="rootColumn"/>: one changes only in a transaction that writes its root, checked as it
-    /// commits. In the migration that creates the table; the host refuses to start while a child the context maps has none.
-    /// </summary>
-    public static string AggregateChild(string table, string rootTable, string rootColumn, string schema = "public")
-    {
-        Identifier(rootColumn, nameof(rootColumn));
-        Identifier(schema, nameof(schema));
-        return $"""
-            do $levee$
-            begin
-              execute format('create constraint trigger levee_aggregate_child after insert or update or delete on %s deferrable initially deferred '
-                || 'for each row execute function {schema}.levee_aggregate_child_written(%L, %L)', '{table}'::regclass, ('{rootTable}'::regclass)::oid::text, '{rootColumn}');
-            end $levee$;
-            """;
+        return Idempotency(schema);
     }
 
     public const string IdempotencyTable = "levee_idempotency";
@@ -481,23 +410,6 @@ public static class LeveeMigrationBuilderExtensions
     {
         ArgumentNullException.ThrowIfNull(migrationBuilder);
         migrationBuilder.Sql(LeveeSchema.Upgrade(schema));
-        return migrationBuilder;
-    }
-
-    /// <summary>In the migration that creates an aggregate root's table: see <see cref="LeveeSchema.AggregateRoot"/>.</summary>
-    public static MigrationBuilder MakeAggregateRoot(this MigrationBuilder migrationBuilder, string table, string keyColumn, string schema = "public")
-    {
-        ArgumentNullException.ThrowIfNull(migrationBuilder);
-        migrationBuilder.Sql(LeveeSchema.AggregateRoot(table, keyColumn, schema));
-        return migrationBuilder;
-    }
-
-    /// <summary>In the migration that creates a child's table: see <see cref="LeveeSchema.AggregateChild"/>.</summary>
-    public static MigrationBuilder MakeAggregateChild(this MigrationBuilder migrationBuilder, string table, string rootTable, string rootColumn,
-        string schema = "public")
-    {
-        ArgumentNullException.ThrowIfNull(migrationBuilder);
-        migrationBuilder.Sql(LeveeSchema.AggregateChild(table, rootTable, rootColumn, schema));
         return migrationBuilder;
     }
 
