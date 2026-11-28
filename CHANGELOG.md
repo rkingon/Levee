@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.0.1-alpha.3 (unreleased)
+## 0.0.1-alpha.3 (2026-11-28)
 
 Writes that hold under retries and races.
 

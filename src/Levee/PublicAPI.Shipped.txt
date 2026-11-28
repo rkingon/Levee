@@ -43,6 +43,7 @@ Levee.Dispatcher
 Levee.Dispatcher.Catalog.get -> Levee.OperationCatalog!
 Levee.Dispatcher.Dispatcher(Microsoft.Extensions.DependencyInjection.IServiceScopeFactory! scopes, Levee.OperationCatalog! catalog, Levee.IAccessPolicy! access, Levee.LeveeOptions! options, System.TimeProvider! time, Microsoft.Extensions.Logging.ILogger<Levee.Dispatcher!>! log) -> void
 Levee.Dispatcher.SendAsync<TResult>(Levee.IOperation<TResult>! operation, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
+Levee.Dispatcher.SendAsync<TResult>(Levee.IOperation<TResult>! operation, Levee.Principal! principal, string? idempotencyKey, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
 Levee.Dispatcher.SubscribeAsync<TItem>(Levee.ISubscription<TItem>! subscription, Levee.Principal! principal, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<System.Collections.Generic.IAsyncEnumerable<TItem>!>>!
 Levee.Effects
 Levee.Effects.External = 4 -> Levee.Effects
@@ -117,6 +118,8 @@ Levee.IScopedPrincipal.ScopeKey.get -> string!
 Levee.ISubscription<TItem>
 Levee.ISubscriptionHandler<TSubscription, TItem>
 Levee.ISubscriptionHandler<TSubscription, TItem>.SubscribeAsync(TSubscription subscription, Levee.SubscriptionContext! context, System.Threading.CancellationToken ct) -> System.Collections.Generic.IAsyncEnumerable<TItem>!
+Levee.IVersionedOperation
+Levee.IVersionedOperation.ExpectedVersion.get -> uint
 Levee.Idempotency
 Levee.Idempotency.Conflicts = 2 -> Levee.Idempotency
 Levee.Idempotency.Idempotent = 1 -> Levee.Idempotency
@@ -154,6 +157,8 @@ Levee.LeveeHandlesAttribute.LeveeHandlesAttribute(System.Type! operation) -> voi
 Levee.LeveeHandlesAttribute.Operation.get -> System.Type!
 Levee.LeveeJson
 Levee.LeveeOptions
+Levee.LeveeOptions.IdempotencyKeyLifetime.get -> System.TimeSpan
+Levee.LeveeOptions.IdempotencyKeyLifetime.set -> void
 Levee.LeveeOptions.LeveeOptions() -> void
 Levee.LeveeOptions.OutcomeTimeout.get -> System.TimeSpan
 Levee.LeveeOptions.OutcomeTimeout.set -> void
@@ -226,6 +231,7 @@ Levee.OperationDescriptor.Metadata.get -> System.Collections.Generic.IReadOnlyLi
 Levee.OperationDescriptor.Name.get -> string!
 Levee.OperationDescriptor.Platform.get -> bool
 Levee.OperationDescriptor.ReadOnly.get -> bool
+Levee.OperationDescriptor.ResultNullable.get -> bool
 Levee.OperationDescriptor.ResultType.get -> System.Type!
 Levee.OperationDescriptor.Streams.get -> bool
 Levee.OperationDescriptor.Summary.get -> string!
@@ -294,6 +300,7 @@ Levee.ProcessContext.Principal.get -> Levee.Principal!
 Levee.ProcessContext.Scope.get -> string?
 Levee.ProcessContext.SendAsync<TResult>(Levee.IOperation<TResult>! operation, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
 Levee.ProcessContext.Snooze(System.TimeSpan delay) -> void
+Levee.ProcessContext.StepAsync<T>(string! name, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<Levee.Result<T>>!>! run, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<T>>!
 Levee.RefusesAttribute
 Levee.RefusesAttribute.Codes.get -> System.Collections.Generic.IReadOnlyList<string!>!
 Levee.RefusesAttribute.RefusesAttribute(params string![]! codes) -> void
@@ -345,7 +352,10 @@ const Levee.LeveeErrors.Cancelled = "operation.cancelled" -> string!
 const Levee.LeveeErrors.Conflict = "conflict" -> string!
 const Levee.LeveeErrors.ConstraintViolation = "store.constraint" -> string!
 const Levee.LeveeErrors.Contention = "store.contention" -> string!
+const Levee.LeveeErrors.IdempotencyMismatch = "idempotency.mismatch" -> string!
+const Levee.LeveeErrors.IdempotencyReplayed = "idempotency.replayed" -> string!
 const Levee.LeveeErrors.Internal = "internal" -> string!
+const Levee.LeveeErrors.InvalidIdempotencyKey = "idempotency.invalid_key" -> string!
 const Levee.LeveeErrors.InvalidInput = "input.invalid" -> string!
 const Levee.LeveeErrors.InvalidValue = "store.invalid_value" -> string!
 const Levee.LeveeErrors.NotImplemented = "not_implemented" -> string!
@@ -358,6 +368,7 @@ const Levee.LeveeErrors.Streams = "operation.streams" -> string!
 const Levee.LeveeErrors.Unauthenticated = "unauthenticated" -> string!
 const Levee.LeveeErrors.UndeclaredWrite = "effects.undeclared" -> string!
 const Levee.LeveeErrors.UnknownOperation = "operation.unknown" -> string!
+const Levee.LeveeErrors.Unreachable = "platform.unreachable" -> string!
 override Levee.AccessRequest.Equals(object? obj) -> bool
 override Levee.AccessRequest.GetHashCode() -> int
 override Levee.AccessRequest.ToString() -> string!
@@ -427,8 +438,8 @@ static Levee.LeveeErrors.All.get -> System.Collections.Generic.IReadOnlySet<stri
 static Levee.LeveeJson.Options.get -> System.Text.Json.JsonSerializerOptions!
 static Levee.LeveeServiceCollectionExtensions.AddLevee(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Levee.OperationCatalog! catalog, System.Action<Levee.LeveeOptions!>? configure = null) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
 static Levee.LeveeServiceCollectionExtensions.AddLeveePart(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Collections.Generic.IEnumerable<Levee.OperationDescriptor!>! operations) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
-static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
-static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
+static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false, bool unscoped = false, bool resultNullable = false) -> Levee.OperationDescriptor!
+static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false, bool resultNullable = false) -> Levee.OperationDescriptor!
 static Levee.OperationOutcome.operator !=(Levee.OperationOutcome? left, Levee.OperationOutcome? right) -> bool
 static Levee.OperationOutcome.operator ==(Levee.OperationOutcome? left, Levee.OperationOutcome? right) -> bool
 static Levee.PortSelection.Bind<TPort>(Microsoft.Extensions.DependencyInjection.IServiceCollection! services, string! selected, Levee.AdapterLifetime lifetime) -> void

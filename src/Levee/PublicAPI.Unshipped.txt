@@ -1,16 +1,1 @@
 #nullable enable
-Levee.IVersionedOperation
-Levee.IVersionedOperation.ExpectedVersion.get -> uint
-const Levee.LeveeErrors.IdempotencyMismatch = "idempotency.mismatch" -> string!
-const Levee.LeveeErrors.IdempotencyReplayed = "idempotency.replayed" -> string!
-const Levee.LeveeErrors.InvalidIdempotencyKey = "idempotency.invalid_key" -> string!
-Levee.Dispatcher.SendAsync<TResult>(Levee.IOperation<TResult>! operation, Levee.Principal! principal, string? idempotencyKey, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
-Levee.LeveeOptions.IdempotencyKeyLifetime.get -> System.TimeSpan
-Levee.LeveeOptions.IdempotencyKeyLifetime.set -> void
-const Levee.LeveeErrors.Unreachable = "platform.unreachable" -> string!
-Levee.ProcessContext.StepAsync<T>(string! name, System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task<Levee.Result<T>>!>! run, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<T>>!
-*REMOVED*static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
-*REMOVED*static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false) -> Levee.OperationDescriptor!
-static Levee.OperationDescriptor.Create<TOperation, TResult>(string! name, string! summary, string! access, Levee.Effects effects, Levee.Idempotency idempotency, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, System.Collections.Generic.IReadOnlyList<string!>? errors = null, bool callerScoped = false, bool unscoped = false, bool resultNullable = false) -> Levee.OperationDescriptor!
-static Levee.OperationDescriptor.CreateSubscription<TSubscription, TItem>(string! name, string! summary, string! access, bool platform, bool internal = false, System.Collections.Generic.IReadOnlyList<System.Attribute!>? metadata = null, bool callerScoped = false, bool unscoped = false, bool resultNullable = false) -> Levee.OperationDescriptor!
-Levee.OperationDescriptor.ResultNullable.get -> bool

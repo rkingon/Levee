@@ -13,6 +13,7 @@ Levee.EntityFrameworkCore.LeveeAuditRecord.Scope.get -> string?
 Levee.EntityFrameworkCore.LeveeAuditRecord.Scope.init -> void
 Levee.EntityFrameworkCore.LeveeAuditRecord.Subject.get -> string!
 Levee.EntityFrameworkCore.LeveeAuditRecord.Subject.init -> void
+Levee.EntityFrameworkCore.LeveeConventionsExtensions
 Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions
 Levee.EntityFrameworkCore.LeveeModelBuilderExtensions
 Levee.EntityFrameworkCore.LeveeOwner
@@ -23,10 +24,12 @@ Levee.EntityFrameworkCore.SeparateContextAttribute
 Levee.EntityFrameworkCore.SeparateContextAttribute.Library.get -> string!
 Levee.EntityFrameworkCore.SeparateContextAttribute.SeparateContextAttribute(string! library) -> void
 const Levee.EntityFrameworkCore.LeveeSchema.AuditTable = "levee_audit" -> string!
+static Levee.EntityFrameworkCore.LeveeConventionsExtensions.AddLeveeConventions(this Microsoft.EntityFrameworkCore.ModelConfigurationBuilder! configurationBuilder) -> Microsoft.EntityFrameworkCore.ModelConfigurationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.AddLeveeSchema(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.EnableScopeIsolation(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! column, string! columnType = "text", string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.MakeAppendOnly(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.ShareAcrossScopes(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! table, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
+static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.UpgradeLeveeSchema(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!
 static Levee.EntityFrameworkCore.LeveeModelBuilderExtensions.AddLeveeAudit(this Microsoft.EntityFrameworkCore.ModelBuilder! modelBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.ModelBuilder!
 static Levee.EntityFrameworkCore.LeveeOwner.Run() -> System.IDisposable!
 static Levee.EntityFrameworkCore.LeveePostgresServiceCollectionExtensions.AddLeveePostgres<TContext>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
@@ -36,4 +39,6 @@ static Levee.EntityFrameworkCore.LeveeSchema.Grants(string! role, string! schema
 static Levee.EntityFrameworkCore.LeveeSchema.Isolation(string! table, string! column, string! columnType = "text", string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Shared(string! table, string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Sql.get -> string!
+static Levee.EntityFrameworkCore.LeveeSchema.SweepExpiredKeys(string! schema = "public") -> string!
+static Levee.EntityFrameworkCore.LeveeSchema.Upgrade(string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSeparateContextServiceCollectionExtensions.AddLeveeSeparateContext<TContext>(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, System.Action<Microsoft.EntityFrameworkCore.DbContextOptionsBuilder!>! configure) -> Microsoft.Extensions.DependencyInjection.IServiceCollection!
