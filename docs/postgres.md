@@ -15,6 +15,20 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
 `ShareAcrossScopes("plans")`.
+
+An aggregate is its root's row: every part of it a complex type on the root, its lines in a JSON column. The root shows
+them read-only (LEVEE007), so EF maps the private list and ignores the view:
+
+```csharp
+modelBuilder.Entity<Order>(e =>
+{
+    e.Ignore(o => o.Lines);
+    e.ComplexCollection<List<Line>, Line>("_lines", l => l.ToJson("lines"));
+});
+```
+
+An installation from before alpha.3 is brought up to date by `migrationBuilder.UpgradeLeveeSchema()`
+(`LeveeSchema.Upgrade(schema)`), safe to run again, then Levee's grants once more. Not `dotnet levee db schema`, which prints a fresh installation.
 `LeveeSchema.Create(schema)` and `Grants(role, schema)` put Levee's objects in a schema other than `public` (Oxbow's tables
 stay in `public`), each qualified by it, so they hold whatever a role's `search_path` is. For `Isolation`, `Shared` and
 their migration helpers, `schema` names where Levee's functions are, not the table: pass the table qualified
@@ -42,7 +56,13 @@ allow-list, not a blanket:
 - `levee_scope()` and `levee_platform()`, which the policies call;
 - the audit: `select`, and adding a record only through `levee_audit_write`, which runs with the owner's rights and stamps
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
-  record.
+  record;
+- idempotency keys (`levee_idempotency`): nothing of the table, only `levee_idempotency_claim` and
+  `levee_idempotency_complete`. They read the transaction's own scope, which only the unit of work sets; the subject is the
+  dispatcher's, the authenticated caller it passes them. So a key is claimed, and its result replayed, only where and for
+  whom it was sent. An installation from before alpha.3 adds them as the owner, with
+  `migrationBuilder.UpgradeLeveeSchema()` (`LeveeSchema.Upgrade(schema)`), which grants the recorded role itself.
+  `LeveeSchema.SweepExpiredKeys()` removes the keys past their lifetime, on a schedule of the owner's.
 
 Run Levee's grants first, then anything the app grants itself (Oxbow's, `dotnet levee db grants <role> --jobs` prints
 both in order; a table with a policy of the app's own; a view). A grant of the app's own is the app's to answer for, so
@@ -66,14 +86,23 @@ app has checked isn't seen until it restarts.
 
 1. `begin`; `set transaction read only` when the operation declares only reads.
 2. `levee.scope` (the operation's scope key) and `levee.platform` (`on` for a platform operation), local to the transaction.
-3. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction.
-4. The audit record, for a write, through `levee_audit_write`.
-5. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
+3. With an idempotency key, for a write: the key claimed, or what its first request committed answered without running
+   the handler again. An equal request still in flight is waited for, so equal requests at once make one write.
+4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. An aggregate is
+   its root's row, parts included, and EF checks its version (`xmin`) as it writes it; a versioned operation is held to
+   the one aggregate whose version its saves moved. A flush that fails fails
+   the operation: every later flush, and the commit, throws the same failure, however the handler caught it. A save of
+   the context's own (`SaveChanges`, which LEVEE004 refuses), a callback's inside the unit of work's own save included, is
+   refused inside an operation and fails it the same way.
+5. The audit record, for a write, through `levee_audit_write`.
+6. `commit`, never cancelled by the caller once sent; or a rollback, on any failure.
 
 Postgres's refusals come back classified: a write in a read-only transaction is `effects.undeclared`, a row inserted or
 moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write
 changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
-set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count, a duplicate is `conflict`, any other constraint
+set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count
+(it runs as it's called, past the change tracker: an update of a root's table moves that root's `xmin` but isn't held to
+the version a caller saw), a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 

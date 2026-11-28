@@ -20,8 +20,11 @@ internal sealed record OperationView(string Name, string Summary, string Access,
 public static class LeveeEndpointRouteBuilderExtensions
 {
     /// <summary>
-    /// <c>GET {prefix}</c> lists the catalog; <c>POST {prefix}/{name}</c> runs an operation with the body as its input. Both
-    /// need a caller: <paramref name="principal"/> is the host's authentication, who the request runs as, or null for no one.
+    /// <c>GET {prefix}</c> lists the catalog; <c>POST {prefix}/{name}</c> runs an operation with the body as its input. A write
+    /// sent again with the same <c>Idempotency-Key</c> header answers the result it committed. One that failed rolled back and
+    /// kept no key, so what it did outside the platform (<see cref="Effects.External"/>) is repeated by a retry unless it
+    /// declares a repeat safe (<see cref="Idempotency.Idempotent"/>), as <c>LeveeClient</c> retries it.
+    /// Both need a caller: <paramref name="principal"/> is the host's authentication, who the request runs as, or null for no one.
     /// Internal operations are neither listed nor run.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("ApiDesign", "RS0026", Justification = "The overloads differ by the principal's delegate, not by the optional prefix.")]
@@ -70,7 +73,9 @@ public static class LeveeEndpointRouteBuilderExtensions
                     return Fail(Error.InvalidInput(e), http, options);
                 }
             }
-            var result = await dispatcher.SendFromClientAsync(name, input, caller, http.RequestAborted);
+            // Sent twice is a key, as an empty one is: the dispatcher refuses either rather than guessing which was meant.
+            var key = http.Request.Headers["Idempotency-Key"] is { Count: > 0 } sent ? (sent.Count == 1 ? sent[0] ?? "" : "") : null;
+            var result = await dispatcher.SendFromClientAsync(name, input, caller, key, http.RequestAborted);
             return result.IsSuccess ? Results.Json(result.Value, LeveeJson.Options) : Fail(result.Error, http, options);
         });
         group.MapGet("{name}/events", async (string name, string? input, HttpContext http, Dispatcher dispatcher, LeveeOptions options) =>
@@ -239,7 +244,7 @@ public static class LeveeEndpointRouteBuilderExtensions
 
     private static OperationView View(OperationDescriptor d, IReadOnlyList<string> refusals, JsonSerializerOptions json) => new(
         d.Name, d.Summary, d.Access, d.Effects, d.Idempotency, d.ReadOnly, d.Streams,
-        LeveeJson.Schema(d.InputType, json), LeveeJson.Schema(d.ResultType, json), d.Errors, refusals,
+        LeveeJson.Schema(d.InputType, json), LeveeJson.Schema(d.ResultType, json, d.ResultNullable), d.Errors, refusals,
         d.Metadata.ToDictionary(m => m.GetType().Name.EndsWith("Attribute", StringComparison.Ordinal) ? m.GetType().Name[..^"Attribute".Length] : m.GetType().Name, m => Values(m, json)));
 
     private static JsonObject Values(Attribute metadata, JsonSerializerOptions json)

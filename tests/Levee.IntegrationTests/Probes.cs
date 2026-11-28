@@ -56,7 +56,7 @@ internal sealed class SneakHandler(INotes notes) : IOperationHandler<Sneak, Unit
 {
     public Task<Result<Unit>> HandleAsync(Sneak operation, OperationContext context, CancellationToken ct)
     {
-        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Tenant, "sneaked", context.Now));
+        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Tenant, Sample.Domain.NoteText.From("sneaked").Value, context.Now));
         return Task.FromResult<Result<Unit>>(Unit.Value);
     }
 }
@@ -65,7 +65,7 @@ internal sealed class TrespassHandler(INotes notes) : IOperationHandler<Trespass
 {
     public Task<Result<Unit>> HandleAsync(Trespass operation, OperationContext context, CancellationToken ct)
     {
-        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Victim, "trespassed", context.Now));
+        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Victim, Sample.Domain.NoteText.From("trespassed").Value, context.Now));
         return Task.FromResult<Result<Unit>>(Unit.Value);
     }
 }
@@ -181,7 +181,7 @@ internal sealed class FlushThenReadHandler(INotes notes, IFlush flush) : IOperat
 {
     public async Task<Result<int>> HandleAsync(FlushThenRead operation, OperationContext context, CancellationToken ct)
     {
-        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Tenant, "flushed", context.Now));
+        notes.Add(Note.Create(Guid.CreateVersion7(), operation.Tenant, Sample.Domain.NoteText.From("flushed").Value, context.Now));
         await flush.FlushAsync(ct);
         return (await notes.ListAsync(ct)).Count;
     }
@@ -251,7 +251,7 @@ internal sealed class NoteMineHandler(INotes notes) : IOperationHandler<NoteMine
 {
     public Task<Result<Unit>> HandleAsync(NoteMine operation, OperationContext context, CancellationToken ct)
     {
-        notes.Add(Note.Create(operation.Id, context.Scope.Key!, operation.Text, context.Now));
+        notes.Add(Note.Create(operation.Id, context.Scope.Key!, Sample.Domain.NoteText.From(operation.Text).Value, context.Now));
         return Task.FromResult<Result<Unit>>(Unit.Value);
     }
 }

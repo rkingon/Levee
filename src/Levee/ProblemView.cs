@@ -12,7 +12,8 @@ namespace Levee;
 /// <param name="Transient">Whether the same call may succeed later.</param>
 /// <param name="Trace">The trace it was logged under.</param>
 /// <param name="Errors">A validation failure's fields, by path in the input.</param>
-public sealed record ProblemView(string Title, int Status, string Detail, string Code, ErrorKind Kind, bool Transient, string Trace,
+public sealed record ProblemView(string Title, int Status, string Detail, string Code,
+    [property: System.Text.Json.Serialization.JsonConverter(typeof(OneKind))] ErrorKind Kind, bool Transient, string Trace,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? Errors)
 {
     /// <summary>The HTTP status every projection reports a kind of failure as.</summary>
@@ -44,4 +45,32 @@ public sealed record ProblemView(string Title, int Status, string Detail, string
         };
         return new ProblemView(title, status, error.Message, error.Code, error.Kind, error.Transient, error.Trace ?? trace, error.Fields);
     }
+}
+
+/// <summary>
+/// A problem's kind as the wire names it: one of the kinds, by its name. The serializer's own enum reader would also take
+/// several names joined by commas (as their combination, which may be another kind) or a number.
+/// </summary>
+internal sealed class OneKind : System.Text.Json.Serialization.JsonConverter<ErrorKind>
+{
+    public override ErrorKind Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options)
+    {
+        var name = reader.TokenType == System.Text.Json.JsonTokenType.String ? reader.GetString() : null;
+        foreach (var kind in Enum.GetValues<ErrorKind>())
+        {
+            if (string.Equals(Name(kind), name, StringComparison.OrdinalIgnoreCase))
+            {
+                return kind;
+            }
+        }
+        throw new System.Text.Json.JsonException("A problem's kind is one of the kinds, by its name.");
+    }
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, ErrorKind value, System.Text.Json.JsonSerializerOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        writer.WriteStringValue(Name(value));
+    }
+
+    private static string Name(ErrorKind kind) => System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(kind.ToString());
 }

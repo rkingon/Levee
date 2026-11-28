@@ -42,7 +42,7 @@ internal static class Descriptors
 
     public static readonly DiagnosticDescriptor ScopeSetting = Rule(
         "LEVEE004", "Only the dispatcher saves and commits",
-        "This SQL sets the scope row-level security trusts (levee.scope, levee.platform) or writes the audit, both the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited by the dispatcher");
+        "This SQL sets what row-level security trusts (levee.scope, levee.platform), or writes the audit or an idempotency key, all the unit of work's alone. Fix: declare the operation's scope (IScopedOperation, CallerScoped or Platform) and let the dispatcher set it; read it with current_setting; every write is audited, and a retried one keyed, by the dispatcher");
 
     public static readonly DiagnosticDescriptor SignalByHand = Rule(
         "LEVEE022", "Change signals go only through IChangeSignals",
@@ -190,9 +190,16 @@ internal static class Descriptors
         "LEVEE112", "Every process input has one process",
         "Process input {0} is run by {1} processes ({2}), and a queued job names only its input, so which one runs is the container's registration order. Fix: keep one IProcess<{0}>; if they do different things, give each an input type of its own");
 
+    public static readonly DiagnosticDescriptor StoredShape = Rule(
+        "LEVEE115", "What a job keeps is in the contract language", "{0}: {1}");
+
     public static readonly DiagnosticDescriptor ScopeUnread = Rule(
         "LEVEE113", "An access policy decides by scope",
         "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");
+
+    public static readonly DiagnosticDescriptor VersionedWrites = Rule(
+        "LEVEE114", "A versioned operation writes",
+        "{0} is held to the version its caller saw (IVersionedOperation) but declares no write, so there's no change the version could be held to. Fix: an IVersionedOperation names the version of the one aggregate it changes: declare Effects = Effects.Write, and have its handler load the root, change it through its own method, and save");
 
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
@@ -201,6 +208,6 @@ internal static class Descriptors
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
         "LEVEE021", "LEVEE022",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
-        "LEVEE112", "LEVEE113",
+        "LEVEE112", "LEVEE113", "LEVEE114", "LEVEE115",
     ];
 }

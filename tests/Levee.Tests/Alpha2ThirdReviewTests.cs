@@ -40,6 +40,28 @@ public sealed class Alpha2ThirdReviewTests
             JsonSerializer.Serialize(writer, value.Value, options);
     }
 
+    [ValueObject(typeof(ParcelSize)), JsonConverter(typeof(GradeJson))]
+    public sealed record Grade(ParcelSize Value);
+
+    public sealed class GradeJson : JsonConverter<Grade>
+    {
+        public override Grade Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            new(JsonSerializer.Deserialize<ParcelSize>(ref reader, options));
+        public override void Write(Utf8JsonWriter writer, Grade value, JsonSerializerOptions options) =>
+            JsonSerializer.Serialize(writer, value.Value, options);
+    }
+
+    public sealed record Graded(Grade? Grade);
+
+    [Fact]
+    public void A_value_object_that_may_be_null_admits_null_by_its_enum_too()
+    {
+        static bool Admits(JsonNode schema) => schema["enum"] is JsonArray names && names.Any(n => n is null);
+
+        Assert.True(Admits(LeveeJson.Schema(typeof(Graded))["properties"]!["grade"]!), LeveeJson.Schema(typeof(Graded)).ToJsonString());
+        Assert.True(Admits(LeveeJson.Schema(typeof(Grade), LeveeJson.Options, nullable: true)), LeveeJson.Schema(typeof(Grade), LeveeJson.Options, nullable: true).ToJsonString());
+    }
+
     [Fact]
     public void A_value_object_round_trips_its_documented_enum_wire_value()
     {

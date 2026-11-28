@@ -16,6 +16,8 @@ public sealed class SampleDbContext(DbContextOptions<SampleDbContext> options) :
         {LeveeSchema.Isolation(NotesTable, "tenant")}
         """;
 
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.AddLeveeAudit();
@@ -34,6 +36,8 @@ public sealed class SampleDbContext(DbContextOptions<SampleDbContext> options) :
 internal sealed class EfNotes(SampleDbContext db) : INotes
 {
     public void Add(Note note) => db.Set<Note>().Add(note);
+
+    public async Task<Note?> FindAsync(Guid id, CancellationToken ct) => await db.Set<Note>().FindAsync([id], ct);
 
     public async Task<IReadOnlyList<Note>> ListAsync(CancellationToken ct) =>
         await db.Set<Note>().OrderBy(n => n.CreatedAt).ToListAsync(ct);

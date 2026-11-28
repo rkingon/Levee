@@ -21,6 +21,19 @@ public interface IScopedOperation
     string ScopeKey { get; }
 }
 
+/// <summary>
+/// An edit made against the version of an aggregate its caller saw: the root it updates or deletes is written only if it's
+/// still at that version, and the edit is refused as <see cref="LeveeErrors.Stale"/> otherwise, so an edit made on what
+/// someone else has since changed never overwrites it. One that writes nothing loses no one's edit, and is held to nothing.
+/// Implemented explicitly over a positional parameter, as <see cref="IScopedOperation"/> is, on an operation that writes
+/// (LEVEE114); its handler loads the one root it changes, which the unit of work holds to the version.
+/// </summary>
+public interface IVersionedOperation
+{
+    /// <summary>The root's version as the caller read it: a view's <c>Version</c>.</summary>
+    uint ExpectedVersion { get; }
+}
+
 [Flags]
 public enum Effects
 {
@@ -28,7 +41,10 @@ public enum Effects
     Read = 1,
     Write = 2,
 
-    /// <summary>Acts on the world outside the platform's database (a message, a payment, a vendor call).</summary>
+    /// <summary>
+    /// Acts on the world outside the platform's database (a message, a payment, a vendor call), which its rollback doesn't
+    /// undo: a client retries it only when it declares <see cref="Idempotency.Idempotent"/>.
+    /// </summary>
     External = 4,
 }
 

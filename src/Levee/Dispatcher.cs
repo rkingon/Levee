@@ -20,7 +20,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 
     public OperationCatalog Catalog => catalog;
 
-    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, CancellationToken ct)
+    public Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, CancellationToken ct) =>
+        SendAsync(operation, principal, idempotencyKey: null, ct);
+
+    /// <summary>
+    /// As <see cref="SendAsync{TResult}(IOperation{TResult}, Principal, CancellationToken)"/>, retryable: a write sent again
+    /// with the same <paramref name="idempotencyKey"/>, by the same caller in the same scope, gets the first result back
+    /// instead of writing twice, and an equal request still in flight is waited for. What an app's own projection passes on
+    /// from its caller (the <c>Idempotency-Key</c> header). A read ignores it.
+    /// </summary>
+    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, Principal principal, string? idempotencyKey, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(principal);
@@ -28,21 +37,25 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        var result = await RunAsync(descriptor, operation, principal, ct);
+        var result = await RunAsync(descriptor, operation, principal, wire: null, pinned: null, idempotencyKey, ct);
         return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
     }
 
     /// <summary>An operation by name, its input and result as JSON, in-process: internal operations included (jobs run them).</summary>
     internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, ct);
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned: null, key: null, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for work asked for earlier, in the caller's scope as it was then.</summary>
     internal Task<Result<JsonElement>> SendJsonAsync(string name, JsonElement input, Principal principal, string? pinned, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, ct);
+        SendFoundAsync(Find(name, fromClient: false), input, principal, pinned, key: null, ct);
 
     /// <summary>As <see cref="SendJsonAsync(string, JsonElement, Principal, CancellationToken)"/>, for a client: what a projection sends. Internal operations aren't there.</summary>
     internal Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, CancellationToken ct) =>
-        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, ct);
+        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, key: null, ct);
+
+    /// <summary>As <see cref="SendFromClientAsync(string, JsonElement, Principal, CancellationToken)"/>, with the client's idempotency key.</summary>
+    internal Task<Result<JsonElement>> SendFromClientAsync(string name, JsonElement input, Principal principal, string? idempotencyKey, CancellationToken ct) =>
+        SendFoundAsync(Find(name, fromClient: true), input, principal, pinned: null, idempotencyKey, ct);
 
     public async Task<Result<IAsyncEnumerable<TItem>>> SubscribeAsync<TItem>(ISubscription<TItem> subscription, Principal principal, CancellationToken ct)
     {
@@ -51,7 +64,15 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{subscription.GetType().Name} isn't in the catalog.");
         }
-        var opened = await OpenAsync(descriptor, subscription, principal, ct);
+        // Taken once, as a typed send's input is: what its scope, admissions, outcome and handler read is the same.
+        var snapshot = ContractWire.Snapshot(descriptor, subscription);
+        if (!snapshot.IsSuccess)
+        {
+            // Refused as a typed send's input is, and told as one.
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(subscription), null, principal, snapshot.Error), ct);
+            return snapshot.Error;
+        }
+        var opened = await OpenAsync(descriptor, snapshot.Value.Read, principal, ct);
         return opened.IsSuccess ? Result<IAsyncEnumerable<TItem>>.Success(Items<TItem>(opened.Value, CancellationToken.None)) : opened.Error;
     }
 
@@ -80,7 +101,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -141,7 +162,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -159,11 +180,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             JsonElement json;
             try
             {
-                json = JsonSerializer.SerializeToElement(item, descriptor.ResultType, LeveeJson.Options);
+                json = ContractWire.WriteResult(descriptor, item);
+                // Read back as a result sent as JSON is: one its own contract can't read is the handler's bug, told here.
+                _ = Read(descriptor, json);
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e)
             {
-                // An item that can't be written ends the stream as a handler's bug would: logged, and told as one last error.
+                // An item that can't be written ends the stream as a handler's bug would: logged, and told as one last error. The
+                // write is synchronous, so a cancellation thrown here is the converter's own, not the reader's.
                 throw new OperationFailedException(Unexpected(e, descriptor), e);
             }
             yield return json;
@@ -233,7 +257,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 throw new OperationFailedException(Unexpected(e, descriptor), e);
             }
-            yield return items.Current;
+            var item = items.Current;
+            try
+            {
+                ContractWire.Check(descriptor, item);
+            }
+            catch (InvalidOperationException e)
+            {
+                throw new OperationFailedException(Unexpected(e, descriptor), e);
+            }
+            yield return item;
         }
     }
 
@@ -246,7 +279,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     }
 
     private async Task<Result<JsonElement>> SendFoundAsync(Result<OperationDescriptor> found, JsonElement input, Principal principal, string? pinned,
-        CancellationToken ct)
+        string? key, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(principal);
         if (!found.IsSuccess)
@@ -258,14 +291,12 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.Streams, $"{descriptor.Name} streams: subscribe to it.");
         }
-        var operation = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var operation = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
         }
-        // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
-        var result = await RunAsync(descriptor, operation.Value, principal,
-            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, LeveeJson.Options), pinned, ct);
+        var result = await RunAsync(descriptor, operation.Value, principal, input, pinned, key, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
@@ -280,16 +311,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// </summary>
     internal static void Confine(Principal principal, WorkScope scope) => Confined.AddOrUpdate(principal, scope);
 
-    /// <summary>A process's step: an operation it holds, as its principal.</summary>
-    internal async Task<Result<object?>> SendAsStepAsync(IOperation operation, Principal principal, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(operation);
-        if (catalog.Find(operation.GetType()) is not { } descriptor)
-        {
-            return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
-        }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
-    }
+    // What holds a process's writes to its attempt, by the run's own principal, as its confinement is: a helper it hands the
+    // principal to sends through the same lock as its context does.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Principal, Func<IServiceProvider, CancellationToken, Task>> Attempts = [];
+
+    /// <summary>
+    /// Holds every write <paramref name="principal"/> sends to its process's attempt: <paramref name="enlist"/> runs first in
+    /// each write's transaction (Oxbow's attempt lock), so a superseded run's write can't commit, and throws
+    /// <see cref="AttemptSuperseded"/> when the attempt is no longer the one running.
+    /// </summary>
+    internal static void HoldToAttempt(Principal principal, Func<IServiceProvider, CancellationToken, Task> enlist) => Attempts.AddOrUpdate(principal, enlist);
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
         scoped.IsSuccess && Confined.TryGetValue(principal, out var to) && (scoped.Value.Key != to.Key || scoped.Value.Unscoped != to.Unscoped)
@@ -298,36 +329,65 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 + "outside the scope its process was started in.")
             : scoped;
 
-    private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal, CancellationToken ct) =>
-        await RunAsync(descriptor, operation, principal, answer: null, pinned: null, ct);
-
+    // wire: the input as it was received, for an operation sent as JSON, which is answered as JSON; null for one sent typed.
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, CancellationToken ct)
+        JsonElement? wire, string? pinned, string? key, CancellationToken ct)
     {
+        var enlist = Attempts.TryGetValue(principal, out var attempt) ? attempt : null;
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
-        var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
-        // Redacted once, for the audit and the outcome both. An input built in-process can hold what its own type refuses
-        // (null where it's non-nullable): refused here, as the wire would, before any transaction opens.
-        string? input = null;
+        // A typed input is taken once, before any transaction opens: written and read back as the wire would (refused as it
+        // would, if it holds what its own type refuses), and what's read back is what everything after reads.
+        var sent = wire ?? default;
         Result<object?>? refused = null;
+        if (wire is null)
+        {
+            var snapshot = ContractWire.Snapshot(descriptor, operation);
+            if (snapshot.IsSuccess)
+            {
+                (sent, operation) = snapshot.Value;
+            }
+            else
+            {
+                refused = snapshot.Error;
+            }
+        }
+        var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
+        // Redacted once, for the audit and the outcome both.
+        string? input = null;
         try
         {
-            input = Redact(operation);
-        }
-        catch (JsonException e)
-        {
-            LogInputRefused(log, e, descriptor.Name);
-            refused = Error.InvalidInput(e, descriptor.Name);
+            input = refused is null ? Redact(operation) : null;
         }
         catch (Exception)
         {
-            // Unredactable for another reason (a getter that throws): a bug, which the audit's own redaction fails on.
+            // Unredactable (a getter that throws): a bug, which the audit's own redaction fails on.
+        }
+        if (refused is null && key is not null && !descriptor.ReadOnly)
+        {
+            if (!IsKey(key))
+            {
+                refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
+                    $"{descriptor.Name}'s idempotency key isn't one: 1 to 255 characters, none of them a control character.");
+            }
+            // A key is its sender's: every anonymous caller is one subject, so one's key would answer another's request.
+            else if (principal is AnonymousPrincipal)
+            {
+                refused = Error.Validation(LeveeErrors.InvalidIdempotencyKey,
+                    $"{descriptor.Name} was sent with an idempotency key by no one: a key is held by a caller who signs in.");
+            }
         }
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, wire, sent, key, enlist, ct) : scoped.Error);
+        }
+        catch (AttemptSuperseded)
+        {
+            // Rolled back with the transaction the lock failed; the process's run ends, and its rescuer's goes on.
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, input ?? SafeRedact(operation), scoped.IsSuccess ? scoped.Value : null, principal,
+                Error.Unavailable(LeveeErrors.Cancelled, $"{descriptor.Name} was sent by a process whose attempt was superseded.")), CancellationToken.None);
+            throw;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -394,7 +454,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return found.Error;
         }
-        var operation = OperationCatalog.Deserialize(found.Value, input, LeveeJson.Options, e => LogInputRefused(log, e, found.Value.Name));
+        var operation = ContractWire.ReadInput(found.Value, input, e => LogInputRefused(log, e, found.Value.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
@@ -511,8 +571,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             _ => Error.Forbidden(LeveeErrors.ScopeUndeclared, $"{descriptor.Name} must declare one scope: its input's, its caller's, none, or the platform's."),
         };
 
+    private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
+
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        Func<object?, object?>? answer, CancellationToken ct)
+        JsonElement? wire, JsonElement sent, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -524,6 +586,16 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         try
         {
             await using var unit = await factory.BeginAsync(scope, ct);
+            // First, before anything else reads or writes: a read commits nothing a stale run could leave, and Postgres takes
+            // no row lock in a read-only transaction.
+            if (enlist is not null && !scope.ReadOnly)
+            {
+                await enlist(services.ServiceProvider, ct);
+            }
+            if (operation is IVersionedOperation versioned)
+            {
+                unit.Expect(versioned.ExpectedVersion);
+            }
             var context = new OperationContext(principal, descriptor, scope, Now());
             services.ServiceProvider.GetRequiredService<CurrentOperation>().Context = context;
             foreach (var admission in services.ServiceProvider.GetServices<IAdmission>())
@@ -531,6 +603,27 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 if (await admission.AdmitAsync(operation, context, ct) is { } refused)
                 {
                     return refused;
+                }
+            }
+            // After the admissions, so a refused caller learns nothing of what a key did; before the handler, so a repeat never runs it.
+            var claimed = key is not null && !scope.ReadOnly
+                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(scope, sent), options.IdempotencyKeyLifetime, Replayable: !DeclaresSecret(descriptor))
+                : null;
+            if (claimed is not null)
+            {
+                var replayed = Error.Conflict(LeveeErrors.IdempotencyReplayed,
+                    $"{descriptor.Name} was done already with this idempotency key, and its result isn't kept: it carries a secret, shown once.");
+                switch (await unit.ClaimAsync(claimed, ct))
+                {
+                    case IdempotencyClaim.Mismatch:
+                        return Error.Conflict(LeveeErrors.IdempotencyMismatch, $"{descriptor.Name} was sent with this idempotency key and other input: a key names one request.");
+                    case IdempotencyClaim.Replayed:
+                        return replayed;
+                    case IdempotencyClaim.Kept kept:
+                        // Done already: its first answer, the wire it was kept as, and nothing written or audited again. One whose
+                        // contract declares a secret was answered Replayed, without what was kept being read.
+                        var first = Parse(kept.Result);
+                        return Result<object?>.Success(wire is not null ? first : Read(descriptor, first));
                 }
             }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
@@ -555,9 +648,22 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 }
                 return result;
             }
-            if (answer is not null)
+            // Written once and read back, before the commit: a result its own contract can't read is a bug the write rolls back
+            // with. A keyed write's first answer and every replay are that one wire, however the handler's result enumerates or
+            // its converters write.
+            if (wire is null && claimed is null)
             {
-                result = Result<object?>.Success(answer(result.Value));
+                ContractWire.Check(descriptor, result.Value);
+            }
+            else
+            {
+                var written = ContractWire.WriteResult(descriptor, result.Value);
+                var copy = Read(descriptor, written);
+                if (claimed is not null)
+                {
+                    unit.Keep(claimed, claimed.Replayable ? written.GetRawText() : null);
+                }
+                result = Result<object?>.Success(wire is not null ? written : copy);
             }
             if (descriptor.Audited)
             {
@@ -624,6 +730,75 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         }
     }
 
+    private static JsonElement Parse(string wire)
+    {
+        using var document = JsonDocument.Parse(wire);
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>A result Levee wrote itself, read back: one its own contract can't read is a bug.</summary>
+    private static object? Read(OperationDescriptor descriptor, JsonElement wire) =>
+        ContractWire.ReadResult(descriptor, wire, problem => throw new InvalidOperationException(problem)).Value;
+
+    /// <summary>A result its contract says may carry a secret, at any depth or in any subtype it declares: never kept, never replayed.</summary>
+    private static bool DeclaresSecret(OperationDescriptor descriptor) => LeveeJson.FindSecret(descriptor.ResultType, LeveeJson.Options) is not null;
+
+    /// <summary>
+    /// Where it was asked (its scope's kind), and the input as the wire carried it (as it was received, or written once from
+    /// a typed send), its objects' members in one order (a dictionary's entries in any order are the same input; a member
+    /// sent twice was refused as it was read), its arrays' as they are: what a key's repeat is compared by. Never read and
+    /// written again, so a converter that writes something new each time can't make a repeat another request.
+    /// </summary>
+    internal static byte[] Hash(WorkScope scope, JsonElement input)
+    {
+        // From the element, not a JsonObject: members that differ only in case ("ABC", "abc") are two members on the wire.
+        static void Write(Utf8JsonWriter writer, JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    writer.WriteStartObject();
+                    foreach (var member in element.EnumerateObject().OrderBy(m => m.Name, StringComparer.Ordinal))
+                    {
+                        writer.WritePropertyName(member.Name);
+                        Write(writer, member.Value);
+                    }
+                    writer.WriteEndObject();
+                    break;
+                case JsonValueKind.Array:
+                    writer.WriteStartArray();
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Write(writer, item);
+                    }
+                    writer.WriteEndArray();
+                    break;
+                default:
+                    element.WriteTo(writer);
+                    break;
+            }
+        }
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            // Where it was asked, by kind: a platform's and an unscoped request share an empty scope key, and aren't one request.
+            writer.WriteStartArray();
+            writer.WriteStringValue(scope.Platform ? "platform" : scope.Unscoped ? "unscoped" : "scoped");
+            // No input at all reads as an empty object, so it's that.
+            if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            {
+                writer.WriteStartObject();
+                writer.WriteEndObject();
+            }
+            else
+            {
+                Write(writer, input);
+            }
+            writer.WriteEndArray();
+        }
+        return System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan);
+    }
+
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>
     private static string Redact(IOperation operation) => LeveeJson.Redact(operation, operation.GetType(), LeveeJson.Options);
 
@@ -667,9 +842,18 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 }
 
 /// <summary>An operation that failed where no result can carry it: a subscription whose handler threw mid-stream.</summary>
-public sealed class OperationFailedException(Error error, Exception inner) : Exception($"{error.Code}: {error.Message}", inner)
+public sealed class OperationFailedException : Exception
 {
-    public Error Error { get; } = error;
+    public OperationFailedException(Error error, Exception inner)
+        : base($"{error.Code}: {error.Message}", inner) =>
+        Error = error;
+
+    /// <summary>A failure told from elsewhere (a stream's last event, over the wire), with no exception of this process behind it.</summary>
+    internal OperationFailedException(Error error)
+        : base($"{error.Code}: {error.Message}") =>
+        Error = error;
+
+    public Error Error { get; }
 }
 
 public sealed class LeveeOptions
@@ -695,6 +879,12 @@ public sealed class LeveeOptions
     /// running, unawaited.
     /// </summary>
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long a write's idempotency key holds, counted from just before its commit (what runs at COMMIT, a deferred
+    /// constraint, runs inside it): a retry within it gets the first result back; one after it runs as a new request.
+    /// </summary>
+    public TimeSpan IdempotencyKeyLifetime { get; set; } = TimeSpan.FromHours(24);
 }
 
 /// <summary>A stream a projection opened: its items, and who it was opened for, where, for its rechecks.</summary>

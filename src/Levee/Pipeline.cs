@@ -152,7 +152,8 @@ public interface IOperationOutcome
 /// <summary>
 /// Sends the operation's pending writes to the store inside its open transaction, so a query or a set-based statement after
 /// them sees them. It never commits: the dispatcher commits once, and outside an operation this refuses. What an adapter
-/// calls instead of saving.
+/// calls instead of saving. A flush that fails fails the operation, however it's caught: every later flush, and the commit,
+/// throws the same failure, so nothing the operation wrote commits.
 /// </summary>
 public interface IFlush
 {
@@ -179,13 +180,55 @@ public interface IAmbientTransaction
 
 internal sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subject, string Operation, string Input);
 
+/// <summary>
+/// A retried write's key: one request, by who sent it, what to, and the hash of its input. <paramref name="Replayable"/> says
+/// whether its result may be answered again at all (not when its contract declares a secret), so what was kept is never read
+/// when it may not be.
+/// </summary>
+internal sealed record IdempotencyKey(string Subject, string Operation, string Key, byte[] InputHash, TimeSpan Lifetime, bool Replayable);
+
+/// <summary>What claiming a key found: one of four, and only a kept result carries the wire it answered.</summary>
+internal abstract record IdempotencyClaim
+{
+    private IdempotencyClaim()
+    {
+    }
+
+    /// <summary>This request holds the key: it runs.</summary>
+    public sealed record Claimed : IdempotencyClaim;
+
+    /// <summary>The key was used with other input.</summary>
+    public sealed record Mismatch : IdempotencyClaim;
+
+    /// <summary>Done already, and its result isn't kept.</summary>
+    public sealed record Replayed : IdempotencyClaim;
+
+    /// <summary>Done already: <paramref name="Result"/> is the wire it answered.</summary>
+    public sealed record Kept(string Result) : IdempotencyClaim;
+}
+
 /// <summary>One operation's transaction. Opened scoped and read-only as its contract says; committed only by the dispatcher.</summary>
 internal interface IUnitOfWork : IAsyncDisposable
 {
     WorkScope Scope { get; }
 
+    /// <summary>Holds the one aggregate root the operation changes to <paramref name="version"/>: the version its caller saw.</summary>
+    void Expect(uint version);
+
     /// <summary>Records the entry in this transaction: it commits or rolls back with the operation.</summary>
     Task AuditAsync(AuditEntry entry, CancellationToken ct);
+
+    /// <summary>
+    /// Claims <paramref name="key"/> in this transaction, or says what the request that claimed it committed. An equal claim
+    /// still in flight is waited for, so concurrent equal requests make one write.
+    /// </summary>
+    Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct);
+
+    /// <summary>
+    /// Keeps the claimed key's result, as JSON, to replay (null when it isn't kept), written as the unit of work commits,
+    /// after its last write and its audit: the key's lifetime runs from there.
+    /// </summary>
+    void Keep(IdempotencyKey key, string? result);
 
     Task CommitAsync(CancellationToken ct);
 }

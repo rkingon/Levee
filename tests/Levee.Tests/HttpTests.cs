@@ -54,11 +54,64 @@ public sealed class HttpTests : IAsyncDisposable
         Assert.Equal("outside", speak.GetProperty("metadata").GetProperty("Turn").GetProperty("reach").GetString());
     }
 
+    [Fact]
+    public async Task A_result_its_contract_lets_be_null_is_shown_as_one()
+    {
+        using var response = await _http.GetAsync(new Uri("/ops", UriKind.Relative), TestContext.Current.CancellationToken);
+        var operations = JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement;
+
+        string[] Types(string name) => [.. operations.EnumerateArray().Single(o => o.GetProperty("name").GetString() == name)
+            .GetProperty("result").GetProperty("type").EnumerateArray().Select(t => t.GetString()!)];
+
+        Assert.Equal(["string", "null"], Types("probe.maybe_said"));
+    }
+
     private async Task<(HttpResponseMessage Response, JsonElement Problem)> Post(string name, string body)
     {
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
         var response = await _http.PostAsync(new Uri($"/ops/{name}", UriKind.Relative), content, TestContext.Current.CancellationToken);
         return (response, JsonDocument.Parse(await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).RootElement);
+    }
+
+    private async Task<(HttpStatusCode Status, string Body)> PostKeyed(string name, string body, params string[] keys)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri($"/ops/{name}", UriKind.Relative))
+        {
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json"),
+        };
+        foreach (var key in keys)
+        {
+            request.Headers.TryAddWithoutValidation("Idempotency-Key", key);
+        }
+        using var response = await _http.SendAsync(request, TestContext.Current.CancellationToken);
+        return (response.StatusCode, await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task An_idempotency_key_makes_a_write_safe_to_send_again()
+    {
+        var body = $$"""{"tenant":"acme","name":"{{Guid.NewGuid():N}}"}""";
+
+        var first = await PostKeyed("probe.count", body, "k1");
+        var again = await PostKeyed("probe.count", body, "k1");
+        var twice = await PostKeyed("probe.count", body, "k1", "k2");
+
+        Assert.Equal((HttpStatusCode.OK, "1"), first);
+        Assert.Equal(first, again);
+        Assert.Equal(HttpStatusCode.BadRequest, twice.Status);
+        Assert.Contains(LeveeErrors.InvalidIdempotencyKey, twice.Body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_keyed_write_answers_the_wire_it_kept_however_its_converters_write()
+    {
+        var body = $$"""{"tenant":"acme","name":"{{Guid.NewGuid():N}}"}""";
+
+        var first = await PostKeyed("probe.stamp", body, "k1");
+        var again = await PostKeyed("probe.stamp", body, "k1");
+
+        Assert.Equal(HttpStatusCode.OK, first.Status);
+        Assert.Equal(first, again);
     }
 
     [Fact]
@@ -176,4 +229,33 @@ public sealed class HttpTests : IAsyncDisposable
         Assert.Equal("""{"said":"hi"}""", await ok.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
+}
+
+/// <summary>Written by a converter that never writes the same twice: a write's wire is what it was written as, once.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(StampJson))]
+[ValueObject(typeof(int))]
+public sealed record Stamp(int Value);
+
+public sealed class StampJson : System.Text.Json.Serialization.JsonConverter<Stamp>
+{
+    private static int _written;
+
+    public override Stamp Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => new(reader.GetInt32());
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Stamp value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteNumberValue(Interlocked.Increment(ref _written));
+}
+
+public sealed record Stamped(Stamp Stamp);
+
+[Operation("probe.stamp", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record StampIt(string Tenant, string Name) : IOperation<Stamped>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StampItHandler : IOperationHandler<StampIt, Stamped>
+{
+    public Task<Result<Stamped>> HandleAsync(StampIt operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<Stamped>>(new Stamped(new Stamp(0)));
 }

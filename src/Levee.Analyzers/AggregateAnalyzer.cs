@@ -39,29 +39,120 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
             context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregatePlacement, type.Locations.FirstOrDefault(), type.Name, role));
             return;
         }
+        // The root and its parts, as code elsewhere in this project reaches them.
+        var outside = new Outside(context.Compilation);
         for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object; t = t.BaseType)
         {
-            foreach (var member in t.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary }
-                && !m.IsImplicitlyDeclared && !m.IsStatic))
+            foreach (var member in Members(t).Where(outside.Changes))
             {
-                var open = member switch
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, outside.Here(member, type), member.Name, type.Name));
+            }
+        }
+        // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside. A struct
+        // handed out is a copy, so only what it holds by reference (a mutable collection) is shared.
+        foreach (var part in Parts(type, root, outside))
+        {
+            var byValue = part.TypeKind == TypeKind.Struct;
+            foreach (var member in Reachable(part).Where(m => byValue ? outside.Shares(m) : outside.Changes(m)))
+            {
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, outside.Here(member, part),
+                    $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
+            }
+        }
+    }
+
+    /// <summary>What a caller holding <paramref name="type"/> reaches: its own members, its bases', and an interface's, its own and those it extends.</summary>
+    private static IEnumerable<ISymbol> Reachable(INamedTypeSymbol type)
+    {
+        IEnumerable<INamedTypeSymbol> owners = type.TypeKind == TypeKind.Interface ? [type, .. type.AllInterfaces] : Bases(type);
+        return owners.SelectMany(Members);
+    }
+
+    private static IEnumerable<INamedTypeSymbol> Bases(INamedTypeSymbol type)
+    {
+        for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object && t.SpecialType != SpecialType.System_ValueType; t = t.BaseType)
+        {
+            yield return t;
+        }
+    }
+
+    /// <summary>
+    /// A root or a part as code elsewhere in this project reaches it, asked of the compiler as that code would be: by each
+    /// member's and accessor's accessibility from this assembly, wherever it's declared (a base of another project's internal
+    /// isn't; a protected one is the type's own and its subclasses').
+    /// </summary>
+    private sealed class Outside(Compilation compilation)
+    {
+        /// <summary>Where to say it: at the member when this project declares it, else at the type of this project that inherits it.</summary>
+        public Location? Here(ISymbol member, INamedTypeSymbol holder) =>
+            member.Locations.FirstOrDefault(l => l.SourceTree is { } tree && compilation.ContainsSyntaxTree(tree))
+            ?? holder.Locations.FirstOrDefault(l => l.SourceTree is { } tree && compilation.ContainsSyntaxTree(tree));
+
+        public bool Reaches(ISymbol? symbol) => symbol is not null && compilation.IsSymbolAccessibleWithin(symbol, compilation.Assembly);
+
+        /// <summary>A member through which the part's state changes: a setter, a writable field, a mutable collection handed out.</summary>
+        public bool Changes(ISymbol member) => member switch
+        {
+            IPropertySymbol { SetMethod: { IsInitOnly: false } set } when Reaches(set) => true,
+            IFieldSymbol { IsConst: false, IsReadOnly: false } field when Reaches(field) => true,
+            _ => Shares(member),
+        };
+
+        /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
+        public bool Shares(ISymbol member) => member switch
+        {
+            IMethodSymbol method => Reaches(method) && IsMutableCollection(method.ReturnType),
+            IPropertySymbol property => Reaches(property.GetMethod) && IsMutableCollection(property.Type),
+            IFieldSymbol { IsConst: false } field => Reaches(field) && IsMutableCollection(field.Type),
+            _ => false,
+        };
+
+        public Compilation Compilation => compilation;
+    }
+
+    private static IEnumerable<ISymbol> Members(INamedTypeSymbol type) =>
+        type.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } && !m.IsImplicitlyDeclared && !m.IsStatic);
+
+    /// <summary>
+    /// The types of this project a root hands out, at any depth, through what it shows (a property's type, or the items of a
+    /// collection it shows, whether it declares it or inherits it): its parts, classes, structs or the interfaces a caller
+    /// holds them by. Another root is an aggregate of its own; a type of another project, its own to guard.
+    /// </summary>
+    private static IEnumerable<INamedTypeSymbol> Parts(INamedTypeSymbol type, INamedTypeSymbol root, Outside outside)
+    {
+        var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default) { type };
+        var pending = new Queue<INamedTypeSymbol>([type]);
+        while (pending.Count > 0)
+        {
+            var holder = pending.Dequeue();
+            // A property a caller can read, or a field: what they hold, a struct's copy included, may refer to a part.
+            var shown = Reachable(holder).Select(m => m switch
+            {
+                IPropertySymbol property when outside.Reaches(property.GetMethod) => property.Type,
+                IFieldSymbol field when outside.Reaches(field) => field.Type,
+                _ => null,
+            }).OfType<ITypeSymbol>();
+            foreach (var reached in shown)
+            {
+                var value = Unwrapped(reached);
+                var held = Unwrapped(value is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
+                    && named.AllInterfaces.Concat(named.TypeKind == TypeKind.Interface ? [named] : []).FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) is { } items
+                    ? items.TypeArguments[0]
+                    : value);
+                if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct or TypeKind.Interface } part
+                    && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, outside.Compilation.Assembly)
+                    && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))
                 {
-                    // A method that hands out a mutable collection hands out the state inside it.
-                    IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
-                    IPropertySymbol { SetMethod: { IsInitOnly: false } set } when set.DeclaredAccessibility is not (Accessibility.Private or Accessibility.Protected
-                        or Accessibility.ProtectedAndInternal) => true,
-                    IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
-                    IFieldSymbol { IsConst: false } field when field.DeclaredAccessibility != Accessibility.Private => !field.IsReadOnly || IsMutableCollection(field.Type),
-                    _ => false,
-                };
-                if (open)
-                {
-                    var location = SymbolEqualityComparer.Default.Equals(t, type) ? member.Locations.FirstOrDefault() : type.Locations.FirstOrDefault();
-                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
+                    pending.Enqueue(part);
+                    yield return part;
                 }
             }
         }
     }
+
+    /// <summary>A nullable struct's value type: what a caller reaches through it.</summary>
+    private static ITypeSymbol Unwrapped(ITypeSymbol type) =>
+        type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : type;
 
     private static readonly ImmutableHashSet<string> MutableCollections = ImmutableHashSet.Create(
         "System.Collections.Generic.List<T>", "System.Collections.Generic.Dictionary<TKey, TValue>", "System.Collections.Generic.HashSet<T>",

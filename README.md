@@ -4,7 +4,7 @@ A .NET framework for platforms whose rules hold by construction: wrong code fail
 The platform is a catalog of declared operations, and every call, from every client and every job, goes through one
 pipeline: authorize, scope, open the unit of work, run the handler, audit, commit. See [docs/principles.md](docs/principles.md) for why.
 
-> **0.0.1-alpha.1.** Out for feedback from the apps migrating onto it. Everything may change.
+> **0.0.1-alpha.3.** Out for feedback from the apps migrating onto it. Everything may change.
 
 ## Packages
 
@@ -14,12 +14,22 @@ pipeline: authorize, scope, open the unit of work, run the handler, audit, commi
 | `Levee.EntityFrameworkCore` | The unit of work on EF Core and Postgres: one transaction per operation, `read only` when declared, scoped by RLS, audited. |
 | `Levee.Oxbow` | `IJobs` on Oxbow: an operation enqueued in its caller's transaction, run later through the pipeline. |
 | `Levee.AspNetCore` | `GET /ops`, `POST /ops/{name}` and, for a subscription, `GET /ops/{name}/events?input={json}` (server-sent events): the catalog over HTTP, no logic of its own. |
+| `Levee.Client` | A typed client for `/ops`: send an operation, get its `Result`, typed by a Contracts project's `LeveeCatalog`; a write retried under one idempotency key. For Client and Host projects; the core roles can't reference it. |
 | `Levee.Mcp` | The catalog over MCP: a tool per operation a client may call, through the dispatcher, no logic of its own. |
 | `Levee.Testing` | Postgres for pipeline tests as production has it (Testcontainers): Levee's schema run by the owner, the app's role held to row-level security. Test and TestSupport projects only. |
 | `Levee.Cli` | `dotnet levee`: scaffold an app, generate operations, list the catalog, print the database's SQL. Pinned per app. |
 
-`MapLeveeOperations` (`/ops`) is the platform's own surface, for its own clients and agents. A public API, with routes,
-versions and a contract outside customers rely on, is the app's to design, in a `Projection` project.
+`MapLeveeOperations` (`/ops`) is the platform's own surface, for its own clients and agents, which reach it through
+`Levee.Client`:
+
+```csharp
+services.AddLeveeClient(Acme.Billing.Contracts.LeveeCatalog.Catalog, http => http.BaseAddress = new("https://billing.internal"))
+    .AddHttpMessageHandler<BillingAuth>();          // the app's authentication
+var invoice = await client.SendAsync(new CreateInvoice(...), ct);   // Result<InvoiceView>, the platform's own Error on failure
+```
+
+A public API, with routes, versions and a contract outside customers rely on, is the app's to design, in a `Projection`
+project.
 
 ## The CLI
 
@@ -69,7 +79,7 @@ Every project that references Levee declares one, or the build fails (LEVEE001):
 | `Infrastructure` | Kernel, Infrastructure | Plumbing several adapters share: a vendor transport, `DelegatingHandler`s. May do I/O; sees nothing of the application's; declares no ports or operations. |
 | `Composition` | everything but Host, Tool and Test | The composition root hosts share: settings bound into records, hosted services, the generated catalog. Optional: without one, the Host is the root. |
 | `Host` | everything but Host, Tool and Test | A process: it composes (or takes the Composition project's) and drives. It names nothing of Application's or Domain's. A Host that sees no Application (it calls one through an SDK) composes nothing. |
-| `Client` | Kernel, Contracts, Client | Thin consumers over the wire. |
+| `Client` | Kernel, Contracts, Client | Thin consumers over the wire, through `Levee.Client`. |
 | `Projection` | Kernel, Contracts, Projection | The app's own public API: routes it designs (resources, versions), mapped onto operations and sent through the `Dispatcher`, failing through `LeveeProblems`. It can't see Application, Domain or adapters, so it holds no logic of theirs. A Host or Composition maps it. |
 | `Tool` | what a Host sees but Client and Projection | A process run as the database's owner: migrations, the role bootstrap. Owns its transaction (LEVEE004 doesn't apply); otherwise held like a Host, but binds only the ports it references, as a test does. Nothing references it (LEVEE017). |
 | `Test` | everything | Also a composition root. |
@@ -170,6 +180,8 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   them; the access policy decides again). Jobs run at least once, so an operation declaring `Idempotency.None` can't be
   enqueued, nor one with a `[Secret]` anywhere in its input (job inputs are stored) unless jobs seal them
   ([docs/jobs.md](docs/jobs.md)).
+- A process (`IProcess<TInput>`) resumes through its steps: `context.StepAsync(name, run, ct)` records each one's
+  success, so a later run gets it back instead of doing it again, and every write it sends is held to its attempt.
 - Oxbow is enlisted in the unit of work (`AddLeveeOxbow()`): the app's own job kinds, through the scoped `IOxbowClient`,
   commit or roll back with the operation too. `.AddLeveeJobs()` adds operations as jobs on top.
 - `Internal = true`: the platform's own operations (sign-in, bootstrap), through the same pipeline, never projected. The
@@ -181,6 +193,16 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   `AddArgsEncryption()`. Without it they're refused.
 - `OperationContext.Now` is the handler's one time, at Postgres's microseconds. The audit's own time is the database's
   `now()`, so a caller can't backdate it.
+- Every aggregate root has a version, Postgres's `xmin`, mapped by `configurationBuilder.AddLeveeConventions()` in the
+  context's `ConfigureConventions`: two operations changing one aggregate at once can't both commit (409 `store.stale`),
+  and every part of an aggregate is a complex type on its root (`ComplexCollection(...).ToJson()`), so a change anywhere
+  in it is a change of the root. An edit held to what its caller saw is an `IVersionedOperation`, which changes
+  one aggregate: its
+  `ExpectedVersion` (a view's `Version`, read from `uint Version { get; private set; }` on the root) is compared as the
+  root is written. `IFlush` writes it inside the operation, so the view carries the version just written.
+- A write is retryable with an idempotency key (`SendAsync(operation, principal, key, ct)`, the `Idempotency-Key`
+  header): sent again, it answers the first result instead of writing twice, and equal requests at once make one write.
+  A result carrying a `[Secret]` isn't kept, so its repeat is `idempotency.replayed`.
 - Only the dispatcher commits, but an adapter may flush: `IFlush` sends pending writes inside the open transaction, so a
   later query or set-based statement sees them, and refuses outside an operation. `SaveChanges` stays banned (LEVEE004).
 - Jobs run for whoever enqueued them: register an `IJobPrincipals` to turn that subject back into the app's own principal.
@@ -304,6 +326,8 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
 | LEVEE113 | An access policy reads the key of the scope it authorizes (`AccessRequest.Scope.Key`), not only whether it's the platform's: it decides who may act in which tenant. |
+| LEVEE114 | An `IVersionedOperation` declares a write: what it changes is held to the version its caller saw. |
+| LEVEE115 | A process's input and a step's result, which a job keeps and reads back, are in the contract language. |
 
 ## Decisions
 

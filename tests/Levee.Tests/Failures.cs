@@ -633,14 +633,14 @@ public sealed class FifthAuditFixTests
     }
 
     [Fact]
-    public async Task An_input_that_cant_be_serialized_still_answers_and_is_still_told()
+    public async Task An_input_that_cant_be_written_is_refused_as_the_client_refuses_it_and_is_still_told()
     {
         var outcomes = new Outcomes();
         var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
 
         var result = await dispatcher.SendAsync(new Computed(new Mailbox("no-at-sign")), Admin, CancellationToken.None);
 
-        Assert.True(result.IsSuccess);
+        Assert.Equal(LeveeErrors.InvalidInput, result.Error!.Code);
         Assert.Contains(outcomes.Seen, o => o.Operation.Name == "probe.computed");
     }
 

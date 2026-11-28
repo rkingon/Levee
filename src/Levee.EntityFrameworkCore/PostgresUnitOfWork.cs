@@ -27,7 +27,7 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
         services.AddSingleton<SignalHub<TContext>>();
         services.AddScoped<IChangeSignals, PostgresSignals<TContext>>();
-        services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
+        services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance, Aggregates.Instance));
         // The guard is on TContext alone: a second context would reach the database around every operation.
         services.AddSingleton<IValidateOptions<OneContext>>(provider =>
             new OneContextValidation(services, typeof(TContext), provider.GetRequiredService<IServiceScopeFactory>()));
@@ -211,10 +211,14 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
     {
         var name = db.GetType().Name;
         var interceptors = db.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()?.Interceptors;
-        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true)
+        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true || !interceptors.Contains(Aggregates.Instance))
         {
             return $"{name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
                 + $"DbContextOptions<{name}> in its constructor and configure it in AddDbContext, not OnConfiguring.";
+        }
+        if (AggregateLanguage.Problem(db.Model) is { } aggregates)
+        {
+            return $"{name}: {aggregates}";
         }
         return db.Database.CreateExecutionStrategy().RetriesOnFailure
             ? $"{name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: remove it; a "
@@ -316,7 +320,7 @@ internal sealed class EfFlush<TContext>(TContext db) : IFlush
     public Task FlushAsync(CancellationToken ct) =>
         db.Database.CurrentTransaction is null
             ? throw new InvalidOperationException("A flush outside an operation's unit of work would commit on its own; flush only inside an operation.")
-            : db.SaveChangesAsync(ct);
+            : Aggregates.SaveAsync(db, ct);
 }
 
 internal sealed class AmbientTransaction : IAmbientTransaction
@@ -501,6 +505,7 @@ internal sealed class PostgresUnitOfWorkFactory<TContext>(TContext db, AmbientTr
                 Isolated.TryAdd((db.Model, target), 0);
             }
             ambient.Current = (db.Database.GetDbConnection(), tx.GetDbTransaction());
+            Aggregates.Begin(db);
             return new PostgresUnitOfWork(db, tx, scope, ambient);
         }
         catch
@@ -518,11 +523,36 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public WorkScope Scope => scope;
 
+    public void Expect(uint version) => Aggregates.Expect(db, version);
+
+    private string Schema => db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
+
+    public async Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        var answer = await db.Database.SqlQuery<string>(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+            $"select {Schema}.levee_idempotency_claim({{0}}, {{1}}, {{2}}, {{3}}, {{4}})::text as \"Value\"",
+            key.Subject, key.Operation, key.Key, key.InputHash, key.Replayable)).SingleAsync(ct);
+        using var claim = System.Text.Json.JsonDocument.Parse(answer);
+        return claim.RootElement.GetProperty("state").GetString() switch
+        {
+            "claimed" => new IdempotencyClaim.Claimed(),
+            "mismatch" => new IdempotencyClaim.Mismatch(),
+            "replayed" => new IdempotencyClaim.Replayed(),
+            "kept" => new IdempotencyClaim.Kept(claim.RootElement.GetProperty("result").GetString()!),
+            var state => throw new InvalidOperationException($"levee_idempotency_claim answered {state}, which isn't a claim's state."),
+        };
+    }
+
+    private (IdempotencyKey Key, string? Result)? _kept;
+
+    public void Keep(IdempotencyKey key, string? result) => _kept = (key, result);
+
     /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>
     public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        var schema = db.Model.FindEntityType(typeof(LeveeAuditRecord))?.GetSchema() ?? "public";
+        var schema = Schema;
         await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
             $"select {schema}.levee_audit_write({{0}}, {{1}}, {{2}}, {{3}}, {{4}}::jsonb)",
             Guid.CreateVersion7(entry.At), entry.Scope, entry.Subject, entry.Operation, entry.Input), ct);
@@ -530,7 +560,14 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public async Task CommitAsync(CancellationToken ct)
     {
-        await db.SaveChangesAsync(ct);
+        await Aggregates.SaveAsync(db, ct);
+        // Last before COMMIT, so a key's lifetime starts as its write lands, not as its handler returned.
+        if (_kept is var (key, result))
+        {
+            await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+                $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}, {{4}})",
+                key.Subject, key.Operation, key.Key, new NpgsqlParameter<string?>("result", NpgsqlTypes.NpgsqlDbType.Text) { TypedValue = result }, key.Lifetime), ct);
+        }
         await tx.CommitAsync(ct);
         _committed = true;
     }
@@ -538,6 +575,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async ValueTask DisposeAsync()
     {
         ambient.Current = null;
+        Aggregates.End(db);
         LeveeTransactions.Remove(tx.GetDbTransaction());
         if (!_committed)
         {

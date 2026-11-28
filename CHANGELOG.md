@@ -1,5 +1,125 @@
 # Changelog
 
+## 0.0.1-alpha.3 (2026-11-28)
+
+Writes that hold under retries and races.
+
+### Levee
+- `IVersionedOperation`: an edit held to the version of the aggregate its caller saw (`ExpectedVersion`, implemented
+  explicitly over a positional parameter, as `IScopedOperation` is). Its root is held to that version as it's written,
+  and the edit is refused as 409 `store.stale` if it moved on. One that writes nothing is held to nothing, since a write
+  that changes nothing loses no one's edit. One that creates a root, or changes more than one aggregate, is a bug,
+  answered `internal`.
+- Idempotency keys for retryable writes: `Dispatcher.SendAsync(operation, principal, idempotencyKey, ct)`, and the
+  `Idempotency-Key` header over HTTP. A write sent again with the same key, by the same caller in the same scope, answers
+  its first result without running again, the wire it answered then; equal requests at once make one write; a key sent
+  with other input is 409 `idempotency.mismatch`. The key and its result commit with the write, so a request that rolled
+  back leaves nothing to replay. A result carrying a `[Secret]` (by the contract as it is now) is never replayed: 409
+  `idempotency.replayed`, since a secret is shown once. A key holds for `LeveeOptions.IdempotencyKeyLifetime` (24
+  hours), counted from just before its commit: work that runs at COMMIT (a deferred constraint) runs inside it. An
+  anonymous caller can't hold one (`idempotency.invalid_key`), since every anonymous caller is one subject. A read
+  ignores its key.
+- A result, or a stream's item, that its contract says isn't null and is, is a bug of the handler, answered `internal`
+  (a stream's ends with it), typed or as JSON: the generator carries each result's declared nullability on its descriptor
+  (`OperationDescriptor.ResultNullable`), and `/ops` shows a result that may be null as one. A result sent as JSON, and a
+  stream's item, is written once and read back before it's answered (a result before it commits), so one its own contract can't read is a bug that rolls back. A keyed
+  request is compared by where it was asked (its scope's kind: a platform request and an unscoped one are two) and its
+  input as it was received. A typed input is taken once (written, and read back as what its key, its handler and its
+  audit's redaction read), whether it's sent, subscribed to, enqueued as a job or starts a process, so a sequence read
+  once is the same to all of them; a converter that writes anew each time still writes anew for the audit. A member sent
+  twice, in any case, is `input.invalid`, and so is an input whose converter throws, whatever it throws; a typed send or
+  subscription refused that way is told as an outcome. Whether a result
+  may be replayed is judged by its contract's type and told to the claim, which never reads what was kept when it may not.
+- `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its success is recorded under its name, and every
+  later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process written from the top
+  resumes where it was. A failure records nothing. A step's result type, and a process's input, are held to the contract
+  language before the step acts or the process starts (a public constructor the wire calls, no public field it doesn't
+  write), so what's recorded reads back; a step's result is never null (`where T : notnull`; a null answered is refused, unrecorded); a
+  result whose type declares a `[Secret]` is refused before the step acts, unless jobs seal their inputs. Every write a process's run
+  sends, through its context or a helper it hands its principal to, takes its attempt's lock first, so a run the rescuer
+  has taken over can't commit.
+
+### Levee.EntityFrameworkCore
+- **Breaking:** an aggregate is its root's row, versioned by it.
+  - Every root's version is Postgres's `xmin`: `configurationBuilder.AddLeveeConventions()` in the context's
+    `ConfigureConventions` maps it (on `uint Version { get; private set; }` when the root declares one, a shadow property
+    otherwise), and no migration creates it. Two operations changing one aggregate at once can't both commit: the second
+    is 409 `store.stale`.
+  - Every part of an aggregate is a complex type on its root's entry (`ComplexProperty`, `ComplexCollection(...).ToJson()`):
+    a value, so a change anywhere in it is a change of the root and a write of its row, which EF holds to the version it
+    was read at. Inside an aggregate only the root has an identity the outside sees; a part that needs one holds it as a
+    value. An entity of its own is an aggregate of its own, referenced by its id. A root in an inheritance hierarchy, split
+    across tables, without the version, navigating to any entity (another, or an owned type), or holding a key whose
+    delete writes it (a cascade, EF's default for a required one, or `SetNull`, whatever it refers to), fails before the
+    first operation, with its fix. The root shows its parts read-only (`IReadOnlyList<Line>` over a private list, which EF
+    maps: `ComplexCollection<List<Line>, Line>("_lines", ...)`), and LEVEE007 holds the parts it hands out to the same as
+    the root: no public setter.
+  - One aggregate per operation is the convention, held for an `IVersionedOperation`: the root it changes is held to the
+    version its caller saw in the write's own `WHERE` (so a stale edit is stale, whatever else the write would trip over),
+    and whose version each save actually moved is checked after it (a callback's change counted; a root a callback began
+    tracking, loaded or added, refused): it changes one aggregate, which it doesn't create. An unversioned operation may change
+    several, each held to its own version. What the unit of work doesn't see (raw SQL, `ExecuteUpdate`) moves a row's
+    `xmin` but isn't held to a caller's version.
+  - Every save of an operation goes through its unit of work, and the first that fails fails the operation: every later
+    flush, and the commit, throws the same failure, however the handler caught it. A `SaveChanges` of the context's own
+    inside an operation, a callback's inside the unit of work's own save included, is refused and fails it the same way:
+    `IFlush` writes pending changes.
+- Needs EF Core 10.0.15 and Npgsql's provider 10.0.4: 10.0.0 can't delete a root holding a complex collection.
+- **Upgrading** an installation from before alpha.3, as the owner: `migrationBuilder.UpgradeLeveeSchema()` (or
+  `LeveeSchema.Upgrade(schema)`) adds the idempotency keys, and is safe where `AddLeveeSchema()` already made them, so a
+  fresh database replaying both migrations gets them once. `LeveeSchema.SweepExpiredKeys()` removes keys past their
+  lifetime.
+- **Rolling out** keys: an alpha.2 server ignores `Idempotency-Key`, so a write retried against it can run twice. Upgrade
+  every instance serving `/ops` before clients retry writes.
+
+### Levee.Oxbow
+- **Breaking:** needs Oxbow 0.2.0-alpha.5 and its schema version 3 (`job_step`): apply Oxbow's pending migrations
+  (`OxbowSchema.GetMigrations(fromVersion: 2)`). Then, with the `Levee.Cli` tool updated to alpha.3 (alpha.2's leaves out
+  `oxbow_job_step`), run the SQL `dotnet levee db grants <role> --jobs` prints as the owner, and after it whatever the app
+  grants itself: Levee's grants reset the role to its allow-list, so an app's own grant (a table with a policy of its own)
+  is applied again after them. A step's result is kept as the wire's bytes.
+- **Breaking:** with `AddLeveeJobs(sealSecrets: true)` every process is sealed (`levee_process_sealed`), its steps'
+  results with its input. A process started `Unique` then needs Oxbow's `ArgsEncryptionOptions.UniqueKeySecret`, as a
+  sealed operation does. A process queued before the upgrade still runs as the plaintext kind: a unique one doesn't block
+  its sealed twin, and one whose new code takes a step whose result declares a secret is refused at that step. Let those
+  drain (or cancel them) before deploying such steps, or starting the same input again.
+
+### Levee.Client
+- New: a typed client for `/ops`, on the contract wire the platform reads and writes itself (`ContractWire`, shared by
+  the dispatcher, the projections and the client), typed by a Contracts project's `LeveeCatalog.Catalog`.
+  `SendAsync(operation, ct)` answers `Result<TResult>`; an input refused as the platform would refuse it is
+  `input.invalid` before anything is sent; a failure reads back as the platform's own `Error` when its problem agrees
+  with its status; anything else (a connection refused, a body cut off, a sign-in page, what the contract doesn't read,
+  null where it promises a value, a problem whose kind isn't one of the kinds by its name, a body that stalls past the
+  `HttpClient`'s timeout, a stream's refusal included) is `Unavailable` `platform.unreachable`, with the `Retry-After` of
+  whatever answered (a gateway's too).
+- A write carries an idempotency key across its retries, so a retry after a lost answer finds the first result.
+  Transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait (`Retry-After`, as a
+  delay or a date) or a doubling delay, and never past `RetryWindow` (30 seconds) from the first send, however late a
+  wait ends; a write acting outside the platform (`Effects.External`) is
+  retried only when it declares a repeat safe (`Idempotent`). `IdempotencyKeys = false` is for a client that sends as no
+  one: its writes are sent once.
+- `SubscribeAsync` answers a `LeveeSubscription<TItem>`: its items as they come, ended by the platform's last failure as
+  `OperationFailedException`, and closed when it's disposed, read or not.
+- `AddLeveeClient(catalog, http => ...)` registers it through `IHttpClientFactory`; the app's authentication is a
+  handler on what it returns. The core roles can't reference it (LEVEE008).
+
+### Generator and analyzers
+- **Breaking:** `OperationDescriptor.Create` and `CreateSubscription` take the result's nullability: rebuild every assembly
+  holding a generated catalog against alpha.3 (Contracts, Composition, and a Host, Tool or test project that generates its
+  own), since a catalog generated by alpha.2 calls the old signatures.
+- LEVEE114: an `IVersionedOperation` declares `Effects.Write`. That it changes the one root it loads is held at run time.
+- LEVEE115: a process's input (every one it's registered for) and a step's result are in the contract language, judged as
+  LEVEE104 judges an operation's; a record a Contracts project declares (a view a step's operation answers) is judged there.
+- LEVEE007 holds the parts an aggregate root hands out (a line in the list it shows) to the same as the root: no public setter.
+- LEVEE104 refuses an operation that declares more than one contract (`IOperation<int>` and `IOperation<string>`): a
+  caller sending it as one would read the result of the other.
+- LEVEE004 also refuses app SQL that calls the idempotency key functions (text that begins as a statement does: `select`,
+  `with`, a `DO` block); a message that only names them, as a call or not, is fine.
+
+### Levee.Cli
+- `dotnet levee new` scaffolds the context with `AddLeveeConventions()`.
+
 ## 0.0.1-alpha.2 (2026-11-27)
 
 ### Levee

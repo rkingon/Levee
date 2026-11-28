@@ -368,7 +368,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             + (op.Metadata.Count == 0 ? "" : $", metadata: new global::System.Attribute[] {{ {string.Join(", ", op.Metadata)} }}")
             + (op.Errors.Count == 0 || op.Streams ? "" : $", errors: new string[] {{ {string.Join(", ", op.Errors.Select(Literal))} }}")
             + (op.CallerScoped ? ", callerScoped: true" : "")
-            + (op.Unscoped ? ", unscoped: true" : "");
+            + (op.Unscoped ? ", unscoped: true" : "")
+            // A reference type's nullability is the contract's, lost to the type at run time: carried, so every side reads it.
+            + (op.Result is { IsReferenceType: true, NullableAnnotation: not NullableAnnotation.NotAnnotated } ? ", resultNullable: true" : "");
         return op.Streams
             ? $"global::Levee.OperationDescriptor.CreateSubscription<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, {flags})"
             : $"global::Levee.OperationDescriptor.Create<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, "
@@ -470,6 +472,12 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Report("an operation is sealed, so no subclass carries more than its contract. Fix: declare it a public sealed record");
             return null;
         }
+        if (type.AllInterfaces.Count(i => Known.Is(i, "IOperation", 1) || Known.Is(i, "ISubscription", 1)) > 1)
+        {
+            Report("it declares more than one contract, so a caller sending it as one reads the result of another. Fix: implement exactly one "
+                + "IOperation<TResult> or ISubscription<TItem>; what else it answers is an operation of its own");
+            return null;
+        }
         if (compilation is not null && Untyped(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "") is { } untyped)
         {
             Report($"its input's {untyped} is untyped, so its schema, redaction and the strict wire can't see what it holds. Fix: give it a type of its own");
@@ -540,6 +548,10 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if ((effects & ~1) != 0 && idempotency == 0)
         {
             context?.ReportDiagnostic(Diagnostic.Create(Descriptors.WriteIdempotency, location, name, EffectsText(effects)));
+        }
+        if (type.AllInterfaces.Any(i => Known.Is(i, "IVersionedOperation", 0)) && (effects & 2) == 0)
+        {
+            context?.ReportDiagnostic(Diagnostic.Create(Descriptors.VersionedWrites, location, name));
         }
         var scoped = type.AllInterfaces.Any(i => Known.Is(i, "IScopedOperation", 0));
         var scopes = (scoped ? 1 : 0) + (platform ? 1 : 0) + (callerScoped ? 1 : 0) + (unscoped ? 1 : 0);
@@ -678,8 +690,13 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// a choice of them. Whatever else C# can say about a type (a constructor, an initializer, a base, a JSON attribute) is
     /// outside it, so there's nothing for the schema and the wire to disagree about.
     /// </summary>
-    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
+    // stored: judged for a job to keep, where a record a Contracts project's operations carry is that project's (LEVEE104
+    // judged it there), not this one's to own. own: the assembly whose records are the contract's own; this compilation's, unless
+    // another's walk is being retraced.
+    internal static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation,
+        bool stored = false, IAssemblySymbol? own = null)
     {
+        var mine = own ?? compilation.Assembly;
         var here = path.Length == 0 ? type.ToDisplayString() : path;
         if (!seen.Add(type))
         {
@@ -687,7 +704,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (type is IArrayTypeSymbol array)
         {
-            return array.Rank == 1 ? Shapeless(array.ElementType, seen, path, input, compilation) : (here, $"is a many-dimensional array. Fix: an array of arrays");
+            return array.Rank == 1 ? Shapeless(array.ElementType, seen, path, input, compilation, stored, own) : (here, $"is a many-dimensional array. Fix: an array of arrays");
         }
         if (type is not INamedTypeSymbol named)
         {
@@ -695,7 +712,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (named.OriginalDefinition.SpecialType == SpecialType.System_Nullable_T)
         {
-            return Shapeless(named.TypeArguments[0], seen, path, input, compilation);
+            return Shapeless(named.TypeArguments[0], seen, path, input, compilation, stored, own);
         }
         var name = MetadataName(named);
         if (named.TypeKind == TypeKind.Enum || ContractLanguage.Scalars.Contains(name)
@@ -710,7 +727,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (here, $"is a dictionary keyed by {key.ToDisplayString()}. Fix: key it by a string, number, Guid, date or enum");
             }
-            return named.TypeArguments.Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null);
+            return named.TypeArguments.Select(t => Shapeless(t, seen, path, input, compilation, stored, own)).FirstOrDefault(p => p is not null);
         }
         // A value object: one scalar, written by its own converter, on its type.
         var declared = named.GetAttributes().FirstOrDefault(a => a.AttributeClass?.ToDisplayString() == "Levee.ValueObjectAttribute");
@@ -732,7 +749,14 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"is {named.ToDisplayString()}, which isn't in the contract language. {Language}");
         }
-        if (!SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly))
+        if (stored && !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, mine) && Roles.Of(named.ContainingAssembly) == Role.Contracts)
+        {
+            return Judged(named.ContainingAssembly, compilation).Contains(named)
+                ? null
+                : (here, $"is {named.ContainingAssembly.Name}'s, and no operation there carries it, so LEVEE104 never judged it. Fix: declare what a job keeps "
+                    + "as a plain positional record beside the process (record X(A a, B b)), or keep a contract's own record that an operation carries");
+        }
+        if (!SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, mine))
         {
             return (here, $"is {named.ContainingAssembly.Name}'s, not this contract's own. Fix: declare the contract's own record beside the operation (mapping in the handler), or carry the value as a value object or an enum");
         }
@@ -750,7 +774,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (here, $"isn't a choice of shapes the wire reads: an abstract record with no members and no base, each subtype deriving from it and named by a discriminator. {Language}");
             }
-            return subtypes.Select(d => (ITypeSymbol)d.ConstructorArguments[0].Value!).Select(t => Shapeless(t, seen, path, input, compilation)).FirstOrDefault(p => p is not null);
+            return subtypes.Select(d => (ITypeSymbol)d.ConstructorArguments[0].Value!).Select(t => Shapeless(t, seen, path, input, compilation, stored, own)).FirstOrDefault(p => p is not null);
         }
         if (named.BaseType is { SpecialType: not SpecialType.System_Object } baseType
             && !(baseType.IsAbstract && baseType.GetAttributes().Any(a => JsonAttribute(a, "JsonDerivedTypeAttribute") && SymbolEqualityComparer.Default.Equals(a.ConstructorArguments.FirstOrDefault().Value as ITypeSymbol, named))))
@@ -768,7 +792,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
             {
                 return (at, $"carries [{onMember.AttributeClass!.Name.Replace("Attribute", "")}], which changes how the wire reads it apart from what its schema says. {Language}");
             }
-            if (Shapeless(member.Type, seen, at, input, compilation) is { } found)
+            if (Shapeless(member.Type, seen, at, input, compilation, stored, own) is { } found)
             {
                 return found;
             }
@@ -1054,6 +1078,24 @@ public sealed class OperationGenerator : IIncrementalGenerator
         type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsGenericType || type.DeclaredAccessibility == Accessibility.Private
             ? []
             : type.AllInterfaces.Where(i => Known.Is(i, "IProcess", 1)).Select(i => (type, i.TypeArguments[0]));
+
+    /// <summary>
+    /// What LEVEE104 judged as a Contracts project built: every type its walk of that project's operations reached, the
+    /// walk itself retraced, so another project may take exactly those as judged and nothing the walk didn't reach.
+    /// </summary>
+    private static HashSet<ITypeSymbol> Judged(IAssemblySymbol contracts, Compilation compilation)
+    {
+        var judged = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        foreach (var operation in AllTypes(contracts.GlobalNamespace).Where(t => t.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == Known.OperationAttribute)))
+        {
+            Shapeless(operation, judged, "", input: true, compilation, own: contracts);
+            foreach (var contract in operation.AllInterfaces.Where(i => Known.Is(i, "IOperation", 1) || Known.Is(i, "ISubscription", 1)))
+            {
+                Shapeless(contract.TypeArguments[0], judged, "", input: false, compilation, own: contracts);
+            }
+        }
+        return judged;
+    }
 
     internal static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)
     {

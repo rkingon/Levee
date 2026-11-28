@@ -31,7 +31,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
     public override ImmutableArray<DiagnosticDescriptor> SupportedDiagnostics =>
         ImmutableArray.Create(Descriptors.WallClock, Descriptors.Transaction, Descriptors.ScopeSetting, Descriptors.ServiceLocation, Descriptors.SideConnection, Descriptors.HandlerClock, Descriptors.HelperClock,
             Descriptors.SeparateContextReach, Descriptors.ByName, Descriptors.Reflected, Descriptors.SignalByHand, Descriptors.ProcessSends, Descriptors.PrincipalMade, Descriptors.PrincipalHeld,
-            Descriptors.OwnerRun, Descriptors.CatalogByHand);
+            Descriptors.OwnerRun, Descriptors.CatalogByHand, Descriptors.StoredShape);
 
     public override void Initialize(AnalysisContext context)
     {
@@ -160,10 +160,11 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit
-    /// by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own concatenation),
-    /// it would move the operation into another tenant's rows, or forge its record. Reading them is fine. A setting's bare
-    /// name is judged where it's used: by the SQL it's passed with.
+    /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit or
+    /// an idempotency key by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own
+    /// concatenation), it would move the operation into another tenant's rows, or forge its record. Reading them is fine, and so
+    /// is text that names them without being SQL (a message). A setting's bare name is judged where it's used: by the SQL it's
+    /// passed with.
     /// </summary>
     private static void OnScopeSetting(OperationAnalysisContext context)
     {
@@ -185,7 +186,8 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var flat = Flat(text);
         var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
             || flat.Contains("levee." + Hole);
-        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write") || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
+        var refused = (names && Sets(text)) || CallsLevee(text)
+            || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
             || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
         {
@@ -250,6 +252,24 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var clean = SqlComment.Replace(text, " ");
         return Flat(clean).Contains("set_config") || SettingStatement.IsMatch(clean.Replace("\"", "").Replace("'", ""));
     }
+
+    /// <summary>
+    /// A statement that calls one of the functions the runtime role writes the audit or a key through, however its name is
+    /// put together: what can do harm is the call, since the role holds no privilege on the tables themselves. SQL is text
+    /// that begins as a statement does (a query, a CTE, a DO block), wherever it's written (a helper's, a constant); a
+    /// message that names one, as a call or not, doesn't begin that way.
+    /// </summary>
+    private static bool CallsLevee(string text)
+    {
+        var clean = SqlComment.Replace(text, " ");
+        return Statement.IsMatch(clean)
+            && LeveeCall.IsMatch(new string(clean.ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or '|' or '+')).ToArray()));
+    }
+
+    private static readonly Regex LeveeCall = new(@"levee_(?:audit_write|idempotency_[a-z_]+)\(", RegexOptions.CultureInvariant);
+
+    // How a statement that calls a function begins: a query, a CTE, or a DO block (whose body PERFORMs it).
+    private static readonly Regex Statement = new(@"^\s*(?:(?:select|with)\b|do\s*[$'])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // pg_settings is the view set_config writes through.
     private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -543,13 +563,34 @@ public sealed class CodeRules : DiagnosticAnalyzer
         context.ReportDiagnostic(Diagnostic.Create(Descriptors.ByName, named.GetLocation(), $"{named} is named outside an attribute, to read [Operation] by reflection"));
     }
 
-    /// <summary>A process holding the Dispatcher: whatever it sends steps out of its starter's identity and scope.</summary>
+    /// <summary>What's wrong with a type a job keeps, as LEVEE104 judges an operation's: outside the contract language, it's read back as something else.</summary>
+    private static string? Stored(ITypeSymbol type, Compilation compilation) =>
+        OperationGenerator.Shapeless(type, new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default), "", input: true, compilation, stored: true) is { } shapeless
+            ? $"its {shapeless.Path} {shapeless.Problem}"
+            : null;
+
+    /// <summary>
+    /// A process holding the Dispatcher: whatever it sends steps out of its starter's identity and scope. And its input, which
+    /// its job keeps and reads back on every run, in the contract language.
+    /// </summary>
     private static void OnProcess(SymbolAnalysisContext context)
     {
         var type = (INamedTypeSymbol)context.Symbol;
-        if (!type.AllInterfaces.Any(i => Known.Is(i, "IProcess", 1)))
+        var processes = type.AllInterfaces.Where(i => Known.Is(i, "IProcess", 1)).ToList();
+        if (processes.Count == 0)
         {
             return;
+        }
+        // Every input it's registered for. A generic base's input is judged where it's closed, by each process that names it.
+        if (type.Locations.FirstOrDefault() is { IsInSource: true } at)
+        {
+            foreach (var input in processes.Select(p => p.TypeArguments[0]).Where(i => i is not ITypeParameterSymbol))
+            {
+                if (Stored(input, context.Compilation) is { } problem)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, at, $"{type.Name}'s input {input.Name}", problem));
+                }
+            }
         }
         var held = type.InstanceConstructors.SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))
             .Concat(type.GetMembers().OfType<IFieldSymbol>().Where(f => !f.IsImplicitlyDeclared).Select(f => ((ISymbol)f, f.Type)))
@@ -677,6 +718,12 @@ public sealed class CodeRules : DiagnosticAnalyzer
     private static void OnInvocation(OperationAnalysisContext context, Role role)
     {
         var invocation = (IInvocationOperation)context.Operation;
+        // A step's result, which its job keeps and reads back on every later run.
+        if (invocation.TargetMethod is { Name: "StepAsync", TypeArguments.Length: 1 } stepping && stepping.ContainingType.ToDisplayString() == "Levee.ProcessContext"
+            && Stored(stepping.TypeArguments[0], context.Compilation) is { } step)
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, invocation.Syntax.GetLocation(), $"The step's result {stepping.TypeArguments[0].Name}", step));
+        }
         if (ReflectionMembers.Contains(invocation.TargetMethod.Name) && OnReflected(context, role, invocation.TargetMethod.Name, Reflected(invocation)))
         {
             return;

@@ -3,6 +3,7 @@
     <ProjectReference Include="../../src/Levee/Levee.csproj" />
     <ProjectReference Include="../../src/Levee.AspNetCore/Levee.AspNetCore.csproj" />
     <ProjectReference Include="../../src/Levee.Mcp/Levee.Mcp.csproj" />
+    <ProjectReference Include="../../src/Levee.Client/Levee.Client.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.AspNetCore.TestHost" />
   </ItemGroup>

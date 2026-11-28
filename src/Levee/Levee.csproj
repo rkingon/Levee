@@ -10,6 +10,8 @@
     <InternalsVisibleTo Include="Levee.AspNetCore" />
     <InternalsVisibleTo Include="Levee.Oxbow" />
     <InternalsVisibleTo Include="Levee.Mcp" />
+    <!-- The client reads a failure back into the Error the server answered, Internal and its trace included. -->
+    <InternalsVisibleTo Include="Levee.Client" />
     <!-- The unit of work is Levee's to implement, not an app's: Postgres's, and the tests' fake. -->
     <InternalsVisibleTo Include="Levee.EntityFrameworkCore" />
     <InternalsVisibleTo Include="Levee.Tests" />

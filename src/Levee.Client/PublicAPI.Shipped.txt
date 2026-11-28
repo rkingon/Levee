@@ -1,0 +1,22 @@
+#nullable enable
+Levee.Client.LeveeClient
+Levee.Client.LeveeClient.LeveeClient(System.Net.Http.HttpClient! http, Levee.OperationCatalog! catalog, Levee.Client.LeveeClientOptions? options = null) -> void
+Levee.Client.LeveeClient.SendAsync<TResult>(Levee.IOperation<TResult>! operation, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
+Levee.Client.LeveeClient.SubscribeAsync<TItem>(Levee.ISubscription<TItem>! subscription, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<Levee.Client.LeveeSubscription<TItem>!>>!
+Levee.Client.LeveeClientOptions
+Levee.Client.LeveeClientOptions.IdempotencyKeys.get -> bool
+Levee.Client.LeveeClientOptions.IdempotencyKeys.set -> void
+Levee.Client.LeveeClientOptions.LeveeClientOptions() -> void
+Levee.Client.LeveeClientOptions.Prefix.get -> string!
+Levee.Client.LeveeClientOptions.Prefix.set -> void
+Levee.Client.LeveeClientOptions.Retries.get -> int
+Levee.Client.LeveeClientOptions.Retries.set -> void
+Levee.Client.LeveeClientOptions.RetryDelay.get -> System.TimeSpan
+Levee.Client.LeveeClientOptions.RetryDelay.set -> void
+Levee.Client.LeveeClientOptions.RetryWindow.get -> System.TimeSpan
+Levee.Client.LeveeClientOptions.RetryWindow.set -> void
+Levee.Client.LeveeClientServiceCollectionExtensions
+Levee.Client.LeveeSubscription<TItem>
+Levee.Client.LeveeSubscription<TItem>.DisposeAsync() -> System.Threading.Tasks.ValueTask
+Levee.Client.LeveeSubscription<TItem>.GetAsyncEnumerator(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerator<TItem>!
+static Levee.Client.LeveeClientServiceCollectionExtensions.AddLeveeClient(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Levee.OperationCatalog! catalog, System.Action<System.Net.Http.HttpClient!>! configure, System.Action<Levee.Client.LeveeClientOptions!>? options = null) -> Microsoft.Extensions.DependencyInjection.IHttpClientBuilder!

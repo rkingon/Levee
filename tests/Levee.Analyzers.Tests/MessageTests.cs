@@ -12,7 +12,7 @@ public sealed class MessageTests
         .Select(f => f.GetValue(null)).OfType<DiagnosticDescriptor>()];
 
     // Whose fix depends on what was found, supplied at the call site.
-    private static readonly string[] FixFromCallSite = ["LEVEE008", "LEVEE011", "LEVEE104", "LEVEE108"];
+    private static readonly string[] FixFromCallSite = ["LEVEE008", "LEVEE011", "LEVEE104", "LEVEE108", "LEVEE115"];
 
     public static TheoryData<string> Ids() => [.. Rules.Select(r => r.Id).Distinct()];
 
@@ -29,6 +29,14 @@ public sealed class MessageTests
             Assert.EndsWith($"(dotnet levee explain {id})", message, StringComparison.Ordinal);
             Assert.True(FixFromCallSite.Contains(id) || message.Contains("Fix: ", StringComparison.Ordinal), message);
         }
+    }
+
+    [Fact]
+    public void Every_rule_is_one_LEVEE006_holds_the_build_configuration_to()
+    {
+        var held = (string[])typeof(OperationGenerator).Assembly.GetType("Levee.Analyzers.Descriptors")!.GetField("Ids")!.GetValue(null)!;
+
+        Assert.Equal(Rules.Select(r => r.Id).Distinct().Order(StringComparer.Ordinal), held.Order(StringComparer.Ordinal));
     }
 
     [Fact]

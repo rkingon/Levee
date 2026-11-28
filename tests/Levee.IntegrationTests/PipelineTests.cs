@@ -48,6 +48,19 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_note_is_held_to_its_text_however_its_text_is_set()
+    {
+        using var host = Build(bannedWords: "list");
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, ada) = NewTenant();
+        var note = (await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), acme, "fine"), ada, Ct)).Value;
+
+        var edited = await dispatcher.SendAsync(new EditNote(note.Id, acme, "spam", note.Version), ada, Ct);
+
+        Assert.Equal("note.banned", edited.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_signal_reaches_its_scopes_subscriptions_when_its_operation_commits_and_never_when_it_rolls_back()
     {
         using var host = Build();
@@ -708,7 +721,7 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
 
         var raw = await Assert.ThrowsAsync<InvalidOperationException>(() => db.Database.ExecuteSqlRawAsync("delete from notes", Ct));
         // Two rows: EF wraps them in a transaction of its own, which isn't an operation's.
-        db.Set<Note>().AddRange(Note.Create(Guid.CreateVersion7(now), tenant, "one", now), Note.Create(Guid.CreateVersion7(now), tenant, "two", now));
+        db.Set<Note>().AddRange(Note.Create(Guid.CreateVersion7(now), tenant, Sample.Domain.NoteText.From("one").Value, now), Note.Create(Guid.CreateVersion7(now), tenant, Sample.Domain.NoteText.From("two").Value, now));
         var saved = await Assert.ThrowsAnyAsync<Exception>(() => db.SaveChangesAsync(Ct));
         db.ChangeTracker.Clear();
 
@@ -736,6 +749,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
+        // Oxbow's tables are in the fixture's database: without it, the isolation check rightly finds them unprotected.
+        builder.Services.AddLeveeOxbow();
         builder.Services.AddSingleton<IAccessPolicy, TenantAccess>();
         using var host = builder.Build();
         var (tenant, ada) = NewTenant();
@@ -1308,14 +1323,14 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddLeveePostgres<PlansDb>();
         builder.Services.AddLeveeOxbow();
         using var host = builder.Build();
-        async Task<Error?> Refused(Func<PlansDb, Task> work)
+        async Task<Error?> Refused(Func<PlansDb, IFlush, Task> work)
         {
             await using var scope = host.Services.CreateAsyncScope();
             var factory = scope.ServiceProvider.GetRequiredService<IUnitOfWorkFactory>();
             await using var unit = await factory.BeginAsync(new WorkScope("acme", ReadOnly: false), Ct);
             try
             {
-                await work(scope.ServiceProvider.GetRequiredService<PlansDb>());
+                await work(scope.ServiceProvider.GetRequiredService<PlansDb>(), scope.ServiceProvider.GetRequiredService<IFlush>());
                 return null;
             }
             catch (Exception e)
@@ -1325,13 +1340,13 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         }
 
         // A scope's write to a shared row: row-level security hides it from the update, so no row changes.
-        var stale = await Refused(async db =>
+        var stale = await Refused(async (db, flush) =>
         {
             db.Update(new Ledger(Guid.Parse("00000000-0000-0000-0000-000000000001"), "mine"));
-            await db.SaveChangesAsync(Ct);
+            await flush.FlushAsync(Ct);
         });
-        var value = await Refused(db => db.Database.ExecuteSqlRawAsync("select 'not-a-uuid'::uuid", Ct));
-        var bug = await Refused(db => db.Database.ExecuteSqlRawAsync("select 1/0", Ct));
+        var value = await Refused((db, _) => db.Database.ExecuteSqlRawAsync("select 'not-a-uuid'::uuid", Ct));
+        var bug = await Refused((db, _) => db.Database.ExecuteSqlRawAsync("select 1/0", Ct));
 
         Assert.Equal(LeveeErrors.Stale, stale?.Code);
         Assert.Equal(LeveeErrors.InvalidValue, value?.Code);

@@ -2,7 +2,7 @@ using Levee;
 
 namespace Sample.Contracts;
 
-public sealed record NoteView(Guid Id, string Text, DateTimeOffset CreatedAt);
+public sealed record NoteView(Guid Id, string Text, DateTimeOffset CreatedAt, uint Version);
 
 /// <summary>The caller picks the id, so a repeat (a retried request, a job run twice) conflicts instead of writing a second note.</summary>
 [Operation("notes.create", "member", Summary = "Writes a note.", Effects = Effects.Write, Idempotency = Idempotency.Conflicts,
@@ -22,4 +22,14 @@ public sealed record ListNotes(string Tenant) : IOperation<IReadOnlyList<NoteVie
 public sealed record CreateNoteLater(string Tenant, string Text) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
+}
+
+/// <summary>Held to the version its caller saw: an edit made on a note someone else has changed since is refused, not lost.</summary>
+[Operation("notes.edit", "member", Summary = "Rewrites a note.", Effects = Effects.Write, Idempotency = Idempotency.Idempotent,
+    Errors = ["note.empty", "note.banned", "note.missing"])]
+public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
 }

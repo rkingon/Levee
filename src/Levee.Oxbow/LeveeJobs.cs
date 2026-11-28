@@ -109,7 +109,14 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         {
             throw new InvalidOperationException($"{context.Descriptor.Name} declares only reads, and starting a process is an effect.");
         }
-        var secret = LeveeJson.FindSecretIn(input, typeof(TInput), LeveeJson.Options);
+        // Stored and read back on every run: held to the contract language, as a step's result is, so what's read is what was stored.
+        if (OperationCatalog.Unreadable(typeof(TInput)) is { } unreadable)
+        {
+            throw new InvalidOperationException($"{typeof(TInput).Name} can't start a process: it isn't one the job can store and read back: {unreadable}");
+        }
+        // Taken once, written and read back: what's judged for secrets is what's stored, a sequence read once included.
+        var stored = JsonSerializer.SerializeToElement(input, LeveeJson.Options);
+        var secret = LeveeJson.FindSecretIn(stored.Deserialize<TInput>(LeveeJson.Options)!, typeof(TInput), LeveeJson.Options);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(
@@ -126,7 +133,6 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         var scope = context.Scope.Key;
         var unscoped = context.Scope.Unscoped;
         var name = ProcessInputs.NameOf(typeof(TInput));
-        var stored = JsonSerializer.SerializeToElement(input, LeveeJson.Options);
         var insert = new InsertOptions
         {
             ScheduledAt = options?.RunAt,
@@ -134,7 +140,8 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             MaxAttempts = options?.MaxAttempts,
             Unique = options is { Unique: true } ? new UniqueOptions { ByArgs = true, ByState = LiveStates } : null,
         };
-        var result = secret is null
+        // Sealed whenever jobs seal: its steps' results are sealed with its input, and any step may answer a secret.
+        var result = secret is null && !jobs.SealSecrets
             ? await client.InsertAsync(new ProcessJob(name, stored, subject, system, scope, unscoped), insert, ct)
             : await client.InsertAsync(new SealedProcessJob(name, stored, subject, system, scope, unscoped), insert, ct);
         return new Enqueued(result.Job.Id, result.UniqueSkippedAsDuplicate);
@@ -161,8 +168,15 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
             throw new InvalidOperationException(
                 $"{descriptor.Name} can't run as a job: jobs run at least once, and it declares that repeating it isn't safe (Idempotency.None).");
         }
+        // Taken once, as a typed send's input is: what's judged, authorized and stored is the same input.
+        var snapshot = ContractWire.Snapshot(descriptor, operation);
+        if (!snapshot.IsSuccess)
+        {
+            return snapshot.Error;
+        }
+        var (input, read) = snapshot.Value;
         // By its type and by what its members actually are: an implementation behind an interface may carry the mark.
-        var secret = LeveeJson.FindSecretIn(operation, descriptor.InputType, LeveeJson.Options);
+        var secret = LeveeJson.FindSecretIn(read, descriptor.InputType, LeveeJson.Options);
         if (secret is not null && !jobs.SealSecrets)
         {
             throw new InvalidOperationException(
@@ -170,7 +184,7 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
                 + "or seal them: AddLeveeJobs(sealSecrets: true) with Oxbow's AddArgsEncryption.");
         }
         // The scope it's authorized in is the one stored: the caller's credentials read once, not again after.
-        var authorized = await dispatcher.AuthorizeScopeAsync(operation, caller, ct);
+        var authorized = await dispatcher.AuthorizeScopeAsync(read, caller, ct);
         if (!authorized.IsSuccess)
         {
             return authorized.Error;
@@ -185,7 +199,6 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         // A caller-scoped job runs where its caller could: the scope its credentials carried at enqueue.
         var scope = descriptor.CallerScoped ? authorized.Value.Key
             : caller is IScopedPrincipal scoped && !string.IsNullOrWhiteSpace(scoped.ScopeKey) ? scoped.ScopeKey : null;
-        var input = JsonSerializer.SerializeToElement(operation, operation.GetType(), LeveeJson.Options);
         var insert = new InsertOptions
         {
             ScheduledAt = options?.RunAt,
@@ -227,7 +240,7 @@ internal sealed class ProcessJobWorker(IServiceScopeFactory scopes, Dispatcher d
 {
     public Task WorkAsync(Job<ProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Args.Unscoped, job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, new Attempt(job.StepAsync, job.LockAttemptAsync, Sealed: false), cancellationToken);
 }
 
 internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
@@ -235,8 +248,14 @@ internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispat
 {
     public Task WorkAsync(Job<SealedProcessJob> job, CancellationToken cancellationToken) =>
         Run.ProcessAsync(scopes, dispatcher, principals, levee, inputs, job.Args.Process, job.Args.Input, job.Args.Subject, job.Args.System, job.Args.Scope,
-            job.Args.Unscoped, job.Attempt, cancellationToken);
+            job.Args.Unscoped, job.Attempt, new Attempt(job.StepAsync, job.LockAttemptAsync, Sealed: true), cancellationToken);
 }
+
+/// <summary>A process's job attempt: its steps, recorded by Oxbow, and the lock that holds a write to it.</summary>
+internal sealed record Attempt(
+    Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>> Step,
+    Func<System.Data.Common.DbTransaction, CancellationToken, Task> Lock,
+    bool Sealed);
 
 /// <summary>
 /// The inputs of every registered process, by the name a job stores: a stored name resolves to one of these or to nothing,
@@ -264,7 +283,8 @@ internal sealed class ProcessInputs(IServiceCollection services)
 internal static class Run
 {
     public static async Task ProcessAsync(IServiceScopeFactory scopes, Dispatcher dispatcher, IEnumerable<IJobPrincipals> principals, LeveeOptions levee,
-        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, bool unscoped, int attempt, CancellationToken ct)
+        ProcessInputs inputs, string process, JsonElement input, string subject, bool system, string? scope, bool unscoped, int attempt, Attempt current,
+        CancellationToken ct)
     {
         var type = inputs.Find(process) ?? throw new JobCancelException($"No process takes {process}: renamed or removed since it was started.");
         var job = new JobPrincipal(subject, system, scope);
@@ -281,7 +301,23 @@ internal static class Run
         {
             Dispatcher.Confine(principal, new WorkScope(scope, ReadOnly: false) { Unscoped = unscoped });
         }
-        var context = new ProcessContext(principal, scope, attempt, (operation, token) => dispatcher.SendAsStepAsync(operation, principal, token));
+        // Each write the run sends, through its context or a helper it hands the principal to, is held to this attempt, so a run
+        // the rescuer has since taken over can't commit one.
+        async Task Lock(IServiceProvider services, CancellationToken token)
+        {
+            var (_, transaction) = services.GetRequiredService<IAmbientTransaction>().Current
+                ?? throw new InvalidOperationException("A process's write has no transaction to hold to its attempt.");
+            try
+            {
+                await current.Lock(transaction, token);
+            }
+            catch (JobAttemptSupersededException superseded)
+            {
+                throw new AttemptSuperseded(superseded);
+            }
+        }
+        Dispatcher.HoldToAttempt(principal, Lock);
+        var context = new ProcessContext(principal, scope, attempt, dispatcher, current.Step, current.Sealed);
         var value = input.Deserialize(type, LeveeJson.Options)
             ?? throw new JobCancelException($"{type.Name}'s stored input is empty.");
         await using var services = scopes.CreateAsyncScope();
@@ -292,6 +328,11 @@ internal static class Run
         catch (ProcessSnoozed snoozed)
         {
             throw new JobSnoozeException(snoozed.Delay);
+        }
+        catch (AttemptSuperseded superseded)
+        {
+            // Oxbow's own, so it ignores this attempt from here: its rescuer's run is the process now.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(superseded.InnerException!);
         }
     }
 

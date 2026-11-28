@@ -9,8 +9,9 @@ public abstract class OperationDescriptor
 {
     private protected OperationDescriptor(string name, string summary, string access, Effects effects, Idempotency idempotency,
         bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, Type inputType, Type resultType,
-        bool callerScoped = false, bool unscoped = false)
+        bool callerScoped = false, bool unscoped = false, bool resultNullable = false)
     {
+        ResultNullable = resultNullable || Nullable.GetUnderlyingType(resultType) is not null;
         CallerScoped = callerScoped;
         Unscoped = unscoped;
         Errors = errors;
@@ -62,6 +63,9 @@ public abstract class OperationDescriptor
     public Type InputType { get; }
     public Type ResultType { get; }
 
+    /// <summary>Whether its result (a subscription's item) may be null, as its contract declares it: a type alone loses that for a reference.</summary>
+    public bool ResultNullable { get; }
+
     /// <summary>Runs in a read-only transaction: a write fails at the database.</summary>
     public bool ReadOnly => (Effects & ~Effects.Read) == Effects.None;
 
@@ -69,16 +73,16 @@ public abstract class OperationDescriptor
 
     public static OperationDescriptor Create<TOperation, TResult>(string name, string summary, string access, Effects effects,
         Idempotency idempotency, bool platform, bool @internal = false, IReadOnlyList<Attribute>? metadata = null, IReadOnlyList<string>? errors = null,
-        bool callerScoped = false, bool unscoped = false)
+        bool callerScoped = false, bool unscoped = false, bool resultNullable = false)
         where TOperation : class, IOperation<TResult> =>
         new OperationDescriptor<TOperation, TResult>(name, summary, access, effects, idempotency, platform, @internal, metadata ?? [], errors ?? [], callerScoped,
-            unscoped);
+            unscoped, resultNullable);
 
     /// <summary>A subscription's descriptor. Its result type is the type of each item.</summary>
     public static OperationDescriptor CreateSubscription<TSubscription, TItem>(string name, string summary, string access, bool platform,
-        bool @internal = false, IReadOnlyList<Attribute>? metadata = null, bool callerScoped = false, bool unscoped = false)
+        bool @internal = false, IReadOnlyList<Attribute>? metadata = null, bool callerScoped = false, bool unscoped = false, bool resultNullable = false)
         where TSubscription : class, ISubscription<TItem> =>
-        new SubscriptionDescriptor<TSubscription, TItem>(name, summary, access, platform, @internal, metadata ?? [], callerScoped, unscoped);
+        new SubscriptionDescriptor<TSubscription, TItem>(name, summary, access, platform, @internal, metadata ?? [], callerScoped, unscoped, resultNullable);
 
     internal virtual Task<Result<object?>> InvokeAsync(IServiceProvider services, IOperation operation, OperationContext context,
         CancellationToken ct) =>
@@ -93,9 +97,9 @@ internal sealed class SubscriptionDescriptor<TSubscription, TItem> : OperationDe
     where TSubscription : class, ISubscription<TItem>
 {
     public SubscriptionDescriptor(string name, string summary, string access, bool platform, bool @internal, IReadOnlyList<Attribute> metadata,
-        bool callerScoped, bool unscoped)
+        bool callerScoped, bool unscoped, bool resultNullable)
         : base(name, summary, access, Effects.Read, Idempotency.Safe, platform, @internal, metadata, [], typeof(TSubscription), typeof(TItem), callerScoped,
-            unscoped) =>
+            unscoped, resultNullable) =>
         Streams = true;
 
     internal override async IAsyncEnumerable<object?> SubscribeAsync(IServiceProvider services, IOperation operation, SubscriptionContext context,
@@ -110,9 +114,9 @@ internal sealed class SubscriptionDescriptor<TSubscription, TItem> : OperationDe
 }
 
 internal sealed class OperationDescriptor<TOperation, TResult>(string name, string summary, string access, Effects effects, Idempotency idempotency,
-    bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, bool callerScoped, bool unscoped)
+    bool platform, bool @internal, IReadOnlyList<Attribute> metadata, IReadOnlyList<string> errors, bool callerScoped, bool unscoped, bool resultNullable)
     : OperationDescriptor(name, summary, access, effects, idempotency, platform, @internal, metadata, errors, typeof(TOperation), typeof(TResult), callerScoped,
-        unscoped)
+        unscoped, resultNullable)
     where TOperation : class, IOperation<TResult>
 {
     internal override async Task<Result<object?>> InvokeAsync(IServiceProvider services, IOperation operation, OperationContext context,
@@ -172,7 +176,15 @@ public sealed class OperationCatalog
         }
     }
 
-    private static string? Unwired(Type type, bool input, System.Reflection.Assembly owner)
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, string?> Readable = new();
+
+    /// <summary>
+    /// Why <paramref name="type"/> isn't one the contract wire reads back as it wrote it, or null: the contract language, its
+    /// records from any assembly. What a value kept to be read again later (a process step's result) is held to.
+    /// </summary>
+    internal static string? Unreadable(Type type) => Readable.GetOrAdd(type, t => Unwired(t, input: true, owner: null));
+
+    private static string? Unwired(Type type, bool input, System.Reflection.Assembly? owner)
     {
         try
         {
@@ -192,7 +204,7 @@ public sealed class OperationCatalog
     /// own metadata, for whatever the build didn't see. Values, lists and dictionaries of them, plain positional records (every
     /// member a parameter, no other constructor, no JSON attribute, no base but the choice naming them), and a choice of them.
     /// </summary>
-    private static string? Outside(Type root, bool input, System.Reflection.Assembly owner)
+    private static string? Outside(Type root, bool input, System.Reflection.Assembly? owner)
     {
         const string Language = " Fix: values, lists and dictionaries of them, plain positional records whose members are their parameters, and an "
             + "abstract record with no members whose [JsonDerivedType] subtypes are such records (LEVEE104).";
@@ -237,7 +249,7 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} isn't in the contract language." + Language;
             }
-            if (type.Assembly != owner)
+            if (owner is not null && type.Assembly != owner)
             {
                 return $"{type.Name} is {type.Assembly.GetName().Name}'s, not the contract's own." + Language;
             }
@@ -264,9 +276,13 @@ public sealed class OperationCatalog
             {
                 return $"{type.Name} derives from {type.BaseType!.Name}: a record's only base is the choice of shapes that names it." + Language;
             }
-            // Every member is a parameter of its one constructor (the compiler's copy constructor aside), and nothing else.
+            // Every member is a parameter of its one constructor (the compiler's copy constructor aside), a public one the wire
+            // can call, and nothing else.
             var constructors = type.GetConstructors(Instance).Where(c => !(c.GetParameters() is [var only] && only.ParameterType == type)).ToList();
-            if (constructors.Count != 1 || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider)))
+            // A public field the serializer doesn't write is a value the wire loses; a parameter no member writes, one it can't read back.
+            if (constructors is not [{ IsPublic: true } constructor] || constructor.GetParameters().Length != info.Properties.Count
+                || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider))
+                || type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public).Length > 0)
             {
                 return $"{type.Name} has a member or constructor besides its parameters, or a JSON attribute on one." + Language;
             }
@@ -289,34 +305,4 @@ public sealed class OperationCatalog
     public OperationDescriptor? Find(string name) => _byName.GetValueOrDefault(name);
 
     public OperationDescriptor? Find(Type inputType) => _byType.GetValueOrDefault(inputType);
-
-    // refused: told of an exception the input's own type threw that isn't a validation's, so its message stays in the log.
-    internal static Result<IOperation> Deserialize(OperationDescriptor descriptor, JsonElement input, JsonSerializerOptions json, Action<Exception>? refused = null)
-    {
-        try
-        {
-            var operation = input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null
-                ? JsonSerializer.Deserialize("{}", descriptor.InputType, json)
-                : input.Deserialize(descriptor.InputType, json);
-            return operation is IOperation op
-                ? Result<IOperation>.Success(op)
-                : Error.Validation(LeveeErrors.InvalidInput, $"{descriptor.Name}: no input.");
-        }
-        catch (JsonException e)
-        {
-            return Error.InvalidInput(e, descriptor.Name);
-        }
-        // A record that validates in its constructor, or an app's converter (a typed id), refusing the client's value.
-        catch (Exception e) when (e is ArgumentException or FormatException or OverflowException)
-        {
-            return Error.InvalidInput(new JsonException(e.Message, "$", null, null, e), descriptor.Name);
-        }
-        // Anything else it throws (a value object's own exception, a bug) still refuses the input, but its message may hold
-        // anything, so the client hears only that, and the log the rest.
-        catch (Exception e) when (e is not OperationCanceledException)
-        {
-            refused?.Invoke(e);
-            return Error.Validation(LeveeErrors.InvalidInput, $"{descriptor.Name}: its input was refused.");
-        }
-    }
 }

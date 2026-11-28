@@ -110,7 +110,9 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them, and only it calls the idempotency key functions (`levee_idempotency_*`)
+and `levee_audit_write`: SQL that does (text that begins as a statement does, `select`, `with` or a `DO` block, wherever
+it's written) is refused; a message that names one, even as a call, is fine. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
@@ -185,7 +187,8 @@ so a directory of the app's own named like a generator isn't exempt. LEVEE006 it
 
 An aggregate root guards its invariants. A public setter or a mutable collection lets anyone skip them, whether it's
 declared on the root or on a class the root derives from; a type deriving `List<T>` or implementing a writable collection
-interface is a mutable collection.
+interface is a mutable collection. So does one on a part the root hands out (a line in the list it shows, a value it
+holds): a part is a record whose members are its parameters, or a class with no public setter.
 
 ```csharp
 // Wrong
@@ -196,6 +199,7 @@ public sealed class Order : IAggregateRoot
 }
 
 // Right
+public sealed record Line(Guid Id, int Units);
 public sealed class Order : IAggregateRoot
 {
     private readonly List<Line> _lines = [];
@@ -561,8 +565,8 @@ The name is the wire contract: the route, the MCP tool, the CLI verb, the audit'
 ## LEVEE104: Operations are declared whole
 
 An operation is declared in Contracts (in Application only if it's the platform's own, `Internal = true`: a client never
-sees Application; a test may declare its own), as a public, top-level, non-generic, sealed class or record with `[Operation(name, access)]` and `IOperation<TResult>`
-(or `ISubscription<TItem>`).
+sees Application; a test may declare its own), as a public, top-level, non-generic, sealed class or record with `[Operation(name, access)]` and exactly one
+`IOperation<TResult>` (or `ISubscription<TItem>`): a second would have a caller sending it as one read the result of the other.
 
 - **Name**: lowercase snake_case segments joined by dots, area first: `notes.create`, `billing.invoice_lines.list`.
 - **Access**: the app's own vocabulary (`member`, `admin`, `platform-admin`); its `IAccessPolicy` decides it.
@@ -779,3 +783,60 @@ own code: a helper of its own that takes the scope and reads `Key` counts, one e
 `Scope.Platform` doesn't count. A policy that grants nothing (every path returns one of `Error`'s refusals, or throws)
 needn't read it. Reading it is the build's to see; comparing it rightly is the policy's, and the access
 tests'.
+
+## LEVEE114: A versioned operation writes
+
+An edit made against what its caller saw (`IVersionedOperation`) is held to the version of one aggregate: the one root
+it loads and changes. The version is compared as that root is written (Postgres's own `xmin` in the update's `where`), so
+an operation that names one has to write: a read can't be stale.
+
+```csharp
+// Wrong: a version held to nothing
+[Operation("notes.edit", "member")]
+public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation { ... }
+
+// Right: it writes, and its handler loads the root it changes, changes it through its own method, and saves
+[Operation("notes.edit", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["note.empty", "note.missing"])]
+public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+internal sealed class EditNoteHandler(INotes notes, IFlush flush) : IOperationHandler<EditNote, NoteView>
+{
+    public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
+    {
+        var text = NoteText.From(operation.Text);   // the domain's own rule for a note's text
+        if (!text.IsSuccess) return text.Error;
+        if (await notes.FindAsync(operation.Id, ct) is not { } note) return Error.NotFound("note.missing", "There's no such note.");
+        note.Edit(text.Value);
+        await flush.FlushAsync(ct);   // written now, so the view carries the version just written
+        return View(note);
+    }
+}
+```
+
+How the handler reaches the root (its repository, or a helper of Application's that holds it) is the build's to leave
+alone: it's held at run time. The one root the operation changes is held to the version (refused as 409 `store.stale`
+when it moved on); one that writes nothing is held to nothing, since it loses no one's edit. A versioned operation that
+creates a root, or changes more than one aggregate, is a bug, answered `internal`: what follows in another aggregate is
+an operation of its own, enqueued as a job.
+
+## LEVEE115: What a job keeps is in the contract language
+
+A process's input is stored with its job, and a step's result with its step; every later run (a retry, a snooze, a
+rescue) reads them back. Outside the contract language (LEVEE104's: values, lists and dictionaries of them, plain
+positional records), what's read back isn't what was stored: a property with an initializer computes again from the read
+value, a member that isn't a parameter is lost, an `object` comes back as raw JSON. A step whose result can't be read back
+would act on every run, since nothing it recorded holds.
+
+```csharp
+// Wrong: read back, Cents is multiplied again
+public sealed record Charge(int Cents) { public int Cents { get; init; } = Cents * 100; }
+
+// Right: the record is its parameters; what's computed is computed where it's used
+public sealed record Charge(int Cents);
+```
+
+The runtime holds the same where it can see it (a constructor the wire calls, no public field), before a step acts or a
+process starts.
