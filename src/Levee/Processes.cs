@@ -29,13 +29,13 @@ public sealed class ProcessContext
     // result is recorded under its name, or answers the one recorded (the job's own); sealedResults: whether what it records
     // is sealed at rest, as a sealed process's input is.
     internal ProcessContext(Principal principal, string? scope, int attempt, Dispatcher dispatcher,
-        Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>>? step = null, bool sealedResults = false)
+        Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>> step, bool sealedResults)
     {
         Principal = principal;
         Scope = scope;
         Attempt = attempt;
         _dispatcher = dispatcher;
-        _step = step ?? ((_, run, ct) => run(ct));
+        _step = step;
         _sealed = sealedResults;
     }
 

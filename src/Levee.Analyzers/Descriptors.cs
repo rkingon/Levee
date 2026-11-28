@@ -197,7 +197,7 @@ internal static class Descriptors
         "LEVEE113", "An access policy decides by scope",
         "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");
 
-    public static readonly DiagnosticDescriptor VersionedLoadsNoRoot = Rule(
+    public static readonly DiagnosticDescriptor VersionedWrites = Rule(
         "LEVEE114", "A versioned operation writes",
         "{0} is held to the version its caller saw (IVersionedOperation) but declares no write, so there's no change the version could be held to. Fix: an IVersionedOperation names the version of the one aggregate it changes: declare Effects = Effects.Write, and have its handler load the root, change it through its own method, and save");
 

@@ -86,7 +86,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             }
             if (!response.IsSuccessStatusCode)
             {
-                return await FailureAsync(response, _options.Time, ct);
+                return await FailureAsync(response, ct);
             }
             if (!Is(response, "application/json"))
             {
@@ -139,7 +139,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
                 {
                     return NotThePlatform(response);
                 }
-                return await ReadWholeAsync(response, deadline, ct) ?? await FailureAsync(response, _options.Time, ct);
+                return await ReadWholeAsync(response, deadline, ct) ?? await FailureAsync(response, ct);
             }
         }, ct);
         return opened.IsSuccess ? new LeveeSubscription<TItem>(opened.Value, descriptor) : opened.Error;
@@ -152,8 +152,9 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog this client was given.");
         }
-        var input = ContractWire.WriteInput(descriptor, operation);
-        return input.IsSuccess ? (descriptor, input.Value) : input.Error;
+        // Written as the wire carries it, refused here exactly as the platform would refuse it on reading it back.
+        var input = ContractWire.Snapshot(descriptor, operation);
+        return input.IsSuccess ? (descriptor, input.Value.Wire) : input.Error;
     }
 
     private string Path(string name) => $"{_options.Prefix.TrimEnd('/')}/{name}";
@@ -195,10 +196,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     }
 
     /// <summary>The platform's problem, read back into its error; anything else (a proxy's page) is the platform out of reach.</summary>
-    private static async Task<Error> FailureAsync(HttpResponseMessage response, TimeProvider time, CancellationToken ct)
+    private async Task<Error> FailureAsync(HttpResponseMessage response, CancellationToken ct)
     {
         // Whoever answered (the platform, or a gateway in front of it) may say when to come back.
-        var retryAfter = RetryAfter(response.Headers.RetryAfter, time);
+        var retryAfter = RetryAfter(response.Headers.RetryAfter, _options.Time);
         if (Is(response, "application/problem+json"))
         {
             try
@@ -251,7 +252,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     private static TimeSpan? RetryAfter(RetryConditionHeaderValue? header, TimeProvider time) =>
         header?.Delta ?? (header?.Date is { } at ? (at - time.GetUtcNow() is { Ticks: > 0 } wait ? wait : TimeSpan.Zero) : null);
 
-    internal static bool Is(HttpResponseMessage response, string mediaType) =>
+    private static bool Is(HttpResponseMessage response, string mediaType) =>
         string.Equals(response.Content.Headers.ContentType?.MediaType, mediaType, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>An answer that isn't the platform's contract; whatever gave it may still say when to come back.</summary>

@@ -93,7 +93,6 @@ public static class LeveeSchema
               key text not null,
               input_hash bytea not null,
               result text,
-              kept boolean not null default false,
               expires_at timestamptz not null,
               primary key (scope, subject, operation, key)
             );
@@ -127,11 +126,11 @@ public static class LeveeSchema
                     return jsonb_build_object('state', 'claimed');
                   end if;
                   -- One read of the row: its result only when it may be replayed.
-                  select i.input_hash, i.kept, case when p_replayable then i.result end as result into r from {schema}.{IdempotencyTable} i
+                  select i.input_hash, case when p_replayable then i.result end as result into r from {schema}.{IdempotencyTable} i
                     where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key;
                   if found then
                     return case when r.input_hash <> p_hash then jsonb_build_object('state', 'mismatch')
-                                when not r.kept or not p_replayable then jsonb_build_object('state', 'replayed')
+                                when r.result is null then jsonb_build_object('state', 'replayed')
                                 else jsonb_build_object('state', 'kept', 'result', r.result) end;
                   end if;
                 end loop;
@@ -141,7 +140,7 @@ public static class LeveeSchema
             -- last thing before its commit.
             create or replace function {schema}.levee_idempotency_complete(p_subject text, p_operation text, p_key text, p_result text, p_lifetime interval)
               returns void language sql security definer set search_path = {schema}, pg_temp
-              as $$ update {schema}.{IdempotencyTable} set result = p_result, kept = p_result is not null, expires_at = clock_timestamp() + p_lifetime
+              as $$ update {schema}.{IdempotencyTable} set result = p_result, expires_at = clock_timestamp() + p_lifetime
                     where scope = {schema}.levee_scope() and subject = p_subject and operation = p_operation and key = p_key $$;
             revoke all on function {schema}.levee_idempotency_claim(text, text, text, bytea, boolean) from public;
             revoke all on function {schema}.levee_idempotency_complete(text, text, text, text, interval) from public;

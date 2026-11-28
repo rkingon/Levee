@@ -582,11 +582,14 @@ public sealed class CodeRules : DiagnosticAnalyzer
             return;
         }
         // Every input it's registered for. A generic base's input is judged where it's closed, by each process that names it.
-        foreach (var input in processes.Select(p => p.TypeArguments[0]).Where(i => i is not ITypeParameterSymbol))
+        if (type.Locations.FirstOrDefault() is { IsInSource: true } at)
         {
-            if (type.Locations.FirstOrDefault() is { IsInSource: true } at && Stored(input, context.Compilation) is { } problem)
+            foreach (var input in processes.Select(p => p.TypeArguments[0]).Where(i => i is not ITypeParameterSymbol))
             {
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, at, $"{type.Name}'s input {input.Name}", problem));
+                if (Stored(input, context.Compilation) is { } problem)
+                {
+                    context.ReportDiagnostic(Diagnostic.Create(Descriptors.StoredShape, at, $"{type.Name}'s input {input.Name}", problem));
+                }
             }
         }
         var held = type.InstanceConstructors.SelectMany(c => c.Parameters).Select(p => ((ISymbol)p, p.Type))

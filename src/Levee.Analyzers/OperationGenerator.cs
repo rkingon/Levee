@@ -551,7 +551,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         if (type.AllInterfaces.Any(i => Known.Is(i, "IVersionedOperation", 0)) && (effects & 2) == 0)
         {
-            context?.ReportDiagnostic(Diagnostic.Create(Descriptors.VersionedLoadsNoRoot, location, name));
+            context?.ReportDiagnostic(Diagnostic.Create(Descriptors.VersionedWrites, location, name));
         }
         var scoped = type.AllInterfaces.Any(i => Known.Is(i, "IScopedOperation", 0));
         var scopes = (scoped ? 1 : 0) + (platform ? 1 : 0) + (callerScoped ? 1 : 0) + (unscoped ? 1 : 0);

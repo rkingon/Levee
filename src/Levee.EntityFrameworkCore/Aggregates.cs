@@ -48,8 +48,6 @@ internal sealed class AggregateVersionConvention : IModelFinalizingConvention
     }
 }
 
-
-
 /// <summary>
 /// The shape an aggregate is mapped in: its root, a class of its own on one table with Postgres's <c>xmin</c> its version,
 /// and every part of it a complex type on the root's own entry (<c>ComplexProperty</c>, <c>ComplexCollection(...).ToJson()</c>).
