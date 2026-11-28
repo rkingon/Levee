@@ -1,0 +1,178 @@
+using System.Net.Http.Headers;
+using System.Net.ServerSentEvents;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Levee.Client;
+
+public sealed class LeveeClientOptions
+{
+    /// <summary>Where the platform maps its operations: <c>MapLeveeOperations</c>'s prefix.</summary>
+    public string Prefix { get; set; } = "/ops";
+
+    /// <summary>
+    /// How many times a transient failure (<see cref="Error.Transient"/>) is tried again before it's answered. A write is
+    /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result.
+    /// </summary>
+    public int Retries { get; set; } = 2;
+
+    /// <summary>The wait before the first retry, doubled each time, unless the failure says when to come back.</summary>
+    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromMilliseconds(200);
+}
+
+/// <summary>
+/// A platform's operations over HTTP, typed by a Contracts project's catalog (<c>LeveeCatalog.Catalog</c>): one wire, the
+/// strict one, and a failure as the <see cref="Error"/> the platform answered. Authentication is the app's, a handler on
+/// the <see cref="HttpClient"/> (<c>AddLeveeClient(...).AddHttpMessageHandler&lt;T&gt;()</c>).
+/// </summary>
+public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, LeveeClientOptions? options = null)
+{
+    private readonly LeveeClientOptions _options = options ?? new();
+
+    /// <summary>
+    /// Sends <paramref name="operation"/> and answers its result, or its failure. A write carries an idempotency key of its
+    /// own, kept across its retries, so it's written once however many times it's sent.
+    /// </summary>
+    public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (catalog.Find(operation.GetType()) is not { } descriptor)
+        {
+            return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog this client was given.");
+        }
+        var body = JsonSerializer.SerializeToUtf8Bytes(operation, descriptor.InputType, LeveeJson.Options);
+        var key = descriptor.ReadOnly ? null : Guid.CreateVersion7().ToString();
+        var answered = await WithRetriesAsync(async () =>
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, Path(descriptor.Name)) { Content = new ByteArrayContent(body) };
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            if (key is not null)
+            {
+                request.Headers.Add("Idempotency-Key", key);
+            }
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                return await FailureAsync(response, ct);
+            }
+            await using var content = await response.Content.ReadAsStreamAsync(ct);
+            return Result<object?>.Success(await JsonSerializer.DeserializeAsync(content, descriptor.ResultType, LeveeJson.Options, ct));
+        }, ct);
+        return answered.IsSuccess ? Result<TResult>.Success((TResult)answered.Value!) : answered.Error;
+    }
+
+    /// <summary>Opens <paramref name="subscription"/>'s stream: its items as they come, ended by the platform's last failure if it fails.</summary>
+    public async Task<Result<IAsyncEnumerable<TItem>>> SubscribeAsync<TItem>(ISubscription<TItem> subscription, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(subscription);
+        if (catalog.Find(subscription.GetType()) is not { } descriptor)
+        {
+            return Error.NotFound(LeveeErrors.UnknownOperation, $"{subscription.GetType().Name} isn't in the catalog this client was given.");
+        }
+        var input = Uri.EscapeDataString(JsonSerializer.Serialize(subscription, descriptor.InputType, LeveeJson.Options));
+        var opened = await WithRetriesAsync(async () =>
+        {
+            var response = await http.SendAsync(new HttpRequestMessage(HttpMethod.Get, $"{Path(descriptor.Name)}/events?input={input}"),
+                HttpCompletionOption.ResponseHeadersRead, ct);
+            if (response.IsSuccessStatusCode)
+            {
+                return Result<object?>.Success(response);
+            }
+            using (response)
+            {
+                return await FailureAsync(response, ct);
+            }
+        }, ct);
+        return opened.IsSuccess
+            ? Result<IAsyncEnumerable<TItem>>.Success(Items<TItem>((HttpResponseMessage)opened.Value!, descriptor, CancellationToken.None))
+            : opened.Error;
+    }
+
+    private static async IAsyncEnumerable<TItem> Items<TItem>(HttpResponseMessage response, OperationDescriptor descriptor,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        using (response)
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            await foreach (var item in SseParser.Create(stream).EnumerateAsync(ct))
+            {
+                switch (item.EventType)
+                {
+                    case "keepalive":
+                        continue;
+                    case "error":
+                        throw new OperationFailedException(Error.FromProblem(JsonSerializer.Deserialize<ProblemView>(item.Data, LeveeJson.Options)!, null));
+                    default:
+                        yield return (TItem)JsonSerializer.Deserialize(item.Data, descriptor.ResultType, LeveeJson.Options)!;
+                        break;
+                }
+            }
+        }
+    }
+
+    private string Path(string name) => $"{_options.Prefix.TrimEnd('/')}/{name}";
+
+    private async Task<Result<object?>> WithRetriesAsync(Func<Task<Result<object?>>> send, CancellationToken ct)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            Result<object?> answered;
+            try
+            {
+                answered = await send();
+            }
+            catch (HttpRequestException e)
+            {
+                answered = Error.Unavailable(LeveeErrors.Unreachable, $"The platform couldn't be reached: {e.Message}");
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+            {
+                answered = Error.Unavailable(LeveeErrors.Unreachable, "The platform didn't answer in time.");
+            }
+            if (answered.IsSuccess || !answered.Error.Transient || attempt >= _options.Retries)
+            {
+                return answered;
+            }
+            await Task.Delay(answered.Error.RetryAfter ?? _options.RetryDelay * Math.Pow(2, attempt), ct);
+        }
+    }
+
+    /// <summary>The platform's problem, read back into its error; anything else (a proxy's page) is the platform out of reach.</summary>
+    private static async Task<Result<object?>> FailureAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.Content.Headers.ContentType?.MediaType == "application/problem+json")
+        {
+            try
+            {
+                await using var content = await response.Content.ReadAsStreamAsync(ct);
+                if (await JsonSerializer.DeserializeAsync<ProblemView>(content, LeveeJson.Options, ct) is { } problem)
+                {
+                    return Error.FromProblem(problem, response.Headers.RetryAfter?.Delta);
+                }
+            }
+            catch (JsonException)
+            {
+            }
+        }
+        return Error.Unavailable(LeveeErrors.Unreachable, $"The platform answered {(int)response.StatusCode} with no problem of its own.");
+    }
+}
+
+public static class LeveeClientServiceCollectionExtensions
+{
+    /// <summary>
+    /// A <see cref="LeveeClient"/> for the platform whose contract is <paramref name="catalog"/> (a Contracts project's
+    /// <c>LeveeCatalog.Catalog</c>), through <c>IHttpClientFactory</c>: set its base address in <paramref name="configure"/>,
+    /// and add the app's authentication to what this returns, as a handler.
+    /// </summary>
+    public static IHttpClientBuilder AddLeveeClient(this IServiceCollection services, OperationCatalog catalog, Action<HttpClient> configure,
+        Action<LeveeClientOptions>? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(catalog);
+        var configured = new LeveeClientOptions();
+        options?.Invoke(configured);
+        return services.AddHttpClient(nameof(LeveeClient), configure).AddTypedClient(http => new LeveeClient(http, catalog, configured));
+    }
+}

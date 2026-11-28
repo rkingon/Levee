@@ -7,3 +7,4 @@ const Levee.LeveeErrors.InvalidIdempotencyKey = "idempotency.invalid_key" -> str
 Levee.Dispatcher.SendAsync<TResult>(Levee.IOperation<TResult>! operation, Levee.Principal! principal, string? idempotencyKey, System.Threading.CancellationToken ct) -> System.Threading.Tasks.Task<Levee.Result<TResult>>!
 Levee.LeveeOptions.IdempotencyKeyLifetime.get -> System.TimeSpan
 Levee.LeveeOptions.IdempotencyKeyLifetime.set -> void
+const Levee.LeveeErrors.Unreachable = "platform.unreachable" -> string!

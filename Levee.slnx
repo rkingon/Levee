@@ -5,6 +5,7 @@
     <Project Path="src/Levee.EntityFrameworkCore/Levee.EntityFrameworkCore.csproj" />
     <Project Path="src/Levee.Oxbow/Levee.Oxbow.csproj" />
     <Project Path="src/Levee.AspNetCore/Levee.AspNetCore.csproj" />
+    <Project Path="src/Levee.Client/Levee.Client.csproj" />
     <Project Path="src/Levee.Mcp/Levee.Mcp.csproj" />
     <Project Path="src/Levee.Cli/Levee.Cli.csproj" />
     <Project Path="src/Levee.Testing/Levee.Testing.csproj" />

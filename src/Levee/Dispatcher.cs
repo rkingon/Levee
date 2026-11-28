@@ -720,9 +720,18 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
 }
 
 /// <summary>An operation that failed where no result can carry it: a subscription whose handler threw mid-stream.</summary>
-public sealed class OperationFailedException(Error error, Exception inner) : Exception($"{error.Code}: {error.Message}", inner)
+public sealed class OperationFailedException : Exception
 {
-    public Error Error { get; } = error;
+    public OperationFailedException(Error error, Exception inner)
+        : base($"{error.Code}: {error.Message}", inner) =>
+        Error = error;
+
+    /// <summary>A failure told from elsewhere (a stream's last event, over the wire), with no exception of this process behind it.</summary>
+    internal OperationFailedException(Error error)
+        : base($"{error.Code}: {error.Message}") =>
+        Error = error;
+
+    public Error Error { get; }
 }
 
 public sealed class LeveeOptions

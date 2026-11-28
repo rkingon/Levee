@@ -14,12 +14,22 @@ pipeline: authorize, scope, open the unit of work, run the handler, audit, commi
 | `Levee.EntityFrameworkCore` | The unit of work on EF Core and Postgres: one transaction per operation, `read only` when declared, scoped by RLS, audited. |
 | `Levee.Oxbow` | `IJobs` on Oxbow: an operation enqueued in its caller's transaction, run later through the pipeline. |
 | `Levee.AspNetCore` | `GET /ops`, `POST /ops/{name}` and, for a subscription, `GET /ops/{name}/events?input={json}` (server-sent events): the catalog over HTTP, no logic of its own. |
+| `Levee.Client` | A typed client for `/ops`: send an operation, get its `Result`, typed by a Contracts project's `LeveeCatalog`; a write retried under one idempotency key. For Client and Host projects; the core roles can't reference it. |
 | `Levee.Mcp` | The catalog over MCP: a tool per operation a client may call, through the dispatcher, no logic of its own. |
 | `Levee.Testing` | Postgres for pipeline tests as production has it (Testcontainers): Levee's schema run by the owner, the app's role held to row-level security. Test and TestSupport projects only. |
 | `Levee.Cli` | `dotnet levee`: scaffold an app, generate operations, list the catalog, print the database's SQL. Pinned per app. |
 
-`MapLeveeOperations` (`/ops`) is the platform's own surface, for its own clients and agents. A public API, with routes,
-versions and a contract outside customers rely on, is the app's to design, in a `Projection` project.
+`MapLeveeOperations` (`/ops`) is the platform's own surface, for its own clients and agents, which reach it through
+`Levee.Client`:
+
+```csharp
+services.AddLeveeClient(Acme.Billing.Contracts.LeveeCatalog.Catalog, http => http.BaseAddress = new("https://billing.internal"))
+    .AddHttpMessageHandler<BillingAuth>();          // the app's authentication
+var invoice = await client.SendAsync(new CreateInvoice(...), ct);   // Result<InvoiceView>, the platform's own Error on failure
+```
+
+A public API, with routes, versions and a contract outside customers rely on, is the app's to design, in a `Projection`
+project.
 
 ## The CLI
 
@@ -69,7 +79,7 @@ Every project that references Levee declares one, or the build fails (LEVEE001):
 | `Infrastructure` | Kernel, Infrastructure | Plumbing several adapters share: a vendor transport, `DelegatingHandler`s. May do I/O; sees nothing of the application's; declares no ports or operations. |
 | `Composition` | everything but Host, Tool and Test | The composition root hosts share: settings bound into records, hosted services, the generated catalog. Optional: without one, the Host is the root. |
 | `Host` | everything but Host, Tool and Test | A process: it composes (or takes the Composition project's) and drives. It names nothing of Application's or Domain's. A Host that sees no Application (it calls one through an SDK) composes nothing. |
-| `Client` | Kernel, Contracts, Client | Thin consumers over the wire. |
+| `Client` | Kernel, Contracts, Client | Thin consumers over the wire, through `Levee.Client`. |
 | `Projection` | Kernel, Contracts, Projection | The app's own public API: routes it designs (resources, versions), mapped onto operations and sent through the `Dispatcher`, failing through `LeveeProblems`. It can't see Application, Domain or adapters, so it holds no logic of theirs. A Host or Composition maps it. |
 | `Tool` | what a Host sees but Client and Projection | A process run as the database's owner: migrations, the role bootstrap. Owns its transaction (LEVEE004 doesn't apply); otherwise held like a Host, but binds only the ports it references, as a test does. Nothing references it (LEVEE017). |
 | `Test` | everything | Also a composition root. |

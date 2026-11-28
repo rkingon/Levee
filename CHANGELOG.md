@@ -29,6 +29,17 @@
   `migrationBuilder.AddLeveeIdempotency()` (or `LeveeSchema.Idempotency(schema)`). `LeveeSchema.SweepExpiredKeys()`
   removes keys past their lifetime.
 
+### Levee.Client
+- New: a typed client for `/ops`. `LeveeClient.SendAsync(operation, ct)` answers `Result<TResult>` over HTTP, typed by
+  a Contracts project's `LeveeCatalog.Catalog`, on the contract wire; a failure reads back as the `Error` the platform
+  answered (its kind, code, fields, trace, `Retry-After`), and anything that isn't the platform's problem (a proxy's page,
+  a connection refused) as `Unavailable` `platform.unreachable`. A write carries an idempotency key of its own across its
+  retries, so a retry after a lost answer is written once; transient failures are retried (`LeveeClientOptions.Retries`,
+  2) after the failure's own wait or a doubling delay. `SubscribeAsync` streams a subscription's items, ended by the
+  platform's last failure as `OperationFailedException`. `AddLeveeClient(catalog, http => ...)` registers it through
+  `IHttpClientFactory`; the app's authentication is a handler on what it returns. The core roles can't reference it
+  (LEVEE008).
+
 ### Generator and analyzers
 - LEVEE114: an `IVersionedOperation` declares `Effects.Write`, and its handler takes a repository (an `IRepository<T>`
   port), so it loads the root its version names.
