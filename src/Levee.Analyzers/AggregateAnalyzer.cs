@@ -52,7 +52,7 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         foreach (var part in Parts(type, root, context.Compilation))
         {
             var byValue = part.TypeKind == TypeKind.Struct;
-            foreach (var member in Reachable(part).Where(m => byValue ? Shared(m) : Open(m)))
+            foreach (var member in Reachable(part).Where(Outside).Where(m => byValue ? Shared(m) : Open(m)))
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, member.Locations.FirstOrDefault(),
                     $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
@@ -74,6 +74,14 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
             yield return t;
         }
     }
+
+    /// <summary>
+    /// What a caller outside the part reaches: a public or internal member (and of a property, its public or internal
+    /// accessors). A protected one is the part's own and its subclasses'.
+    /// </summary>
+    private static bool Outside(ISymbol member) => member.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
+
+    private static bool Exposed(IMethodSymbol? accessor) => accessor?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
 
     /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
     private static bool Shared(ISymbol member) => member switch
@@ -110,12 +118,20 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         while (pending.Count > 0)
         {
             var holder = pending.Dequeue();
-            foreach (var shown in Reachable(holder).OfType<IPropertySymbol>().Where(p => p.GetMethod?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal))
+            // A property a caller can read, or a field: what they hold, a struct's copy included, may refer to a part.
+            var shown = Reachable(holder).Where(Outside).Select(m => m switch
             {
-                var held = shown.Type is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
+                IPropertySymbol property when Exposed(property.GetMethod) => property.Type,
+                IFieldSymbol field => field.Type,
+                _ => null,
+            }).OfType<ITypeSymbol>();
+            foreach (var reached in shown)
+            {
+                var value = reached is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : reached;
+                var held = value is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
                     && named.AllInterfaces.Concat(named.TypeKind == TypeKind.Interface ? [named] : []).FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) is { } items
                     ? items.TypeArguments[0]
-                    : shown.Type;
+                    : value;
                 if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct or TypeKind.Interface } part
                     && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
                     && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))

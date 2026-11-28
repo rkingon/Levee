@@ -431,15 +431,19 @@ public sealed class ClientTests : IAsyncDisposable
         Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
     }
 
-    [Fact]
-    public async Task A_gateways_empty_accepted_answer_is_waited_for_as_it_said()
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("application/json", "")]
+    [InlineData("application/json", """{"status":"queued"}""")]
+    public async Task A_gateways_accepted_answer_is_waited_for_as_it_said(string? mediaType, string body)
     {
         var sent = 0;
         var accepted = new Rewrite(answer =>
         {
             Interlocked.Increment(ref sent);
             answer.Dispose();
-            var later = new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new ByteArrayContent([]) };
+            var later = new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new StringContent(body) };
+            later.Content.Headers.ContentType = mediaType is null ? null : new(mediaType);
             later.Headers.RetryAfter = new(TimeSpan.FromHours(1));
             return later;
         });

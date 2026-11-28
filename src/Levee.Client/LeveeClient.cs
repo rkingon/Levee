@@ -15,8 +15,7 @@ public sealed class LeveeClientOptions
     /// How many times a transient failure (<see cref="Error.Transient"/>) is tried again before it's answered. A write is
     /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result. A
     /// write that acts outside the platform (<see cref="Effects.External"/>) is retried only when it declares a repeat safe
-    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did where its rollback doesn't reach
-    /// (outside the platform, or through an operation that commits on its own) may have happened.
+    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did outside may have happened.
     /// </summary>
     public int Retries { get; set; } = 2;
 
@@ -92,6 +91,8 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 return NotThePlatform(response);
             }
+            // Whatever answered may say when to come back, whatever it sent.
+            var retryAfter = RetryAfter(response.Headers.RetryAfter, _options.Time);
             await using var content = await response.Content.ReadAsStreamAsync(ct);
             JsonElement wire;
             try
@@ -100,9 +101,9 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             }
             catch (JsonException e)
             {
-                return Unreachable($"{descriptor.Name} was answered with what isn't JSON: {e.Message}");
+                return Unreachable($"{descriptor.Name} was answered with what isn't JSON: {e.Message}", retryAfter);
             }
-            return ContractWire.ReadResult(descriptor, wire, Unreachable);
+            return ContractWire.ReadResult(descriptor, wire, message => Unreachable(message, retryAfter));
         }, ct);
         return answered.IsSuccess ? Result<TResult>.Success((TResult)answered.Value!) : answered.Error;
     }
