@@ -33,13 +33,11 @@ public sealed class SampleDbContext(DbContextOptions<SampleDbContext> options) :
     }
 }
 
-internal sealed class EfNotes(SampleDbContext db, IFlush flush) : INotes
+internal sealed class EfNotes(SampleDbContext db) : INotes
 {
     public void Add(Note note) => db.Set<Note>().Add(note);
 
     public async Task<Note?> FindAsync(Guid id, CancellationToken ct) => await db.Set<Note>().FindAsync([id], ct);
-
-    public Task SaveAsync(CancellationToken ct) => flush.FlushAsync(ct);
 
     public async Task<IReadOnlyList<Note>> ListAsync(CancellationToken ct) =>
         await db.Set<Note>().OrderBy(n => n.CreatedAt).ToListAsync(ct);

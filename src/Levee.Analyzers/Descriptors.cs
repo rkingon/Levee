@@ -190,6 +190,9 @@ internal static class Descriptors
         "LEVEE112", "Every process input has one process",
         "Process input {0} is run by {1} processes ({2}), and a queued job names only its input, so which one runs is the container's registration order. Fix: keep one IProcess<{0}>; if they do different things, give each an input type of its own");
 
+    public static readonly DiagnosticDescriptor StoredShape = Rule(
+        "LEVEE115", "What a job keeps is in the contract language", "{0}: {1}");
+
     public static readonly DiagnosticDescriptor ScopeUnread = Rule(
         "LEVEE113", "An access policy decides by scope",
         "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");

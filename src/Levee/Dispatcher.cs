@@ -182,9 +182,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             {
                 json = ContractWire.WriteResult(descriptor, item);
             }
-            catch (Exception e) when (e is not OperationCanceledException)
+            catch (Exception e)
             {
-                // An item that can't be written ends the stream as a handler's bug would: logged, and told as one last error.
+                // An item that can't be written ends the stream as a handler's bug would: logged, and told as one last error. The
+                // write is synchronous, so a cancellation thrown here is the converter's own, not the reader's.
                 throw new OperationFailedException(Unexpected(e, descriptor), e);
             }
             yield return json;
@@ -878,8 +879,8 @@ public sealed class LeveeOptions
     public TimeSpan OutcomeTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     /// <summary>
-    /// How long a write's idempotency key holds after it commits: a retry within it gets the first result back; one after
-    /// it runs as a new request.
+    /// How long a write's idempotency key holds, counted from just before its commit (what runs at COMMIT, a deferred
+    /// constraint, runs inside it): a retry within it gets the first result back; one after it runs as a new request.
     /// </summary>
     public TimeSpan IdempotencyKeyLifetime { get; set; } = TimeSpan.FromHours(24);
 }

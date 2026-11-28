@@ -800,7 +800,7 @@ public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version)
     string IScopedOperation.ScopeKey => Tenant;
     uint IVersionedOperation.ExpectedVersion => Version;
 }
-internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote, NoteView>
+internal sealed class EditNoteHandler(INotes notes, IFlush flush) : IOperationHandler<EditNote, NoteView>
 {
     public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
     {
@@ -808,7 +808,7 @@ internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote
         if (!text.IsSuccess) return text.Error;
         if (await notes.FindAsync(operation.Id, ct) is not { } note) return Error.NotFound("note.missing", "There's no such note.");
         note.Edit(text.Value);
-        await notes.SaveAsync(ct);   // flushes, so the view carries the version just written
+        await flush.FlushAsync(ct);   // written now, so the view carries the version just written
         return View(note);
     }
 }
@@ -819,3 +819,22 @@ alone: it's held at run time. The one root the operation changes is held to the 
 when it moved on); one that writes nothing is held to nothing, since it loses no one's edit. A versioned operation that
 creates a root, or changes more than one aggregate, is a bug, answered `internal`: what follows in another aggregate is
 an operation of its own, enqueued as a job.
+
+## LEVEE115: What a job keeps is in the contract language
+
+A process's input is stored with its job, and a step's result with its step; every later run (a retry, a snooze, a
+rescue) reads them back. Outside the contract language (LEVEE104's: values, lists and dictionaries of them, plain
+positional records), what's read back isn't what was stored: a property with an initializer computes again from the read
+value, a member that isn't a parameter is lost, an `object` comes back as raw JSON. A step whose result can't be read back
+would act on every run, since nothing it recorded holds.
+
+```csharp
+// Wrong: read back, Cents is multiplied again
+public sealed record Charge(int Cents) { public int Cents { get; init; } = Cents * 100; }
+
+// Right: the record is its parameters; what's computed is computed where it's used
+public sealed record Charge(int Cents);
+```
+
+The runtime holds the same where it can see it (a constructor the wire calls, no public field), before a step acts or a
+process starts.

@@ -45,16 +45,17 @@ Writes that hold under retries and races.
     `ConfigureConventions` maps it (on `uint Version { get; private set; }` when the root declares one, a shadow property
     otherwise), and no migration creates it. Two operations changing one aggregate at once can't both commit: the second
     is 409 `store.stale`.
-  - Every part of an aggregate is on its root's row: a complex type (`ComplexProperty`, `ComplexCollection(...).ToJson()`)
-    or an owned type on the root's table or in a JSON column of it. A change anywhere in it is a write of that row, which
-    EF holds to the version it was read at. An entity of its own is an aggregate of its own, referenced by its id. A root
-    in an inheritance hierarchy, split across tables, without the version, or holding a part off its row (a navigation to
-    another entity, an owned type on a table of its own or split onto one, a many-to-many link), or referred to by another
+  - Every part of an aggregate is a complex type on its root's entry (`ComplexProperty`, `ComplexCollection(...).ToJson()`):
+    a value, so a change anywhere in it is a change of the root and a write of its row, which EF holds to the version it
+    was read at. Inside an aggregate only the root has an identity the outside sees; a part that needs one holds it as a
+    value. An entity of its own is an aggregate of its own, referenced by its id. A root in an inheritance hierarchy, split
+    across tables, without the version, navigating to any entity (another, or an owned type), or referred to by another
     root with a key whose delete writes it (a cascade, EF's default for a required one, or `SetNull`), fails before the
     first operation, with its fix.
-  - One aggregate per operation is the convention, held for an `IVersionedOperation`: told by whose version its saves
-    actually moved (a callback's change counted, and a root a callback began tracking refused), it changes one aggregate,
-    which it doesn't create, at the version its caller saw. An unversioned operation may change
+  - One aggregate per operation is the convention, held for an `IVersionedOperation`: the root it changes is held to the
+    version its caller saw in the write's own `WHERE` (so a stale edit is stale, whatever else the write would trip over),
+    and whose version each save actually moved is checked after it (a callback's change counted; a root a callback began
+    tracking, loaded or added, refused): it changes one aggregate, which it doesn't create. An unversioned operation may change
     several, each held to its own version. What the unit of work doesn't see (raw SQL, `ExecuteUpdate`) moves a row's
     `xmin` but isn't held to a caller's version.
   - Every save of an operation goes through its unit of work, and the first that fails fails the operation: every later

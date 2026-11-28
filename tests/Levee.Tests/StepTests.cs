@@ -117,6 +117,32 @@ public sealed class StepTests
     }
 #pragma warning restore CA1051
 
+    [Fact]
+    public async Task A_step_whose_result_takes_a_parameter_no_member_writes_is_refused_before_it_acts()
+    {
+        var ran = 0;
+
+        var step = await Record.ExceptionAsync(() => Run(new Recorded()).StepAsync<Ticket>("book",
+            _ => Task.FromResult<Result<Ticket>>(new Ticket(++ran, "window")), CancellationToken.None));
+
+        Assert.IsType<InvalidOperationException>(step);
+        Assert.Equal(0, ran);
+    }
+
+    /// <summary>Its seat is taken, and never written: read back, there's none to pass.</summary>
+    public sealed record Ticket
+    {
+        public Ticket(int number, string seat)
+        {
+            Number = number;
+            Seat = seat.Length;
+        }
+
+        public int Number { get; }
+
+        private int Seat { get; }
+    }
+
     /// <summary>Made only by its own factory: the wire has no constructor to call.</summary>
     public sealed record Sealed
     {

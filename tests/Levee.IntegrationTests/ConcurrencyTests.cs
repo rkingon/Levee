@@ -36,7 +36,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         if (await postgres.CountAsync("select count(*) from pg_class where relname = 'orders'") == 0)
         {
             await postgres.ExecuteAsync($"""
-                create table orders (id uuid primary key, tenant text not null, lines jsonb not null default '[]');
+                create table orders (id uuid primary key, tenant text not null, lines jsonb not null default '[]', label text unique);
                 {LeveeSchema.Isolation("orders", "tenant")}
                 """);
         }
@@ -285,6 +285,44 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_versioned_edit_whose_callback_removes_another_aggregate_is_refused()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var (order, other) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, other), ada, Ct)).IsSuccess);
+        var version = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture);
+
+        var added = await dispatcher.SendAsync(new AddLineRemoving(tenant, order, other, version), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, added.Error!.Kind);
+        Assert.Equal(1, await postgres.CountAsync("select count(*) from orders where id = $1", other));
+    }
+
+    [Fact]
+    public async Task A_stale_edit_is_stale_whatever_else_its_write_would_trip_over()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var (order, other) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, other), ada, Ct)).IsSuccess);
+        var label = $"label-{Guid.CreateVersion7():N}";
+        await postgres.ExecuteAsync($"update orders set label = '{label}' where id = '{other}'");
+        var stale = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture) - 1;
+
+        // Named as the other order is: the write would trip over that too, but it's stale first.
+        var named = await dispatcher.SendAsync(new NameOrder(tenant, order, label, stale), ada, Ct);
+
+        Assert.Equal(LeveeErrors.Stale, named.Error!.Code);
+    }
+
+    [Fact]
     public async Task An_aggregate_is_removed_with_the_parts_on_its_row()
     {
         await OrdersAsync();
@@ -340,15 +378,15 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     public static TheoryData<string, string?> Mappings() => new()
     {
         { nameof(OrdersDb), null },
-        { nameof(OwnedOnTheRowDb), null },
+        { nameof(OwnedOnTheRowDb), "an entity, from an aggregate root" },
         { nameof(TptOrdersDb), "aggregate root in an inheritance hierarchy" },
         { nameof(DerivedRootDb), "aggregate root in an inheritance hierarchy" },
         { nameof(SplitOrdersDb), "split across several" },
-        { nameof(ChildTableDb), "an entity of its own" },
-        { nameof(RootReferenceDb), "an entity of its own" },
-        { nameof(OwnedTableDb), "on a table of its own" },
-        { nameof(OwnedSplitDb), "on a table of its own" },
-        { nameof(LinkedDb), "many-to-many link" },
+        { nameof(ChildTableDb), "navigates to Slat" },
+        { nameof(RootReferenceDb), "navigates to Crate" },
+        { nameof(OwnedTableDb), "navigates to Slat" },
+        { nameof(OwnedSplitDb), "navigates to Lid" },
+        { nameof(LinkedDb), "navigates to CrateTag" },
         { nameof(CascadingDb), "by a key whose delete deletes it" },
         { nameof(RestrictedDb), null },
     };
@@ -426,14 +464,14 @@ public sealed record EditHeld(string Tenant, Guid Id, string Text) : IOperation<
     string IScopedOperation.ScopeKey => Tenant;
 }
 
-internal sealed class EditHeldHandler(INotes notes) : IOperationHandler<EditHeld, string>
+internal sealed class EditHeldHandler(INotes notes, IFlush flush) : IOperationHandler<EditHeld, string>
 {
     public async Task<Result<string>> HandleAsync(EditHeld operation, OperationContext context, CancellationToken ct)
     {
         var note = (await notes.FindAsync(operation.Id, ct))!;
         await Overlap.MeetAsync(operation.Id, ct);
         note.Edit(Sample.Domain.NoteText.From(operation.Text).Value);
-        await notes.SaveAsync(ct);
+        await flush.FlushAsync(ct);
         return note.Text;
     }
 }
@@ -453,7 +491,11 @@ public sealed class Order : IAggregateRoot
     /// <summary>On the order's own row, so a change to one is a write of the order.</summary>
     public List<OrderLine> Lines { get; private set; } = [];
 
+    public string? Label { get; private set; }
+
     public static Order Open(Guid id, string tenant) => new(id, tenant);
+
+    public void Name(string label) => Label = label;
 
     public void Add(Guid line, int amount) => Lines.Add(new OrderLine(line, amount));
 
@@ -484,6 +526,11 @@ internal class OrdersDb : DbContext
                 Opening = null;
                 Add(opened);
             }
+            if (Removing is { } removed)
+            {
+                Removing = null;
+                Remove(Set<Order>().Single(o => o.Id == removed));
+            }
         };
         SavedChanges += (_, _) =>
         {
@@ -512,6 +559,9 @@ internal class OrdersDb : DbContext
     /// <summary>An order a callback opens as the next save begins, beside whatever the save writes.</summary>
     public Order? Opening { get; set; }
 
+    /// <summary>An order a callback loads and removes as the next save begins, beside whatever the save writes.</summary>
+    public Guid? Removing { get; set; }
+
     protected OrdersDb(DbContextOptions options)
         : base(options)
     {
@@ -527,6 +577,7 @@ internal class OrdersDb : DbContext
             e.ToTable("orders");
             e.Property(o => o.Id).HasColumnName("id");
             e.Property(o => o.Tenant).HasColumnName("tenant");
+            e.Property(o => o.Label).HasColumnName("label");
             e.ComplexCollection(o => o.Lines, l => l.ToJson("lines"));
         });
     }
@@ -639,6 +690,44 @@ internal sealed class AddLineOpeningHandler(IOrders orders) : IOperationHandler<
     }
 }
 
+/// <summary>Held to one order's version, adds a line to it while the context's callback removes another order.</summary>
+[Operation("probe.order_add_line_removing", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AddLineRemoving(string Tenant, Guid Order, Guid Removed, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class AddLineRemovingHandler(IOrders orders) : IOperationHandler<AddLineRemoving, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineRemoving operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        orders.RemoveAlongside(operation.Removed);
+        await orders.SaveAsync(ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Held to a version, names its order.</summary>
+[Operation("probe.order_name", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record NameOrder(string Tenant, Guid Order, string Label, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class NameOrderHandler(IOrders orders) : IOperationHandler<NameOrder, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(NameOrder operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Name(operation.Label);
+        return Unit.Value;
+    }
+}
+
 /// <summary>Held to a version, removes its order, then opens one with the same id in its place.</summary>
 [Operation("probe.order_replace", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
 public sealed record ReplaceOrder(string Tenant, Guid Order, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
@@ -724,14 +813,14 @@ public sealed record EditTwo(string Tenant, Guid First, Guid Second, uint Versio
     uint IVersionedOperation.ExpectedVersion => Version;
 }
 
-internal sealed class EditTwoHandler(INotes notes) : IOperationHandler<EditTwo, Unit>
+internal sealed class EditTwoHandler(INotes notes, IFlush flush) : IOperationHandler<EditTwo, Unit>
 {
     public async Task<Result<Unit>> HandleAsync(EditTwo operation, OperationContext context, CancellationToken ct)
     {
         (await notes.FindAsync(operation.First, ct))!.Edit(Sample.Domain.NoteText.From("first, edited").Value);
-        await notes.SaveAsync(ct);
+        await flush.FlushAsync(ct);
         (await notes.FindAsync(operation.Second, ct))!.Edit(Sample.Domain.NoteText.From("second, edited").Value);
-        await notes.SaveAsync(ct);
+        await flush.FlushAsync(ct);
         return Unit.Value;
     }
 }
@@ -780,6 +869,9 @@ public interface IOrders : IRepository<Order>
     /// <summary>Has the context's own callback open an order as the next save begins.</summary>
     void OpenAlongside(Guid id, string tenant);
 
+    /// <summary>Has the context's own callback load and remove an order as the next save begins.</summary>
+    void RemoveAlongside(Guid id);
+
 }
 
 [Adapter]
@@ -802,6 +894,8 @@ internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
     public void Remove(Order order) => db.Remove(order);
 
     public void OpenAlongside(Guid id, string tenant) => db.Opening = Order.Open(id, tenant);
+
+    public void RemoveAlongside(Guid id) => db.Removing = id;
 
 }
 
@@ -912,7 +1006,7 @@ internal sealed class SplitOrdersDb(DbContextOptions<SplitOrdersDb> options) : O
     }
 }
 
-/// <summary>A crate's parts on its own row: in a JSON column, and on its table.</summary>
+/// <summary>A crate's parts owned on its own row, in a JSON column and on its table: entities still, with keys of their own.</summary>
 internal sealed class OwnedOnTheRowDb(DbContextOptions<OwnedOnTheRowDb> options) : DbContext(options)
 {
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();

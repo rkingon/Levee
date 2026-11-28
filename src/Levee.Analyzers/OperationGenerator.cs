@@ -690,7 +690,7 @@ public sealed class OperationGenerator : IIncrementalGenerator
     /// a choice of them. Whatever else C# can say about a type (a constructor, an initializer, a base, a JSON attribute) is
     /// outside it, so there's nothing for the schema and the wire to disagree about.
     /// </summary>
-    private static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
+    internal static (string Path, string Problem)? Shapeless(ITypeSymbol type, HashSet<ITypeSymbol> seen, string path, bool input, Compilation compilation)
     {
         var here = path.Length == 0 ? type.ToDisplayString() : path;
         if (!seen.Add(type))

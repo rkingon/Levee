@@ -77,8 +77,12 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 request.Headers.Add("Idempotency-Key", key);
             }
-            // Read whole within the client's timeout: a body that stalls after its headers is a platform out of reach.
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseContentRead, ct);
+            using var deadline = Deadline(ct);
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+            if (await ReadWholeAsync(response, deadline, ct) is { } stalled)
+            {
+                return stalled;
+            }
             if (!response.IsSuccessStatusCode)
             {
                 return await FailureAsync(response, _options.Time, ct);
@@ -117,9 +121,11 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         var (descriptor, input) = found.Value;
         var opened = await WithRetriesAsync<HttpResponseMessage>(_options.Retries, async () =>
         {
+            // The open is held to the client's timeout, not the stream it opens.
+            using var deadline = Deadline(ct);
             var response = await http.SendAsync(
                 new HttpRequestMessage(HttpMethod.Get, $"{Path(descriptor.Name)}/events?input={Uri.EscapeDataString(input.GetRawText())}"),
-                HttpCompletionOption.ResponseHeadersRead, ct);
+                HttpCompletionOption.ResponseHeadersRead, deadline.Token);
             if (response.IsSuccessStatusCode && Is(response, "text/event-stream"))
             {
                 return Result<HttpResponseMessage>.Success(response);
@@ -130,13 +136,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
                 {
                     return NotThePlatform(response);
                 }
-                // A stream's open reads only its headers, so a failure's body is read whole within the client's timeout here.
-                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct))
-                {
-                    deadline.CancelAfter(http.Timeout);
-                    await response.Content.LoadIntoBufferAsync(deadline.Token);
-                }
-                return await FailureAsync(response, _options.Time, ct);
+                return await ReadWholeAsync(response, deadline, ct) ?? await FailureAsync(response, _options.Time, ct);
             }
         }, ct);
         return opened.IsSuccess ? new LeveeSubscription<TItem>(opened.Value, descriptor) : opened.Error;
@@ -211,6 +211,31 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             }
         }
         return Unreachable($"The platform answered {(int)response.StatusCode} with no problem of its own.", retryAfter);
+    }
+
+    /// <summary>One send's time, from before it's sent to the last byte of its answer: the client's own timeout.</summary>
+    private CancellationTokenSource Deadline(CancellationToken ct)
+    {
+        var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        deadline.CancelAfter(http.Timeout);
+        return deadline;
+    }
+
+    /// <summary>
+    /// An answer's body, read whole by its send's deadline; null once it's read. One that stalls past it is the platform out of
+    /// reach, as whatever answered said when to come back (its headers arrived).
+    /// </summary>
+    private async Task<Error?> ReadWholeAsync(HttpResponseMessage response, CancellationTokenSource deadline, CancellationToken ct)
+    {
+        try
+        {
+            await response.Content.LoadIntoBufferAsync(deadline.Token);
+            return null;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return Unreachable("The platform didn't answer in time.", RetryAfter(response.Headers.RetryAfter, _options.Time));
+        }
     }
 
     /// <summary>When the platform says to come back: after a delay, or at a time, which is a delay from now.</summary>

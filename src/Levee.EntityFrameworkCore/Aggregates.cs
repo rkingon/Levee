@@ -52,10 +52,11 @@ internal sealed class AggregateVersionConvention : IModelFinalizingConvention
 
 /// <summary>
 /// The shape an aggregate is mapped in: its root, a class of its own on one table with Postgres's <c>xmin</c> its version,
-/// and every part of it on the root's row (a complex type, or an owned type on the root's table or in a JSON column of
-/// it). A change anywhere in the aggregate is then a write of that one row, which EF holds to its version like any other.
-/// An entity of its own is an aggregate of its own, referenced by its id. Anything else is refused where the model is
-/// first used, with its fix.
+/// and every part of it a complex type on the root's own entry (<c>ComplexProperty</c>, <c>ComplexCollection(...).ToJson()</c>).
+/// A change anywhere in the aggregate is then a change of the root's entry and a write of its one row, which EF holds to its
+/// version like any other. Inside an aggregate only the root has an identity the outside sees: a part that needs one holds
+/// it as a value (a line's id). An entity of its own is an aggregate of its own, referenced by its id. Anything else is
+/// refused where the model is first used, with its fix.
 /// </summary>
 internal static class AggregateLanguage
 {
@@ -66,19 +67,7 @@ internal static class AggregateLanguage
 
     private static string? Find(IModel model) =>
         model.GetEntityTypes().Where(Aggregates.IsRoot).OrderBy(e => e.Name, StringComparer.Ordinal)
-            .Select(root => Unsupported(root) ?? OffTheRow(root, root) ?? Reaching(root)).FirstOrDefault(p => p is not null);
-
-    /// <summary>
-    /// Another aggregate referring to <paramref name="root"/> by its id with a key whose delete writes it (EF's default for a
-    /// required one is a cascade): deleting this aggregate would change that one too, unseen and unversioned.
-    /// </summary>
-    private static string? Reaching(IEntityType root) =>
-        root.GetReferencingForeignKeys().FirstOrDefault(k => Aggregates.IsRoot(k.DeclaringEntityType)
-            && k.DeleteBehavior is DeleteBehavior.Cascade or DeleteBehavior.SetNull) is { } reaching
-            ? $"{reaching.DeclaringEntityType.ClrType.Name} refers to {root.ClrType.Name} by a key whose delete {(reaching.DeleteBehavior == DeleteBehavior.Cascade ? "deletes" : "changes")} "
-                + "it: deleting one aggregate would write another, which no version covers. Fix: OnDelete(DeleteBehavior.Restrict) on that key; "
-                + "what follows from the delete is an operation on the other aggregate of its own."
-            : null;
+            .Select(root => Unsupported(root) ?? Navigates(root) ?? Reaching(root)).FirstOrDefault(p => p is not null);
 
     private static string? Unsupported(IEntityType root)
     {
@@ -103,49 +92,36 @@ internal static class AggregateLanguage
                 + "on the root to read it); a token of the app's own, or a version mapped to another column, isn't one.";
     }
 
-    /// <summary>A part of <paramref name="root"/>'s aggregate held anywhere but its row: a change there writes no version.</summary>
-    private static string? OffTheRow(IEntityType root, IEntityType holder)
-    {
-        const string fix = "hold it on the root's row (ComplexCollection(...).ToJson() or OwnsMany(...).ToJson() for a collection, "
-            + "ComplexProperty for one), or make it an aggregate of its own, referenced by its id";
-        foreach (var navigation in holder.GetNavigations())
-        {
-            var target = navigation.TargetEntityType;
-            if (navigation.ForeignKey.IsOwnership && navigation.IsOnDependent)
-            {
-                continue;
-            }
-            if (!navigation.ForeignKey.IsOwnership)
-            {
-                return $"{holder.ClrType.Name}.{navigation.Name} reaches {target.ClrType.Name}, an entity of its own, from {root.ClrType.Name}'s aggregate: "
-                    + $"a change to it is no write of {root.ClrType.Name}'s row, so the aggregate's version doesn't cover it. Fix: {fix}.";
-            }
-            if (!target.IsMappedToJson() && (target.GetTableName() != root.GetTableName() || target.GetSchema() != root.GetSchema()
-                || target.GetMappingFragments().Any()))
-            {
-                return $"{holder.ClrType.Name}.{navigation.Name} owns {target.ClrType.Name} on a table of its own, off {root.ClrType.Name}'s row, so the "
-                    + $"aggregate's version doesn't cover it. Fix: {fix}.";
-            }
-            if (OffTheRow(root, target) is { } deeper)
-            {
-                return deeper;
-            }
-        }
-        return holder.GetSkipNavigations().FirstOrDefault() is { } skip
-            ? $"{holder.ClrType.Name}.{skip.Name} is a many-to-many link, written to a join table no version covers. Fix: hold the other side's ids "
-                + "on the root's row (a complex collection), or make the link an aggregate of its own."
+    /// <summary>A root that navigates to an entity (another, or an owned one of its own): a change there isn't one of the root's entry.</summary>
+    private static string? Navigates(IEntityType root) =>
+        root.GetNavigations().Cast<INavigationBase>().Concat(root.GetSkipNavigations()).FirstOrDefault() is { } navigation
+            ? $"{root.ClrType.Name}.{navigation.Name} navigates to {navigation.TargetEntityType.ClrType.Name}, an entity, from an aggregate root: a change "
+                + $"there isn't a change of {root.ClrType.Name}, so its version doesn't cover it. Fix: hold it as a value on the root's row "
+                + "(ComplexCollection(...).ToJson() for a collection, ComplexProperty for one; a part that needs an identity holds it as a value), "
+                + "or make it an aggregate of its own, referenced by its id."
             : null;
-    }
+
+    /// <summary>
+    /// Another aggregate referring to <paramref name="root"/> by its id with a key whose delete writes it (EF's default for a
+    /// required one is a cascade): deleting this aggregate would change that one too, unseen and unversioned.
+    /// </summary>
+    private static string? Reaching(IEntityType root) =>
+        root.GetReferencingForeignKeys().FirstOrDefault(k => Aggregates.IsRoot(k.DeclaringEntityType)
+            && k.DeleteBehavior is DeleteBehavior.Cascade or DeleteBehavior.SetNull) is { } reaching
+            ? $"{reaching.DeclaringEntityType.ClrType.Name} refers to {root.ClrType.Name} by a key whose delete {(reaching.DeleteBehavior == DeleteBehavior.Cascade ? "deletes" : "changes")} "
+                + "it: deleting one aggregate would write another, which no version covers. Fix: OnDelete(DeleteBehavior.Restrict) on that key; "
+                + "what follows from the delete is an operation on the other aggregate of its own."
+            : null;
 }
 
 /// <summary>
 /// The unit of work's saves, held to the aggregates they write. EF holds each root's row to the version it was read at, and
 /// the whole aggregate is that row. An operation that names the version its caller saw (<see cref="IVersionedOperation"/>)
-/// writes one aggregate, the one its caller saw at that version: told by whose version each save actually moved, so
-/// whatever made the change (the handler, a callback) is counted. One that writes nothing is held to nothing: a write that
-/// changes nothing can't lose an update. Every save of a unit of work goes through
-/// <see cref="SaveAsync"/>, each with one ticket for EF's save, and the first that fails fails the unit: nothing it wrote,
-/// nor anything after it, commits.
+/// writes one aggregate, which it doesn't create, held to that version in the write's own <c>WHERE</c>; whose version each
+/// save actually moved is checked after it, so a change a callback made is counted too, and a root a callback began
+/// tracking is refused. One that writes nothing is held to nothing: a write that changes nothing can't lose an update.
+/// Every save of a unit of work goes through <see cref="SaveAsync"/>, each with one ticket for EF's save, and the first that
+/// fails fails the unit: nothing it wrote, nor anything after it, commits.
 /// </summary>
 internal sealed class Aggregates : SaveChangesInterceptor
 {
@@ -175,6 +151,9 @@ internal sealed class Aggregates : SaveChangesInterceptor
     /// <summary>An aggregate, by its root's type and key, compared as EF compares keys.</summary>
     private sealed record Identity(IEntityType Type, object?[] Key)
     {
+        public static Identity Of(EntityEntry root) =>
+            new(root.Metadata, [.. root.Metadata.FindPrimaryKey()!.Properties.Select(p => root.Property(p.Name).CurrentValue)]);
+
         public bool Same(Identity other) =>
             Type == other.Type && Type.FindPrimaryKey()!.Properties.Select((p, i) => p.GetKeyValueComparer().Equals(Key[i], other.Key[i])).All(e => e);
     }
@@ -208,9 +187,17 @@ internal sealed class Aggregates : SaveChangesInterceptor
     {
         var unit = UnitOf(db);
         unit.Failure?.Throw();
+        EntityEntry? arrived = null;
+        void Arrived(object? sender, EntityTrackedEventArgs e) => arrived ??= IsRoot(e.Entry.Metadata) ? e.Entry : null;
         try
         {
-            var before = unit.Expected is null ? null : Roots(db);
+            List<Seen>? before = null;
+            if (unit.Expected is { } expected)
+            {
+                Expect(db, unit, expected);
+                before = Roots(db);
+                db.ChangeTracker.Tracked += Arrived;
+            }
             unit.Ticket = true;
             try
             {
@@ -219,12 +206,13 @@ internal sealed class Aggregates : SaveChangesInterceptor
             finally
             {
                 unit.Ticket = false;
+                db.ChangeTracker.Tracked -= Arrived;
             }
             // A save a callback made inside this one, refused and caught there, fails this one too.
             unit.Failure?.Throw();
             if (before is not null)
             {
-                Hold(db, unit, before);
+                Hold(unit, before, arrived);
             }
         }
         catch (Exception e)
@@ -271,19 +259,49 @@ internal sealed class Aggregates : SaveChangesInterceptor
         throw refused;
     }
 
+    /// <summary>
+    /// Before a versioned operation's save: the one root it changes (its parts are values on its entry, so a change to them
+    /// is the root's), held to the version its caller saw in the write's own <c>WHERE</c>, so a stale edit is refused as stale
+    /// before anything else the write would trip over. It creates no root, and changes no other than the one it's held to.
+    /// </summary>
+    private static void Expect(DbContext db, Unit unit, uint expected)
+    {
+        db.ChangeTracker.DetectChanges();
+        var changed = db.ChangeTracker.Entries().Where(e => IsRoot(e.Metadata) && e.State is EntityState.Added or EntityState.Modified or EntityState.Deleted).ToList();
+        if (changed.FirstOrDefault(e => e.State == EntityState.Added) is { } added)
+        {
+            throw Creates(added);
+        }
+        if (changed.Select(Identity.Of).Concat(unit.Held is { } held ? [held] : []).Aggregate(new List<Identity>(), Distinct) is { Count: > 1 })
+        {
+            throw MoreThanOne();
+        }
+        if (unit.Held is null && changed is [var root])
+        {
+            Token(root).OriginalValue = expected;
+        }
+    }
+
+    private static List<Identity> Distinct(List<Identity> seen, Identity next)
+    {
+        if (!seen.Any(s => s.Same(next)))
+        {
+            seen.Add(next);
+        }
+        return seen;
+    }
+
     private static List<Seen> Roots(DbContext db) =>
-        [.. db.ChangeTracker.Entries().Where(e => IsRoot(e.Metadata))
-            .Select(e => new Seen(e, new Identity(e.Metadata, [.. e.Metadata.FindPrimaryKey()!.Properties.Select(p => e.Property(p.Name).CurrentValue)]),
-                (uint)Token(e).OriginalValue!, e.State))];
+        [.. db.ChangeTracker.Entries().Where(e => IsRoot(e.Metadata)).Select(e => new Seen(e, Identity.Of(e), (uint)Token(e).OriginalValue!, e.State))];
 
     /// <summary>
-    /// The aggregates a save wrote, told by the store: a root inserted or deleted, or whose version moved. A versioned
-    /// operation writes one, which it doesn't create, at the version its caller saw. A root the save itself began tracking
-    /// (a callback's) is one whose write can't be told apart from a read, so it's refused.
+    /// After the save: the aggregates it wrote, told by the store (a root inserted or deleted, or whose version moved), so a
+    /// change a callback made is counted as the handler's would be. A root the save itself began tracking can't be told
+    /// apart from a read, so it's refused.
     /// </summary>
-    private static void Hold(DbContext db, Unit unit, List<Seen> before)
+    private static void Hold(Unit unit, List<Seen> before, EntityEntry? arrived)
     {
-        if (db.ChangeTracker.Entries().FirstOrDefault(e => IsRoot(e.Metadata) && !before.Any(b => ReferenceEquals(b.Entry.Entity, e.Entity))) is { } arrived)
+        if (arrived is not null)
         {
             throw new InvalidOperationException(
                 $"The operation names the version its caller saw, but its save began tracking a {arrived.Metadata.ClrType.Name} (a callback's), so whose "
@@ -294,21 +312,17 @@ internal sealed class Aggregates : SaveChangesInterceptor
         {
             if (written.State == EntityState.Added)
             {
-                throw new InvalidOperationException(
-                    $"The operation names the version its caller saw, but its change creates a {written.Entry.Metadata.ClrType.Name}, which has no version yet. "
-                    + "Fix: an IVersionedOperation changes a root it loaded; one that creates is an operation of its own.");
+                throw Creates(written.Entry);
             }
             if (unit.Held is { } held)
             {
                 if (!held.Same(written.Identity))
                 {
-                    throw new InvalidOperationException(
-                        "The operation names the version its caller saw, but changes more than one aggregate, so there's no one version to hold it to. "
-                        + "Fix: an IVersionedOperation changes the one root it loaded; what follows in another aggregate is an operation of its own, "
-                        + "enqueued as a job in this one.");
+                    throw MoreThanOne();
                 }
                 continue;
             }
+            // A root a callback changed wasn't held in the write's WHERE: it's compared as it was read.
             if (written.Version != unit.Expected)
             {
                 throw new DbUpdateConcurrencyException(
@@ -317,6 +331,15 @@ internal sealed class Aggregates : SaveChangesInterceptor
             unit.Held = written.Identity;
         }
     }
+
+    private static InvalidOperationException Creates(EntityEntry root) => new(
+        $"The operation names the version its caller saw, but its change creates a {root.Metadata.ClrType.Name}, which has no version yet. "
+        + "Fix: an IVersionedOperation changes a root it loaded; one that creates is an operation of its own.");
+
+    private static InvalidOperationException MoreThanOne() => new(
+        "The operation names the version its caller saw, but changes more than one aggregate, so there's no one version to hold it to. "
+        + "Fix: an IVersionedOperation changes the one root it loaded; what follows in another aggregate is an operation of its own, "
+        + "enqueued as a job in this one.");
 
     private static PropertyEntry Token(EntityEntry root)
     {

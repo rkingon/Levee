@@ -77,6 +77,21 @@ public sealed class WirePathTests
     }
 
     [Fact]
+    public async Task A_stream_item_whose_converter_throws_a_cancellation_ends_the_stream_with_an_error()
+    {
+        var opened = await _dispatcher.SubscribeJsonAsync("probe.halts", JsonDocument.Parse("{}").RootElement, Ada, Ct);
+
+        var failed = await Assert.ThrowsAsync<OperationFailedException>(async () =>
+        {
+            await foreach (var _ in opened.Value.WithCancellation(Ct))
+            {
+            }
+        });
+
+        Assert.Equal(ErrorKind.Internal, failed.Error.Kind);
+    }
+
+    [Fact]
     public async Task A_member_sent_twice_in_two_cases_is_refused()
     {
         var input = JsonDocument.Parse("""{"tenant":"acme","stamp":1,"STAMP":2}""").RootElement;
@@ -174,6 +189,18 @@ public sealed class HaltJson : System.Text.Json.Serialization.JsonConverter<Halt
     public override Halt Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new(reader.GetInt32());
 
     public override void Write(Utf8JsonWriter writer, Halt value, JsonSerializerOptions options) => throw new OperationCanceledException("the converter's own");
+}
+
+[Operation("probe.halts", "member", Platform = true)]
+public sealed record Halts : ISubscription<Halt>;
+
+internal sealed class HaltsHandler : ISubscriptionHandler<Halts, Halt>
+{
+    public async IAsyncEnumerable<Halt> SubscribeAsync(Halts subscription, SubscriptionContext context, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Yield();
+        yield return new Halt(1);
+    }
 }
 
 [Operation("probe.halting", "member", Platform = true)]

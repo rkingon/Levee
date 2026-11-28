@@ -12,7 +12,7 @@ public sealed class MessageTests
         .Select(f => f.GetValue(null)).OfType<DiagnosticDescriptor>()];
 
     // Whose fix depends on what was found, supplied at the call site.
-    private static readonly string[] FixFromCallSite = ["LEVEE008", "LEVEE011", "LEVEE104", "LEVEE108"];
+    private static readonly string[] FixFromCallSite = ["LEVEE008", "LEVEE011", "LEVEE104", "LEVEE108", "LEVEE115"];
 
     public static TheoryData<string> Ids() => [.. Rules.Select(r => r.Id).Distinct()];
 

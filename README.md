@@ -195,11 +195,11 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   `now()`, so a caller can't backdate it.
 - Every aggregate root has a version, Postgres's `xmin`, mapped by `configurationBuilder.AddLeveeConventions()` in the
   context's `ConfigureConventions`: two operations changing one aggregate at once can't both commit (409 `store.stale`),
-  and every part of an aggregate is on its root's row (a complex type, or an owned type in a JSON column), so a change
-  anywhere in it is a write of that row. An edit held to what its caller saw is an `IVersionedOperation`, which changes
+  and every part of an aggregate is a complex type on its root (`ComplexCollection(...).ToJson()`), so a change anywhere
+  in it is a change of the root. An edit held to what its caller saw is an `IVersionedOperation`, which changes
   one aggregate: its
   `ExpectedVersion` (a view's `Version`, read from `uint Version { get; private set; }` on the root) is compared as the
-  root is written. A repository whose `Save` flushes gives the view the version just written.
+  root is written. `IFlush` writes it inside the operation, so the view carries the version just written.
 - A write is retryable with an idempotency key (`SendAsync(operation, principal, key, ct)`, the `Idempotency-Key`
   header): sent again, it answers the first result instead of writing twice, and equal requests at once make one write.
   A result carrying a `[Secret]` isn't kept, so its repeat is `idempotency.replayed`.
@@ -327,6 +327,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
 | LEVEE113 | An access policy reads the key of the scope it authorizes (`AccessRequest.Scope.Key`), not only whether it's the platform's: it decides who may act in which tenant. |
 | LEVEE114 | An `IVersionedOperation` declares a write: what it changes is held to the version its caller saw. |
+| LEVEE115 | A process's input and a step's result, which a job keeps and reads back, are in the contract language. |
 
 ## Decisions
 

@@ -20,14 +20,11 @@ public interface INotes : IRepository<Note>
 
     Task<Note?> FindAsync(Guid id, CancellationToken ct);
 
-    /// <summary>Writes what changed, inside the operation, so the note's version is the one just written.</summary>
-    Task SaveAsync(CancellationToken ct);
-
     /// <summary>The unit of work's scope decides whose notes these are.</summary>
     Task<IReadOnlyList<Note>> ListAsync(CancellationToken ct);
 }
 
-internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned) : IOperationHandler<CreateNote, NoteView>
+internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned, IFlush flush) : IOperationHandler<CreateNote, NoteView>
 {
     public async Task<Result<NoteView>> HandleAsync(CreateNote operation, OperationContext context, CancellationToken ct)
     {
@@ -38,14 +35,15 @@ internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned) : IOp
         }
         var note = Note.Create(operation.Id, operation.Tenant, text.Value, context.Now);
         notes.Add(note);
-        await notes.SaveAsync(ct);
+        // Written inside the operation, so the view carries the version just written.
+        await flush.FlushAsync(ct);
         return View(note);
     }
 
     internal static NoteView View(Note note) => new(note.Id, note.Text, note.CreatedAt, note.Version);
 }
 
-internal sealed class EditNoteHandler(INotes notes, IBannedWords banned) : IOperationHandler<EditNote, NoteView>
+internal sealed class EditNoteHandler(INotes notes, IBannedWords banned, IFlush flush) : IOperationHandler<EditNote, NoteView>
 {
     public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
     {
@@ -59,7 +57,8 @@ internal sealed class EditNoteHandler(INotes notes, IBannedWords banned) : IOper
             return Error.NotFound("note.missing", "There's no such note.");
         }
         note.Edit(text.Value);
-        await notes.SaveAsync(ct);
+        // Written inside the operation, so the view carries the version just written.
+        await flush.FlushAsync(ct);
         return CreateNoteHandler.View(note);
     }
 }

@@ -377,6 +377,67 @@ public sealed class ClientTests : IAsyncDisposable
         Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
     }
 
+    [Fact]
+    public async Task A_gateway_that_says_when_to_come_back_then_stalls_is_waited_for_as_it_said()
+    {
+        var sent = 0;
+        var stalled = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Dispose();
+            var down = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StreamContent(new Stalled()) };
+            down.Headers.RetryAfter = new(TimeSpan.FromHours(1));
+            return down;
+        });
+
+        var said = await Client(between: stalled, timeout: TimeSpan.FromMilliseconds(500)).SendAsync(new Echo("hi"), Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
+    }
+
+    [Fact]
+    public async Task A_streams_refusal_is_read_within_one_timeout_from_before_it_was_sent()
+    {
+        var slow = new Slowly(TimeSpan.FromMilliseconds(650));
+
+        var opened = await Client(retries: 0, between: slow, timeout: TimeSpan.FromSeconds(1)).SubscribeAsync(new Ticks(-1), Ct).WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, opened.Error!.Code);
+    }
+
+    /// <summary>Answers late, then sends its body late: each within the timeout alone, not both.</summary>
+    private sealed class Slowly(TimeSpan each) : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            await Task.Delay(each, cancellationToken);
+            var answer = await base.SendAsync(request, cancellationToken);
+            var refused = new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StreamContent(new Delayed(each, """{"title":"Conflict","status":409,"detail":"x","code":"x.y","kind":"conflict","transient":false,"trace":"t","errors":null}""")) };
+            refused.Content.Headers.ContentType = new("application/problem+json");
+            answer.Dispose();
+            return refused;
+        }
+    }
+
+    /// <summary>A body that arrives whole, after a while.</summary>
+    private sealed class Delayed(TimeSpan after, string body) : MemoryStream(System.Text.Encoding.UTF8.GetBytes(body))
+    {
+        private bool _waited;
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_waited)
+            {
+                _waited = true;
+                await Task.Delay(after, cancellationToken);
+            }
+            return await base.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+
     /// <summary>A body that never sends a byte.</summary>
     private sealed class Stalled : MemoryStream
     {
