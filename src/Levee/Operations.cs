@@ -40,7 +40,11 @@ public enum Effects
     Read = 1,
     Write = 2,
 
-    /// <summary>Acts on the world outside the platform's database (a message, a payment, a vendor call).</summary>
+    /// <summary>
+    /// Acts where its rollback doesn't reach: the world outside the platform's database (a message, a payment, a vendor call),
+    /// or an operation it sends that commits on its own (a record kept whatever this one does). A repeat may do that again, so
+    /// a client retries it only when it declares <see cref="Idempotency.Idempotent"/>.
+    /// </summary>
     External = 4,
 }
 

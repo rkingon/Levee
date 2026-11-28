@@ -81,7 +81,29 @@ public sealed class Alpha3AuditTests
             }
             """, "App.Application", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference()]);
 
-        Assert.DoesNotContain("LEVEE115", application.Ids);
+        Assert.Empty(application.Errors);
+    }
+
+    [Fact]
+    public async Task A_step_that_answers_a_contracts_record_no_operation_carries_is_judged_as_its_own()
+    {
+        var contracts = await Probe.CompileAsync("Contracts", """
+            public sealed record Fee(int Cents) { public int Cents { get; init; } = Cents * 100; }
+            """, "App.Contracts", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration]);
+
+        var application = await Probe.CompileAsync("Application", """
+            using Levee;
+            using System.Threading;
+            using System.Threading.Tasks;
+            public sealed record Input(string Tenant);
+            public sealed class Run : IProcess<Input>
+            {
+                public async Task RunAsync(Input input, ProcessContext context, CancellationToken ct) =>
+                    await context.StepAsync("fee", _ => Task.FromResult(Result<Fee>.Success(new Fee(1))), ct);
+            }
+            """, "App.Application", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference()]);
+
+        Assert.Contains("LEVEE115", application.Ids);
     }
 
     [Fact]
@@ -106,6 +128,10 @@ public sealed class Alpha3AuditTests
     [Theory]
     [InlineData("public sealed class Line { public int Units { get; set; } }", true)]
     [InlineData("public sealed record Line(System.Guid Id, int Units);", false)]
+    [InlineData("public class Allotted { public int Units { get; set; } } public sealed class Line : Allotted;", true)]
+    [InlineData("public interface IAllocation { int Units { get; set; } } public sealed class Allocation : IAllocation { public int Units { get; set; } } public sealed class Line { public IReadOnlyList<IAllocation> Allocations { get; } = []; }", true)]
+    [InlineData("public struct Place { public decimal Lat; public decimal Lng { get; set; } } public sealed record Line(Place Place);", false)]
+    [InlineData("public struct Place { public List<int> Marks { get; init; } } public sealed record Line(Place Place);", true)]
     public async Task A_part_a_root_hands_out_changes_only_through_the_root(string line, bool refused)
     {
         var output = await Probe.CompileAsync("Domain", $$"""

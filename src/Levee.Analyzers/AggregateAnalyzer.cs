@@ -47,16 +47,42 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, member.Name, type.Name));
             }
         }
-        // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside.
+        // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside. A struct
+        // handed out is a copy, so only what it holds by reference (a mutable collection) is shared.
         foreach (var part in Parts(type, root, context.Compilation))
         {
-            foreach (var member in Members(part).Where(Open))
+            var byValue = part.TypeKind == TypeKind.Struct;
+            foreach (var member in Reachable(part).Where(m => byValue ? Shared(m) : Open(m)))
             {
                 context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, member.Locations.FirstOrDefault(),
                     $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
             }
         }
     }
+
+    /// <summary>What a caller holding <paramref name="type"/> reaches: its own members, its bases', and an interface's, its own and those it extends.</summary>
+    private static IEnumerable<ISymbol> Reachable(INamedTypeSymbol type)
+    {
+        IEnumerable<INamedTypeSymbol> owners = type.TypeKind == TypeKind.Interface ? [type, .. type.AllInterfaces] : Bases(type);
+        return owners.SelectMany(Members);
+    }
+
+    private static IEnumerable<INamedTypeSymbol> Bases(INamedTypeSymbol type)
+    {
+        for (var t = type; t is not null && t.SpecialType != SpecialType.System_Object && t.SpecialType != SpecialType.System_ValueType; t = t.BaseType)
+        {
+            yield return t;
+        }
+    }
+
+    /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
+    private static bool Shared(ISymbol member) => member switch
+    {
+        IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
+        IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
+        IFieldSymbol { IsConst: false } field => field.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(field.Type),
+        _ => false,
+    };
 
     private static IEnumerable<ISymbol> Members(INamedTypeSymbol type) =>
         type.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } && !m.IsImplicitlyDeclared && !m.IsStatic);
@@ -74,7 +100,8 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
 
     /// <summary>
     /// The types of this project a root hands out, at any depth, through what it shows (a property's type, or the items of a
-    /// collection it shows): its parts. Another root is an aggregate of its own; a type of another project, its own to guard.
+    /// collection it shows, whether it declares it or inherits it): its parts, classes, structs or the interfaces a caller
+    /// holds them by. Another root is an aggregate of its own; a type of another project, its own to guard.
     /// </summary>
     private static IEnumerable<INamedTypeSymbol> Parts(INamedTypeSymbol type, INamedTypeSymbol root, Compilation compilation)
     {
@@ -83,13 +110,14 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         while (pending.Count > 0)
         {
             var holder = pending.Dequeue();
-            foreach (var shown in holder.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic && p.GetMethod?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal))
+            foreach (var shown in Reachable(holder).OfType<IPropertySymbol>().Where(p => p.GetMethod?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal))
             {
                 var held = shown.Type is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
                     && named.AllInterfaces.Concat(named.TypeKind == TypeKind.Interface ? [named] : []).FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) is { } items
                     ? items.TypeArguments[0]
                     : shown.Type;
-                if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct } part && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
+                if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct or TypeKind.Interface } part
+                    && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
                     && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))
                 {
                     pending.Enqueue(part);

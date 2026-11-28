@@ -413,6 +413,52 @@ public sealed class ClientTests : IAsyncDisposable
         Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
     }
 
+    [Fact]
+    public async Task A_gateway_whose_body_wont_decode_is_waited_for_as_it_said()
+    {
+        var sent = 0;
+        var mislabelled = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Dispose();
+            var down = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StreamContent(new Undecodable()) };
+            down.Headers.RetryAfter = new(TimeSpan.FromHours(1));
+            return down;
+        });
+
+        var said = await Client(between: mislabelled).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
+    }
+
+    [Fact]
+    public async Task A_gateways_empty_accepted_answer_is_waited_for_as_it_said()
+    {
+        var sent = 0;
+        var accepted = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Dispose();
+            var later = new HttpResponseMessage(HttpStatusCode.Accepted) { Content = new ByteArrayContent([]) };
+            later.Headers.RetryAfter = new(TimeSpan.FromHours(1));
+            return later;
+        });
+
+        var said = await Client(between: accepted).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
+    }
+
+    /// <summary>A body that won't decode as its encoding says, as decompression finds it.</summary>
+    private sealed class Undecodable : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            throw new InvalidDataException("The archive entry was compressed using an unsupported compression method.");
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            throw new InvalidDataException("The archive entry was compressed using an unsupported compression method.");
+    }
+
     /// <summary>A body cut off as it's read.</summary>
     private sealed class Broken : MemoryStream
     {

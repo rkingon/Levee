@@ -15,9 +15,8 @@ public sealed class LeveeClientOptions
     /// How many times a transient failure (<see cref="Error.Transient"/>) is tried again before it's answered. A write is
     /// retried under the idempotency key it was first sent with, so a retry after a lost response gets the first result. A
     /// write that acts outside the platform (<see cref="Effects.External"/>) is retried only when it declares a repeat safe
-    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did outside may have happened. An
-    /// operation that sends another which commits on its own (a record kept whatever the first does) acts outside its
-    /// transaction too, and declares <see cref="Effects.External"/> for it.
+    /// (<see cref="Idempotency.Idempotent"/>): one that failed rolled back, but what it did where its rollback doesn't reach
+    /// (outside the platform, or through an operation that commits on its own) may have happened.
     /// </summary>
     public int Retries { get; set; } = 2;
 
@@ -238,8 +237,9 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         {
             return Unreachable("The platform didn't answer in time.", RetryAfter(response.Headers.RetryAfter, _options.Time));
         }
-        // A body cut off is an IOException (HttpIOException) as it's read.
-        catch (Exception e) when (e is HttpRequestException or IOException && !ct.IsCancellationRequested)
+        // A body cut off is an IOException (HttpIOException) as it's read; one that won't decode as its encoding says, an
+        // InvalidDataException.
+        catch (Exception e) when (e is HttpRequestException or IOException or InvalidDataException && !ct.IsCancellationRequested)
         {
             return Unreachable($"The platform's answer broke off: {e.Message}", RetryAfter(response.Headers.RetryAfter, _options.Time));
         }
@@ -252,8 +252,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     internal static bool Is(HttpResponseMessage response, string mediaType) =>
         string.Equals(response.Content.Headers.ContentType?.MediaType, mediaType, StringComparison.OrdinalIgnoreCase);
 
-    private static Error NotThePlatform(HttpResponseMessage response) =>
-        Unreachable($"Something answered {(int)response.StatusCode} as {response.Content.Headers.ContentType?.MediaType ?? "nothing"}, not the platform's contract (a sign-in page, a proxy).");
+    /// <summary>An answer that isn't the platform's contract; whatever gave it may still say when to come back.</summary>
+    private Error NotThePlatform(HttpResponseMessage response) =>
+        Unreachable($"Something answered {(int)response.StatusCode} as {response.Content.Headers.ContentType?.MediaType ?? "nothing"}, not the platform's contract (a sign-in page, a proxy).",
+            RetryAfter(response.Headers.RetryAfter, _options.Time));
 
     internal static Error Unreachable(string message) => Unreachable(message, retryAfter: null);
 

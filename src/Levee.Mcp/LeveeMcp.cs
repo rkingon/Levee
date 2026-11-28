@@ -142,6 +142,7 @@ internal sealed class OperationTool(OperationDescriptor descriptor, Tool tool, L
                 IdempotentHint = d.Idempotency is Idempotency.Safe or Idempotency.Idempotent,
                 // Nothing in the contract says a write only adds: refused on a repeat or not, its first call may remove.
                 DestructiveHint = !d.ReadOnly,
+                // What a failed call's rollback doesn't undo: reached beyond the call itself, as an agent deciding to retry needs to know.
                 OpenWorldHint = d.Effects.HasFlag(Effects.External),
             },
         };

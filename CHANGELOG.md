@@ -95,8 +95,8 @@ Writes that hold under retries and races.
   Transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait (`Retry-After`, as a
   delay or a date) or a doubling delay, and never past `RetryWindow` (30 seconds) from the first send, however late a
   wait ends; a write acting outside the platform (`Effects.External`) is
-  retried only when it declares a repeat safe (`Idempotent`); one that sends another operation committing on its own
-  declares `External` for it. `IdempotencyKeys = false` is for a client that sends as no
+  retried only when it declares a repeat safe (`Idempotent`). `Effects.External` means an effect a rollback doesn't reach:
+  outside the platform, or an operation it sends that commits on its own. `IdempotencyKeys = false` is for a client that sends as no
   one: its writes are sent once.
 - `SubscribeAsync` answers a `LeveeSubscription<TItem>`: its items as they come, ended by the platform's last failure as
   `OperationFailedException`, and closed when it's disposed, read or not.

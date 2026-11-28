@@ -747,7 +747,8 @@ public sealed class OperationGenerator : IIncrementalGenerator
         {
             return (here, $"is {named.ToDisplayString()}, which isn't in the contract language. {Language}");
         }
-        if (stored && !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly) && Roles.Of(named.ContainingAssembly) == Role.Contracts)
+        if (stored && !SymbolEqualityComparer.Default.Equals(named.ContainingAssembly, compilation.Assembly) && Roles.Of(named.ContainingAssembly) == Role.Contracts
+            && Judged(named.ContainingAssembly).Contains(named))
         {
             return null;
         }
@@ -1073,6 +1074,52 @@ public sealed class OperationGenerator : IIncrementalGenerator
         type.TypeKind != TypeKind.Class || type.IsAbstract || type.IsGenericType || type.DeclaredAccessibility == Accessibility.Private
             ? []
             : type.AllInterfaces.Where(i => Known.Is(i, "IProcess", 1)).Select(i => (type, i.TypeArguments[0]));
+
+    /// <summary>
+    /// The records a Contracts project's operations carry, at any depth: what LEVEE104 judged as that project built, and
+    /// so all of it another project may take as judged. A record it declares that no operation carries was judged by nothing.
+    /// </summary>
+    private static HashSet<ITypeSymbol> Judged(IAssemblySymbol contracts)
+    {
+        var judged = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default);
+        var pending = new Stack<ITypeSymbol>();
+        foreach (var operation in AllTypes(contracts.GlobalNamespace).Where(t => t.GetAttributes().Any(a => a.AttributeClass?.ToDisplayString() == Known.OperationAttribute)))
+        {
+            pending.Push(operation);
+            foreach (var contract in operation.AllInterfaces.Where(i => Known.Is(i, "IOperation", 1) || Known.Is(i, "ISubscription", 1)))
+            {
+                pending.Push(contract.TypeArguments[0]);
+            }
+        }
+        while (pending.Count > 0)
+        {
+            var type = pending.Pop();
+            if (!judged.Add(type))
+            {
+                continue;
+            }
+            if (type is IArrayTypeSymbol array)
+            {
+                pending.Push(array.ElementType);
+            }
+            else if (type is INamedTypeSymbol named)
+            {
+                foreach (var argument in named.TypeArguments)
+                {
+                    pending.Push(argument);
+                }
+                foreach (var member in named.GetMembers().OfType<IPropertySymbol>().Where(p => !p.IsStatic))
+                {
+                    pending.Push(member.Type);
+                }
+                foreach (var derived in named.GetAttributes().Where(a => JsonAttribute(a, "JsonDerivedTypeAttribute")).Select(a => a.ConstructorArguments[0].Value).OfType<ITypeSymbol>())
+                {
+                    pending.Push(derived);
+                }
+            }
+        }
+        return judged;
+    }
 
     internal static IEnumerable<INamedTypeSymbol> AllTypes(INamespaceSymbol ns)
     {
