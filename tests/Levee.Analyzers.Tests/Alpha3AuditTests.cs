@@ -111,7 +111,8 @@ public sealed class Alpha3AuditTests
             }
             """, "App.Application", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, contracts.Reference()]);
 
-        Assert.Contains(application.Errors, e => e.Id == "LEVEE115" && e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("no operation there carries it", StringComparison.Ordinal));
+        Assert.Contains(application.Errors, e => e.Id == "LEVEE115" && e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("no operation there carries it", StringComparison.Ordinal)
+            && e.GetMessage(System.Globalization.CultureInfo.InvariantCulture).Contains("as a plain positional record beside the process", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -145,6 +146,7 @@ public sealed class Alpha3AuditTests
     [InlineData("public abstract class Priced { protected List<int> Cents { get; } = []; } public sealed class Line : Priced { public int Total => Cents.Sum(); }", false)]
     [InlineData("public abstract class Counted { protected internal int Units { get; set; } } public sealed class Line : Counted;", true)]
     [InlineData("public struct Slot { public List<string> Instructions { get; init; } } public sealed class Line { public IReadOnlyList<Slot?> Slots { get; } = []; }", true)]
+    [InlineData("public abstract class Adjusted { private readonly List<int> _adjustments = []; protected internal List<int> GetAdjustments() => _adjustments; } public sealed class Line : Adjusted;", true)]
     public async Task A_part_a_root_hands_out_changes_only_through_the_root(string line, bool refused)
     {
         var output = await Probe.CompileAsync("Domain", $$"""
@@ -160,5 +162,27 @@ public sealed class Alpha3AuditTests
             """, "App.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration]);
 
         Assert.Equal(refused ? ["LEVEE007"] : [], output.Ids.Distinct());
+    }
+
+    [Fact]
+    public async Task A_part_inheriting_what_only_its_own_project_reaches_is_guarded_by_that_project()
+    {
+        var shared = await Probe.CompileAsync("Domain", """
+            public abstract class Counted { public int Units { get; protected internal set; } }
+            """, "Shared.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration]);
+        Assert.Empty(shared.Errors);
+
+        var output = await Probe.CompileAsync("Domain", """
+            using Levee;
+            using System.Collections.Generic;
+            public sealed class Line : Counted;
+            public sealed class Order : IAggregateRoot
+            {
+                private readonly List<Line> _lines = [];
+                public IReadOnlyList<Line> Lines => _lines;
+            }
+            """, "App.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, shared.Reference()]);
+
+        Assert.Empty(output.Errors);
     }
 }

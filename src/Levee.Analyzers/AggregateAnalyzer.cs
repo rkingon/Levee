@@ -49,13 +49,15 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         }
         // A part the root hands out (a line, a value on its row) is its state too: open there, it's open from outside. A struct
         // handed out is a copy, so only what it holds by reference (a mutable collection) is shared.
-        foreach (var part in Parts(type, root, context.Compilation))
+        var outside = new Outside(context.Compilation);
+        foreach (var part in Parts(type, root, outside))
         {
             var byValue = part.TypeKind == TypeKind.Struct;
-            foreach (var member in Reachable(part).Where(Outside).Where(m => byValue ? Shared(m) : Open(m)))
+            foreach (var member in Reachable(part).Where(m => byValue ? outside.Shares(m) : outside.Changes(m)))
             {
-                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, member.Locations.FirstOrDefault(),
-                    $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
+                // A member a base of another project declares is reported on the part that inherits it.
+                var location = member.Locations.FirstOrDefault(l => l.IsInSource) ?? part.Locations.FirstOrDefault();
+                context.ReportDiagnostic(Diagnostic.Create(Descriptors.AggregateState, location, $"{part.Name}.{member.Name}, a part {type.Name} hands out,", type.Name));
             }
         }
     }
@@ -76,23 +78,32 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// What a caller outside the part reaches: a public or internal member (protected internal is internal too), and of a
-    /// property, such accessors. A protected one is the part's own and its subclasses'.
+    /// A part as code elsewhere in this project reaches it, asked of the compiler as that code would be: by each member's and
+    /// accessor's accessibility from this assembly, wherever it's declared (a base of another project's internal isn't).
     /// </summary>
-    private static bool Outside(ISymbol member) => Reached(member.DeclaredAccessibility);
-
-    private static bool Exposed(IMethodSymbol? accessor) => accessor is not null && Reached(accessor.DeclaredAccessibility);
-
-    private static bool Reached(Accessibility accessibility) => accessibility is Accessibility.Public or Accessibility.Internal or Accessibility.ProtectedOrInternal;
-
-    /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
-    private static bool Shared(ISymbol member) => member switch
+    private sealed class Outside(Compilation compilation)
     {
-        IMethodSymbol method => method.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal && IsMutableCollection(method.ReturnType),
-        IPropertySymbol { GetMethod: { } get } property => get.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(property.Type),
-        IFieldSymbol { IsConst: false } field => field.DeclaredAccessibility != Accessibility.Private && IsMutableCollection(field.Type),
-        _ => false,
-    };
+        public bool Reaches(ISymbol? symbol) => symbol is not null && compilation.IsSymbolAccessibleWithin(symbol, compilation.Assembly);
+
+        /// <summary>A member through which the part's state changes: a setter, a writable field, a mutable collection handed out.</summary>
+        public bool Changes(ISymbol member) => member switch
+        {
+            IPropertySymbol { SetMethod: { IsInitOnly: false } set } when Reaches(set) => true,
+            IFieldSymbol { IsConst: false, IsReadOnly: false } field when Reaches(field) => true,
+            _ => Shares(member),
+        };
+
+        /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
+        public bool Shares(ISymbol member) => member switch
+        {
+            IMethodSymbol method => Reaches(method) && IsMutableCollection(method.ReturnType),
+            IPropertySymbol property => Reaches(property.GetMethod) && IsMutableCollection(property.Type),
+            IFieldSymbol { IsConst: false } field => Reaches(field) && IsMutableCollection(field.Type),
+            _ => false,
+        };
+
+        public Compilation Compilation => compilation;
+    }
 
     private static IEnumerable<ISymbol> Members(INamedTypeSymbol type) =>
         type.GetMembers().Where(m => m is IPropertySymbol or IFieldSymbol or IMethodSymbol { MethodKind: MethodKind.Ordinary } && !m.IsImplicitlyDeclared && !m.IsStatic);
@@ -113,7 +124,7 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
     /// collection it shows, whether it declares it or inherits it): its parts, classes, structs or the interfaces a caller
     /// holds them by. Another root is an aggregate of its own; a type of another project, its own to guard.
     /// </summary>
-    private static IEnumerable<INamedTypeSymbol> Parts(INamedTypeSymbol type, INamedTypeSymbol root, Compilation compilation)
+    private static IEnumerable<INamedTypeSymbol> Parts(INamedTypeSymbol type, INamedTypeSymbol root, Outside outside)
     {
         var seen = new HashSet<ITypeSymbol>(SymbolEqualityComparer.Default) { type };
         var pending = new Queue<INamedTypeSymbol>([type]);
@@ -121,10 +132,10 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
         {
             var holder = pending.Dequeue();
             // A property a caller can read, or a field: what they hold, a struct's copy included, may refer to a part.
-            var shown = Reachable(holder).Where(Outside).Select(m => m switch
+            var shown = Reachable(holder).Select(m => m switch
             {
-                IPropertySymbol property when Exposed(property.GetMethod) => property.Type,
-                IFieldSymbol field => field.Type,
+                IPropertySymbol property when outside.Reaches(property.GetMethod) => property.Type,
+                IFieldSymbol field when outside.Reaches(field) => field.Type,
                 _ => null,
             }).OfType<ITypeSymbol>();
             foreach (var reached in shown)
@@ -135,7 +146,7 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
                     ? items.TypeArguments[0]
                     : value);
                 if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct or TypeKind.Interface } part
-                    && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
+                    && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, outside.Compilation.Assembly)
                     && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))
                 {
                     pending.Enqueue(part);
