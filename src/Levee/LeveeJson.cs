@@ -24,6 +24,9 @@ public static class LeveeJson
             UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
             RespectNullableAnnotations = true,
             RespectRequiredConstructorParameters = true,
+            // Names are read case-blind (Web's default), so a member sent twice in two cases would bind as its order said: one
+            // request would be another under the same idempotency key. Sent twice is refused, however it's spelled.
+            AllowDuplicateProperties = false,
             DefaultIgnoreCondition = JsonIgnoreCondition.Never,
             // A number is a number on the wire, as its schema says: Web's defaults would also read one from a string.
             NumberHandling = JsonNumberHandling.Strict,
@@ -142,14 +145,19 @@ public static class LeveeJson
     /// </summary>
     internal static JsonNode Schema(Type type, JsonSerializerOptions? options, bool nullable) =>
         Schema(type, options) is var node && nullable && !AllowsNull(node) && node is not JsonObject { Count: 0 }
-            ? node is JsonObject { } typed && typed["type"] is JsonValue single
-                ? Retyped(typed, single.GetValue<string>())
+            ? node is JsonObject { } typed && typed["type"] is JsonValue
+                ? OrNull(typed)
                 : new JsonObject { ["anyOf"] = new JsonArray(node, new JsonObject { ["type"] = "null" }) }
             : node;
 
-    private static JsonObject Retyped(JsonObject node, string type)
+    /// <summary>A schema of one type that admits null too: by its type, and by its values when it lists them.</summary>
+    private static JsonObject OrNull(JsonObject node)
     {
-        node["type"] = new JsonArray(type, "null");
+        node["type"] = new JsonArray(node["type"]!.GetValue<string>(), "null");
+        if (node["enum"] is JsonArray names)
+        {
+            names.Add(null);
+        }
         return node;
     }
 
@@ -234,15 +242,7 @@ public static class LeveeJson
         {
             wire["pattern"] = pattern;
         }
-        if (nullable)
-        {
-            wire["type"] = new JsonArray(wire["type"]!.GetValue<string>(), "null");
-            if (wire["enum"] is JsonArray names)
-            {
-                names.Add(null);
-            }
-        }
-        return wire;
+        return nullable ? OrNull(wire) : wire;
     }
 
     /// <summary>

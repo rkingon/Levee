@@ -78,7 +78,7 @@ public static class LeveeSchema
         return Idempotency(schema);
     }
 
-    public const string IdempotencyTable = "levee_idempotency";
+    private const string IdempotencyTable = "levee_idempotency";
 
     /// <summary>
     /// The keys retried writes are sent with, and the first result each one committed. The runtime role reaches them only

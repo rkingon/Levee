@@ -20,8 +20,10 @@ internal sealed record OperationView(string Name, string Summary, string Access,
 public static class LeveeEndpointRouteBuilderExtensions
 {
     /// <summary>
-    /// <c>GET {prefix}</c> lists the catalog; <c>POST {prefix}/{name}</c> runs an operation with the body as its input, and an
-    /// <c>Idempotency-Key</c> header makes a write safe to retry: sent again with the same key, it answers the first result.
+    /// <c>GET {prefix}</c> lists the catalog; <c>POST {prefix}/{name}</c> runs an operation with the body as its input. A write
+    /// sent again with the same <c>Idempotency-Key</c> header answers the result it committed. One that failed rolled back and
+    /// kept no key, so what it did outside the platform (<see cref="Effects.External"/>) is repeated by a retry unless it
+    /// declares a repeat safe (<see cref="Idempotency.Idempotent"/>), as <c>LeveeClient</c> retries it.
     /// Both need a caller: <paramref name="principal"/> is the host's authentication, who the request runs as, or null for no one.
     /// Internal operations are neither listed nor run.
     /// </summary>

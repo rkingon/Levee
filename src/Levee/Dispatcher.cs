@@ -336,23 +336,32 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         var enlist = Attempts.TryGetValue(principal, out var attempt) ? attempt : null;
         using var activity = Source.StartActivity(descriptor.Name);
         activity?.SetTag("levee.operation", descriptor.Name);
-        var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
-        // Redacted once, for the audit and the outcome both. An input built in-process can hold what its own type refuses
-        // (null where it's non-nullable): refused here, as the wire would, before any transaction opens.
-        string? input = null;
+        // A typed input is taken once, before any transaction opens: written and read back as the wire would (refused as it
+        // would, if it holds what its own type refuses), and what's read back is what everything after reads.
+        var sent = wire ?? default;
         Result<object?>? refused = null;
+        if (wire is null)
+        {
+            var snapshot = ContractWire.Snapshot(descriptor, operation);
+            if (snapshot.IsSuccess)
+            {
+                (sent, operation) = snapshot.Value;
+            }
+            else
+            {
+                refused = snapshot.Error;
+            }
+        }
+        var scoped = Confine(ScopeOf(descriptor, operation, principal, pinned), descriptor, principal);
+        // Redacted once, for the audit and the outcome both.
+        string? input = null;
         try
         {
-            input = Redact(operation);
-        }
-        catch (JsonException e)
-        {
-            LogInputRefused(log, e, descriptor.Name);
-            refused = Error.InvalidInput(e, descriptor.Name);
+            input = refused is null ? Redact(operation) : null;
         }
         catch (Exception)
         {
-            // Unredactable for another reason (a getter that throws): a bug, which the audit's own redaction fails on.
+            // Unredactable (a getter that throws): a bug, which the audit's own redaction fails on.
         }
         if (refused is null && key is not null && !descriptor.ReadOnly)
         {
@@ -371,7 +380,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, wire, key, enlist, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, wire, sent, key, enlist, ct) : scoped.Error);
         }
         catch (AttemptSuperseded)
         {
@@ -565,7 +574,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        JsonElement? wire, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
+        JsonElement? wire, JsonElement sent, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -598,7 +607,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             }
             // After the admissions, so a refused caller learns nothing of what a key did; before the handler, so a repeat never runs it.
             var claimed = key is not null && !scope.ReadOnly
-                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(wire ?? JsonSerializer.SerializeToElement(operation, descriptor.InputType, LeveeJson.Options)), options.IdempotencyKeyLifetime)
+                ? new IdempotencyKey(principal.Subject, descriptor.Name, key, Hash(sent), options.IdempotencyKeyLifetime)
                 : null;
             if (claimed is not null)
             {
@@ -612,10 +621,13 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                         return replayed;
                     case IdempotencyClaim.Kept kept:
                         // Done already: its first answer, the wire it was kept as, and nothing written or audited again. A secret is
-                        // shown once, whatever was kept before the contract said so.
+                        // shown once, whatever was kept before the contract said so: judged before what was kept is read at all.
+                        if (DeclaresSecret(descriptor))
+                        {
+                            return replayed;
+                        }
                         var first = Parse(kept.Result);
-                        var read = Read(descriptor, first);
-                        return Secret(descriptor, read) ? replayed : Result<object?>.Success(wire is not null ? first : read);
+                        return Result<object?>.Success(wire is not null ? first : Read(descriptor, first));
                 }
             }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
@@ -653,7 +665,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 var copy = Read(descriptor, written);
                 if (claimed is not null)
                 {
-                    unit.Keep(claimed, Secret(descriptor, copy) ? null : written.GetRawText());
+                    unit.Keep(claimed, DeclaresSecret(descriptor) ? null : written.GetRawText());
                 }
                 result = Result<object?>.Success(wire is not null ? written : copy);
             }
@@ -732,13 +744,14 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static object? Read(OperationDescriptor descriptor, JsonElement wire) =>
         ContractWire.ReadResult(descriptor, wire, problem => throw new InvalidOperationException(problem)).Value;
 
-    private static bool Secret(OperationDescriptor descriptor, object? result) =>
-        result is not null && LeveeJson.FindSecretIn(result, descriptor.ResultType, LeveeJson.Options) is not null;
+    /// <summary>A result its contract says may carry a secret, at any depth or in any subtype it declares: never kept, never replayed.</summary>
+    private static bool DeclaresSecret(OperationDescriptor descriptor) => LeveeJson.FindSecret(descriptor.ResultType, LeveeJson.Options) is not null;
 
     /// <summary>
     /// The input as the wire carried it (as it was received, or written once from a typed send), its objects' members in one
-    /// order (a dictionary's entries in any order are the same input), its arrays' as they are: what a key's repeat is compared
-    /// by. Never read and written again, so a converter that writes something new each time can't make a repeat another request.
+    /// order (a dictionary's entries in any order are the same input; a member sent twice was refused as it was read), its
+    /// arrays' as they are: what a key's repeat is compared by. Never read and written again, so a converter that writes
+    /// something new each time can't make a repeat another request.
     /// </summary>
     private static byte[] Hash(JsonElement input)
     {

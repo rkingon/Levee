@@ -22,32 +22,39 @@ Writes that hold under retries and races.
   (a stream's ends with it), typed or as JSON: the generator carries each result's declared nullability on its descriptor
   (`OperationDescriptor.ResultNullable`), and `/ops` shows a result that may be null as one. A result sent as JSON is
   written once and read back before it commits, so one its own contract can't read is a bug that rolls back. A keyed
-  request is compared by its input as it was received (written once, for a typed send), never written again.
+  request is compared by its input as it was received, and a typed send's input is taken once (written, and read back as
+  what its key, audit and handler all read), so neither a sequence read once nor a converter that writes anew makes it
+  another request. A member sent twice, in any case, is `input.invalid`. Whether a result may carry a secret, kept or
+  replayed, is judged by its contract's type, before anything kept is read.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its success is recorded under its name, and every
   later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process written from the top
   resumes where it was. A failure records nothing. A step's result type is held to the contract language before the step
-  acts, so what's recorded reads back; a result carrying a `[Secret]` is refused unless jobs seal their inputs, before
-  the step acts when its type declares one, after it (unrecorded) when only a value does. Every write a process's run
+  acts, so what's recorded reads back, and is never null (`where T : notnull`; a null answered is refused, unrecorded); a
+  result whose type declares a `[Secret]` is refused before the step acts, unless jobs seal their inputs. Every write a process's run
   sends, through its context or a helper it hands its principal to, takes its attempt's lock first, so a run the rescuer
   has taken over can't commit.
 
 ### Levee.EntityFrameworkCore
-- **Breaking:** aggregates, versioned by the unit of work.
+- **Breaking:** an aggregate is its root's row, versioned by it.
   - Every root's version is Postgres's `xmin`: `configurationBuilder.AddLeveeConventions()` in the context's
     `ConfigureConventions` maps it (on `uint Version { get; private set; }` when the root declares one, a shadow property
     otherwise), and no migration creates it. Two operations changing one aggregate at once can't both commit: the second
-    is 409 `store.stale`. A context whose root has no such version fails before the first operation, with its fix.
-  - A child added, changed, moved or removed through the unit of work writes its root's version too, held to the version
-    the root was read at, so the root's version covers its aggregate. A child changed without its root loaded is a bug,
-    answered `internal`. A root is a class of its own on one table (no inheritance, no splitting), its key one column a
-    write may set; a child belongs to one aggregate. Anything else fails before the first operation, with its fix.
-  - One aggregate per operation is the convention (an `IVersionedOperation` is held to it): an unversioned operation may
-    change several, each held to its own version. What the unit of work doesn't see (raw SQL, a cascade,
-    `ExecuteUpdate`) moves a row's `xmin` but no root's.
+    is 409 `store.stale`.
+  - Every part of an aggregate is on its root's row: a complex type (`ComplexProperty`, `ComplexCollection(...).ToJson()`)
+    or an owned type on the root's table or in a JSON column of it. A change anywhere in it is a write of that row, which
+    EF holds to the version it was read at. An entity of its own is an aggregate of its own, referenced by its id. A root
+    in an inheritance hierarchy, split across tables, without the version, or holding a part off its row (a navigation to
+    another entity, an owned type on a table of its own, a many-to-many link) fails before the first operation, with its fix.
+  - One aggregate per operation is the convention, held for an `IVersionedOperation`: told by whose version its saves
+    actually moved (a callback's change counted), it changes one aggregate, which it doesn't create, at the version its
+    caller saw; one that changes nothing is compared with the store at commit. An unversioned operation may change
+    several, each held to its own version. What the unit of work doesn't see (raw SQL, `ExecuteUpdate`) moves a row's
+    `xmin` but isn't held to a caller's version.
   - Every save of an operation goes through its unit of work, and the first that fails fails the operation: every later
     flush, and the commit, throws the same failure, however the handler caught it. A `SaveChanges` of the context's own
     inside an operation, a callback's inside the unit of work's own save included, is refused and fails it the same way:
     `IFlush` writes pending changes.
+- Needs EF Core 10.0.15 and Npgsql's provider 10.0.4: 10.0.0 can't delete a root holding a complex collection.
 - **Upgrading** an installation from before alpha.3, as the owner: `migrationBuilder.UpgradeLeveeSchema()` (or
   `LeveeSchema.Upgrade(schema)`) adds the idempotency keys, and is safe where `AddLeveeSchema()` already made them, so a
   fresh database replaying both migrations gets them once. `LeveeSchema.SweepExpiredKeys()` removes keys past their
@@ -61,8 +68,9 @@ Writes that hold under retries and races.
   kept as the wire's bytes.
 - **Breaking:** with `AddLeveeJobs(sealSecrets: true)` every process is sealed (`levee_process_sealed`), its steps'
   results with its input. A process started `Unique` then needs Oxbow's `ArgsEncryptionOptions.UniqueKeySecret`, as a
-  sealed operation does; and a unique process queued as the plaintext kind before the upgrade doesn't block its sealed
-  twin, so let those drain (or cancel them) before starting the same input again.
+  sealed operation does. A process queued before the upgrade still runs as the plaintext kind: a unique one doesn't block
+  its sealed twin, and one whose new code takes a step whose result declares a secret is refused at that step. Let those
+  drain (or cancel them) before deploying such steps, or starting the same input again.
 
 ### Levee.Client
 - New: a typed client for `/ops`, on the contract wire the platform reads and writes itself (`ContractWire`, shared by

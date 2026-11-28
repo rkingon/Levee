@@ -32,7 +32,7 @@ public sealed class ClientTests : IAsyncDisposable
 
     /// <summary>The app's authentication, as a handler on the client; then whatever else stands between it and the platform.</summary>
     private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null, bool keys = true,
-        TimeSpan? window = null, TimeSpan? delay = null)
+        TimeSpan? window = null, TimeSpan? delay = null, TimeProvider? time = null)
     {
         HttpMessageHandler handler = _app.GetTestServer().CreateHandler();
         if (between is not null)
@@ -44,6 +44,7 @@ public sealed class ClientTests : IAsyncDisposable
         return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions
         {
             Retries = retries, RetryDelay = delay ?? TimeSpan.Zero, IdempotencyKeys = keys, RetryWindow = window ?? TimeSpan.FromSeconds(30),
+            Time = time ?? TimeProvider.System,
         });
     }
 
@@ -263,6 +264,65 @@ public sealed class ClientTests : IAsyncDisposable
 
         Assert.Equal("probe.busy", answered.Error!.Code);
         Assert.True(waited.Elapsed < TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task A_retry_whose_wait_ended_past_the_window_isnt_sent()
+    {
+        var lost = new LoseFirstAnswer();
+
+        // The wait fits the window, but ends a minute late: the next send would be past it.
+        var counted = await Client(between: lost, window: TimeSpan.FromSeconds(1), delay: TimeSpan.FromMilliseconds(500), time: new Late(TimeSpan.FromMinutes(1)))
+            .SendAsync(new Count("acme", $"n{Guid.NewGuid():N}"), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, counted.Error!.Code);
+        Assert.Single(lost.Keys);
+    }
+
+    /// <summary>A clock whose every wait ends at once, but <paramref name="late"/> past its due time.</summary>
+    private sealed class Late(TimeSpan late) : TimeProvider
+    {
+        private long _now;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        public override long GetTimestamp() => Interlocked.Read(ref _now);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (dueTime != Timeout.InfiniteTimeSpan)
+            {
+                Interlocked.Add(ref _now, (dueTime + late).Ticks);
+                ThreadPool.QueueUserWorkItem(_ => callback(state));
+            }
+            return new Fired();
+        }
+
+        private sealed class Fired : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose()
+            {
+            }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    [Fact]
+    public async Task Only_a_message_event_is_an_item()
+    {
+        var events = Answering(HttpStatusCode.OK, "text/event-stream", "event: monitoring\ndata: {\"number\":7}\n\ndata: {\"number\":1}\n\n");
+
+        await using var opened = (await Client(retries: 0, between: events).SubscribeAsync(new Ticks(1), Ct)).Value;
+        var read = new List<int>();
+        await foreach (var tick in opened.WithCancellation(Ct))
+        {
+            read.Add(tick.Number);
+        }
+
+        Assert.Equal([1], read);
     }
 
     [Fact]

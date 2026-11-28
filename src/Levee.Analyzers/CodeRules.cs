@@ -186,7 +186,7 @@ public sealed class CodeRules : DiagnosticAnalyzer
         var flat = Flat(text);
         var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
             || flat.Contains("levee." + Hole);
-        var refused = (names && Sets(text)) || (flat.Contains("levee_audit_write") || flat.Contains("levee_idempotency")) && IsSql(text)
+        var refused = (names && Sets(text)) || CallsLevee(text)
             || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
             || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
@@ -253,11 +253,15 @@ public sealed class CodeRules : DiagnosticAnalyzer
         return Flat(clean).Contains("set_config") || SettingStatement.IsMatch(clean.Replace("\"", "").Replace("'", ""));
     }
 
-    /// <summary>Text with a statement in it: what names Levee's own tables or functions only to say so (a message) isn't.</summary>
-    private static bool IsSql(string text) => SqlStatement.IsMatch(SqlComment.Replace(text, " "));
+    /// <summary>
+    /// A call of one of the functions the runtime role writes the audit or a key through, however its name is put together:
+    /// what can do harm is the call, since the role holds no privilege on the tables themselves. Text that only names one (a
+    /// message) calls nothing.
+    /// </summary>
+    private static bool CallsLevee(string text) =>
+        LeveeCall.IsMatch(new string(SqlComment.Replace(text, " ").ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or '|' or '+')).ToArray()));
 
-    private static readonly Regex SqlStatement = new(@"\b(?:select|perform|call|insert|update|delete|truncate|merge)\b",
-        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex LeveeCall = new(@"levee_(?:audit_write|idempotency_[a-z_]+)\(", RegexOptions.CultureInvariant);
 
     // pg_settings is the view set_config writes through.
     private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);

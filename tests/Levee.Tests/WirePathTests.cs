@@ -29,6 +29,26 @@ public sealed class WirePathTests
     }
 
     [Fact]
+    public async Task A_typed_input_is_taken_once_for_its_key_its_audit_and_its_handler()
+    {
+        var first = await _dispatcher.SendAsync(new Sum("acme", new Once([1, 2])), Ada, "key-1", Ct);
+        var other = await _dispatcher.SendAsync(new Sum("acme", new Once([4, 5])), Ada, "key-1", Ct);
+
+        Assert.Equal(3, first.Value);
+        Assert.Equal(LeveeErrors.IdempotencyMismatch, other.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_member_sent_twice_in_two_cases_is_refused()
+    {
+        var input = JsonDocument.Parse("""{"tenant":"acme","stamp":1,"STAMP":2}""").RootElement;
+
+        var sent = await _dispatcher.SendFromClientAsync("probe.stamp_input", input, Ada, "key-1", Ct);
+
+        Assert.Equal(LeveeErrors.InvalidInput, sent.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_result_sent_as_JSON_that_its_contract_cant_read_back_commits_nothing()
     {
         var said = await _dispatcher.SendJsonAsync("probe.say_empty", JsonSerializer.SerializeToElement(new { tenant = "acme" }), Ada, Ct);
@@ -66,6 +86,32 @@ internal sealed class StampInputHandler : IOperationHandler<StampInput, int>
 {
     public Task<Result<int>> HandleAsync(StampInput operation, OperationContext context, CancellationToken ct) =>
         Task.FromResult<Result<int>>(operation.Stamp.Value);
+}
+
+/// <summary>A sequence that yields its numbers to the first that reads it, and nothing after.</summary>
+public sealed class Once(int[] numbers) : IEnumerable<int>
+{
+    private bool _read;
+
+    public IEnumerator<int> GetEnumerator()
+    {
+        var first = !_read;
+        _read = true;
+        return ((IEnumerable<int>)(first ? numbers : [])).GetEnumerator();
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
+[Operation("probe.sum", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record Sum(string Tenant, IEnumerable<int> Numbers) : IOperation<int>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class SumHandler : IOperationHandler<Sum, int>
+{
+    public Task<Result<int>> HandleAsync(Sum operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<int>>(operation.Numbers.Sum());
 }
 
 [Operation("probe.say_empty", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]

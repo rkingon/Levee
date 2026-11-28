@@ -36,6 +36,8 @@ public sealed class SecondAuditTests
     [InlineData("""Db.ExecuteSqlRaw("select levee_idempotency_complete('ada', 'notes.create', 'k', null, interval '1 day')");""", "LEVEE004")]
     [InlineData("""Db.ExecuteSqlRaw("select levee_idem" + "potency_claim('ada', 'notes.create', 'k', null)");""", "LEVEE004")]
     [InlineData("""throw new InvalidOperationException("levee_idempotency_claim answered nothing for this key");""", null)]
+    [InlineData("""throw new InvalidOperationException("Could not update levee_idempotency");""", null)]
+    [InlineData("""Db.ExecuteSqlRaw("select \"levee_idempotency_claim\" ('ada', 'notes.create', 'k', null)");""", "LEVEE004")]
     [InlineData("""Db.ExecuteSqlRaw("set role postgres");""", "LEVEE004")]
     [InlineData("""Db.ExecuteSqlRaw("select current_setting('levee.scope', true)");""", null)]
     [InlineData("""throw new InvalidOperationException("levee.scope is missing; set it through an operation");""", null)]

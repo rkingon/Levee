@@ -1,7 +1,6 @@
 #nullable enable
 Levee.EntityFrameworkCore.LeveeConventionsExtensions
 static Levee.EntityFrameworkCore.LeveeConventionsExtensions.AddLeveeConventions(this Microsoft.EntityFrameworkCore.ModelConfigurationBuilder! configurationBuilder) -> Microsoft.EntityFrameworkCore.ModelConfigurationBuilder!
-const Levee.EntityFrameworkCore.LeveeSchema.IdempotencyTable = "levee_idempotency" -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.Upgrade(string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeSchema.SweepExpiredKeys(string! schema = "public") -> string!
 static Levee.EntityFrameworkCore.LeveeMigrationBuilderExtensions.UpgradeLeveeSchema(this Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder! migrationBuilder, string! schema = "public") -> Microsoft.EntityFrameworkCore.Migrations.MigrationBuilder!

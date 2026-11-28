@@ -30,16 +30,14 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         return builder.Build();
     }
 
-    /// <summary>The orders tables, once per database: every test in a class shares its fixture's.</summary>
+    /// <summary>The orders table, once per database: every test in a class shares its fixture's. An order's lines are on its row.</summary>
     private async Task OrdersAsync()
     {
         if (await postgres.CountAsync("select count(*) from pg_class where relname = 'orders'") == 0)
         {
             await postgres.ExecuteAsync($"""
-                create table orders (id uuid primary key, tenant text not null);
-                create table order_lines (id uuid primary key, order_id uuid not null references orders(id), tenant text not null, amount int not null);
+                create table orders (id uuid primary key, tenant text not null, lines jsonb not null default '[]');
                 {LeveeSchema.Isolation("orders", "tenant")}
-                {LeveeSchema.Isolation("order_lines", "tenant")}
                 """);
         }
     }
@@ -107,7 +105,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
 
         Assert.Single(added, a => a.IsSuccess);
         Assert.Equal(LeveeErrors.Stale, Assert.Single(added, a => !a.IsSuccess).Error!.Code);
-        Assert.Equal(1, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+        Assert.Equal(1, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
     }
 
     [Fact]
@@ -181,7 +179,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         var added = await dispatcher.SendAsync(new AddLineVersioned(tenant, order, stale, "after a failed save"), ada, Ct);
 
         Assert.Equal(LeveeErrors.Stale, added.Error!.Code);
-        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+        Assert.Equal(0, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
     }
 
     [Fact]
@@ -208,14 +206,13 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         using var host = Build<OrdersDb>();
         var dispatcher = host.Services.GetRequiredService<Dispatcher>();
         var (tenant, ada) = NewTenant();
-        var (order, other, line) = (Guid.CreateVersion7(), Guid.CreateVersion7(), Guid.CreateVersion7());
+        var (order, other) = (Guid.CreateVersion7(), Guid.CreateVersion7());
         Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
         Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, other), ada, Ct)).IsSuccess);
-        // The line's id is another order's, so the database refuses it after the order's version was written.
-        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, other, line), ada, Ct)).IsSuccess);
         var before = await postgres.TextAsync("select xmin::text from orders where id = $1", order);
 
-        var caught = await dispatcher.SendAsync(new AddLineCaught(tenant, order, line), ada, Ct);
+        // Its save writes the order's line, then an order whose id is taken, which the database refuses.
+        var caught = await dispatcher.SendAsync(new AddLineCaught(tenant, order, other), ada, Ct);
 
         Assert.Equal(LeveeErrors.Conflict, caught.Error!.Code);
         Assert.Equal(before, await postgres.TextAsync("select xmin::text from orders where id = $1", order));
@@ -234,7 +231,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         var saved = await dispatcher.SendAsync(new AddLineSavedItself(tenant, order), ada, Ct);
 
         Assert.Equal(ErrorKind.Internal, saved.Error!.Kind);
-        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+        Assert.Equal(0, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
     }
 
     [Fact]
@@ -250,7 +247,7 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         var echoed = await dispatcher.SendAsync(new AddLineEchoed(tenant, order), ada, Ct);
 
         Assert.Equal(ErrorKind.Internal, echoed.Error!.Kind);
-        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+        Assert.Equal(0, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
     }
 
     [Fact]
@@ -267,38 +264,112 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         var added = await dispatcher.SendAsync(new AddLineVersioned(tenant, order, version, "reloaded"), ada, Ct);
 
         Assert.True(added.IsSuccess, added.Error?.Message);
-        Assert.Equal(2, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+        Assert.Equal(2, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
+    }
+
+    [Fact]
+    public async Task A_versioned_edit_that_changes_nothing_is_held_to_the_store_not_to_what_it_holds()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        var version = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture);
+
+        // Neither is read: each is attached as if its caller's version were the store's.
+        var held = await dispatcher.SendAsync(new HoldAttached(tenant, order, version), ada, Ct);
+        var missing = await dispatcher.SendAsync(new HoldAttached(tenant, Guid.CreateVersion7(), 42), ada, Ct);
+
+        Assert.True(held.IsSuccess, held.Error?.Message);
+        Assert.Equal(LeveeErrors.Stale, missing.Error!.Code);
+    }
+
+    [Fact]
+    public async Task An_aggregate_is_removed_with_the_parts_on_its_row()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, order, Guid.CreateVersion7()), ada, Ct)).IsSuccess);
+
+        var removed = await dispatcher.SendAsync(new RemoveOrder(tenant, order), ada, Ct);
+
+        Assert.True(removed.IsSuccess, removed.Error?.Message);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from orders where id = $1", order));
+    }
+
+    [Fact]
+    public async Task A_versioned_edit_that_replaces_its_root_creates_one_and_is_refused()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new AddLine(tenant, order, Guid.CreateVersion7()), ada, Ct)).IsSuccess);
+        var version = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture);
+
+        var replaced = await dispatcher.SendAsync(new ReplaceOrder(tenant, order, version), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, replaced.Error!.Kind);
+        Assert.Equal(1, await postgres.CountAsync("select jsonb_array_length(lines)::bigint from orders where id = $1", order));
+    }
+
+    [Fact]
+    public async Task A_versioned_edit_whose_callback_changes_another_aggregate_is_refused()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var (order, other) = (Guid.CreateVersion7(), Guid.CreateVersion7());
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, other), ada, Ct)).IsSuccess);
+        var version = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture);
+
+        var added = await dispatcher.SendAsync(new AddLineAlongside(tenant, order, other, version), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, added.Error!.Kind);
+        Assert.Equal(0, await postgres.CountAsync("select sum(jsonb_array_length(lines))::bigint from orders where tenant = $1", tenant));
     }
 
     public static TheoryData<string, string?> Mappings() => new()
     {
         { nameof(OrdersDb), null },
+        { nameof(OwnedOnTheRowDb), null },
         { nameof(TptOrdersDb), "aggregate root in an inheritance hierarchy" },
         { nameof(DerivedRootDb), "aggregate root in an inheritance hierarchy" },
-        { nameof(IdentityAlwaysDb), "is one Postgres won't let a write set" },
-        { nameof(IdentityByDefaultDb), null },
-        { nameof(SharedChildDb), "is a child of both" },
         { nameof(SplitOrdersDb), "split across several" },
-        { nameof(CompositeDb), "key is more than one column" },
+        { nameof(ChildTableDb), "an entity of its own" },
+        { nameof(RootReferenceDb), "an entity of its own" },
+        { nameof(OwnedTableDb), "on a table of its own" },
+        { nameof(LinkedDb), "many-to-many link" },
     };
 
     [Theory]
     [MemberData(nameof(Mappings))]
-    public void An_aggregate_is_mapped_in_the_shapes_one_version_can_cover(string context, string? refused)
+    public void An_aggregate_is_mapped_on_its_roots_row(string context, string? refused)
     {
         using var db = context switch
         {
             nameof(OrdersDb) => (DbContext)Model<OrdersDb>(),
+            nameof(OwnedOnTheRowDb) => Model<OwnedOnTheRowDb>(),
             nameof(TptOrdersDb) => Model<TptOrdersDb>(),
             nameof(DerivedRootDb) => Model<DerivedRootDb>(),
-            nameof(IdentityAlwaysDb) => Model<IdentityAlwaysDb>(),
-            nameof(IdentityByDefaultDb) => Model<IdentityByDefaultDb>(),
             nameof(SplitOrdersDb) => Model<SplitOrdersDb>(),
-            nameof(CompositeDb) => Model<CompositeDb>(),
-            _ => Model<SharedChildDb>(),
+            nameof(ChildTableDb) => Model<ChildTableDb>(),
+            nameof(RootReferenceDb) => Model<RootReferenceDb>(),
+            nameof(OwnedTableDb) => Model<OwnedTableDb>(),
+            _ => Model<LinkedDb>(),
         };
 
-        var problem = Levee.EntityFrameworkCore.AggregateMap.Of(db.Model).Problem;
+        var problem = Levee.EntityFrameworkCore.AggregateLanguage.Problem(db.Model);
 
         if (refused is null)
         {
@@ -314,17 +385,6 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     private static TContext Model<TContext>()
         where TContext : DbContext =>
         (TContext)Activator.CreateInstance(typeof(TContext), new DbContextOptionsBuilder<TContext>().UseNpgsql("Host=unused").Options)!;
-
-    [Fact]
-    public void A_lookup_that_navigates_to_a_child_isnt_part_of_its_aggregate()
-    {
-        using var db = Model<LookupDb>();
-        var map = Levee.EntityFrameworkCore.AggregateMap.Of(db.Model);
-
-        Assert.Null(map.Problem);
-        Assert.Null(map.ParentOf(db.Model.FindEntityType(typeof(Shelf))!));
-        Assert.Equal(typeof(Order), map.ParentOf(db.Model.FindEntityType(typeof(OrderLine))!)!.PrincipalEntityType.ClrType);
-    }
 
     [Fact]
     public void The_version_is_Postgres_s_own_and_no_migration_creates_it()
@@ -376,8 +436,6 @@ internal sealed class EditHeldHandler(INotes notes) : IOperationHandler<EditHeld
 
 public sealed class Order : IAggregateRoot
 {
-    private readonly List<OrderLine> _lines = [];
-
     private Order(Guid id, string tenant)
     {
         Id = id;
@@ -388,34 +446,36 @@ public sealed class Order : IAggregateRoot
 
     public string Tenant { get; private set; }
 
-    public IReadOnlyList<OrderLine> Lines => _lines;
+    /// <summary>On the order's own row, so a change to one is a write of the order.</summary>
+    public List<OrderLine> Lines { get; private set; } = [];
 
     public static Order Open(Guid id, string tenant) => new(id, tenant);
 
-    public void Add(Guid line, int amount) => _lines.Add(new OrderLine(line, Tenant, amount));
+    public void Add(Guid line, int amount) => Lines.Add(new OrderLine(line, amount));
 
     public void Take(Order from, Guid line)
     {
-        var taken = from._lines.Single(l => l.Id == line);
-        from._lines.Remove(taken);
-        _lines.Add(taken);
+        var taken = from.Lines.Single(l => l.Id == line);
+        from.Lines.Remove(taken);
+        Lines.Add(taken);
     }
 }
 
-public sealed class OrderLine(Guid id, string tenant, int amount)
-{
-    public Guid Id { get; private set; } = id;
-
-    public string Tenant { get; private set; } = tenant;
-
-    public int Amount { get; private set; } = amount;
-}
+public sealed record OrderLine(Guid Id, int Amount);
 
 internal class OrdersDb : DbContext
 {
     public OrdersDb(DbContextOptions<OrdersDb> options)
         : base(options)
     {
+        SavingChanges += (_, _) =>
+        {
+            if (Alongside is { } other)
+            {
+                Alongside = null;
+                other.Add(Guid.CreateVersion7(), 1);
+            }
+        };
         SavedChanges += (_, _) =>
         {
             if (Echo is { } echo)
@@ -437,6 +497,9 @@ internal class OrdersDb : DbContext
     /// <summary>A line a callback adds and saves after the unit of work's own save: a save inside a save.</summary>
     public (Order Order, Guid Line)? Echo { get; set; }
 
+    /// <summary>An order a callback adds a line to as the next save begins, beside whatever the save writes.</summary>
+    public Order? Alongside { get; set; }
+
     protected OrdersDb(DbContextOptions options)
         : base(options)
     {
@@ -452,15 +515,7 @@ internal class OrdersDb : DbContext
             e.ToTable("orders");
             e.Property(o => o.Id).HasColumnName("id");
             e.Property(o => o.Tenant).HasColumnName("tenant");
-            e.HasMany(o => o.Lines).WithOne().HasForeignKey("order_id");
-            e.Navigation(o => o.Lines).HasField("_lines");
-        });
-        modelBuilder.Entity<OrderLine>(e =>
-        {
-            e.ToTable("order_lines");
-            e.Property(l => l.Id).HasColumnName("id").ValueGeneratedNever();
-            e.Property(l => l.Tenant).HasColumnName("tenant");
-            e.Property(l => l.Amount).HasColumnName("amount");
+            e.ComplexCollection(o => o.Lines, l => l.ToJson("lines"));
         });
     }
 }
@@ -511,9 +566,9 @@ public sealed record MoveLine(string Tenant, Guid From, Guid To, Guid Line) : IO
     string IScopedOperation.ScopeKey => Tenant;
 }
 
-/// <summary>Adds a line whose id is taken, catches the save's refusal, drops the line, and goes on as if it had written.</summary>
+/// <summary>Adds a line and opens an order whose id is taken, catches the save's refusal, lets go of both, and goes on as if it had written.</summary>
 [Operation("probe.order_add_line_caught", "member", Effects = Effects.Write, Idempotency = Idempotency.Conflicts)]
-public sealed record AddLineCaught(string Tenant, Guid Order, Guid Line) : IOperation<Unit>, IScopedOperation
+public sealed record AddLineCaught(string Tenant, Guid Order, Guid Taken) : IOperation<Unit>, IScopedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
 }
@@ -522,17 +577,91 @@ internal sealed class AddLineCaughtHandler(IOrders orders) : IOperationHandler<A
 {
     public async Task<Result<Unit>> HandleAsync(AddLineCaught operation, OperationContext context, CancellationToken ct)
     {
-        (await orders.FindAsync(operation.Order, ct)).Add(operation.Line, 1);
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        orders.Add(Order.Open(operation.Taken, operation.Tenant));
         try
         {
             await orders.SaveAsync(ct);
         }
         catch (DbUpdateException)
         {
-            // Swallowed, and the line let go of: the order's version was written before the line failed, and the commit has
-            // nothing left to write.
+            // Swallowed, and both let go of: the commit has nothing left to write.
             orders.Forget();
         }
+        return Unit.Value;
+    }
+}
+
+/// <summary>Held to a version, tracks an order it never read and changes nothing.</summary>
+[Operation("probe.order_hold_attached", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record HoldAttached(string Tenant, Guid Order, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class HoldAttachedHandler(IOrders orders) : IOperationHandler<HoldAttached, Unit>
+{
+    public Task<Result<Unit>> HandleAsync(HoldAttached operation, OperationContext context, CancellationToken ct)
+    {
+        orders.Attach(operation.Order, operation.Tenant, operation.Version);
+        return Task.FromResult<Result<Unit>>(Unit.Value);
+    }
+}
+
+[Operation("probe.order_remove", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record RemoveOrder(string Tenant, Guid Order) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class RemoveOrderHandler(IOrders orders) : IOperationHandler<RemoveOrder, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(RemoveOrder operation, OperationContext context, CancellationToken ct)
+    {
+        orders.Remove(await orders.FindAsync(operation.Order, ct));
+        return Unit.Value;
+    }
+}
+
+/// <summary>Held to a version, removes its order, then opens one with the same id in its place.</summary>
+[Operation("probe.order_replace", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record ReplaceOrder(string Tenant, Guid Order, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class ReplaceOrderHandler(IOrders orders) : IOperationHandler<ReplaceOrder, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(ReplaceOrder operation, OperationContext context, CancellationToken ct)
+    {
+        orders.Remove(await orders.FindAsync(operation.Order, ct));
+        await orders.SaveAsync(ct);
+        orders.Add(Order.Open(operation.Order, operation.Tenant));
+        await orders.SaveAsync(ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Held to one order's version, adds a line to it while the context's callback adds one to another.</summary>
+[Operation("probe.order_add_line_alongside", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AddLineAlongside(string Tenant, Guid Order, Guid Other, uint Version) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class AddLineAlongsideHandler(IOrders orders) : IOperationHandler<AddLineAlongside, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineAlongside operation, OperationContext context, CancellationToken ct)
+    {
+        orders.ChangeAlongside(await orders.FindAsync(operation.Other, ct));
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        await orders.SaveAsync(ct);
         return Unit.Value;
     }
 }
@@ -629,6 +758,14 @@ public interface IOrders : IRepository<Order>
     /// <summary>Has the context's own callback add a line to an order and save it, once the next save is written.</summary>
     void EchoOnSave(Guid order, Guid line);
 
+    /// <summary>Has the context's own callback add a line to a loaded order as the next save begins.</summary>
+    void ChangeAlongside(Order order);
+
+    void Remove(Order order);
+
+    /// <summary>Tracks an order it never read, as if it were at <paramref name="version"/>.</summary>
+    void Attach(Guid id, string tenant, uint version);
+
 }
 
 [Adapter]
@@ -636,7 +773,7 @@ internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
 {
     public void Add(Order order) => db.Add(order);
 
-    public Task<Order> FindAsync(Guid id, CancellationToken ct) => db.Set<Order>().Include(o => o.Lines).SingleAsync(o => o.Id == id, ct);
+    public Task<Order> FindAsync(Guid id, CancellationToken ct) => db.Set<Order>().SingleAsync(o => o.Id == id, ct);
 
     public Task SaveAsync(CancellationToken ct) => flush.FlushAsync(ct);
 
@@ -645,6 +782,16 @@ internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
     public Task SaveItselfAsync(CancellationToken ct) => db.SaveChangesAsync(ct);
 
     public void EchoOnSave(Guid order, Guid line) => db.Echo = (db.Set<Order>().Local.Single(o => o.Id == order), line);
+
+    public void ChangeAlongside(Order order) => db.Alongside = order;
+
+    public void Remove(Order order) => db.Remove(order);
+
+    public void Attach(Guid id, string tenant, uint version)
+    {
+        var token = db.Attach(Order.Open(id, tenant)).Property<uint>("xmin");
+        token.CurrentValue = token.OriginalValue = version;
+    }
 
 }
 
@@ -745,59 +892,6 @@ public class Plain
 /// <summary>Only the derived type is a root, its base a plain entity sharing its table.</summary>
 public sealed class RootOfPlain : Plain, IAggregateRoot;
 
-internal sealed class IdentityAlwaysDb(DbContextOptions<IdentityAlwaysDb> options) : DbContext(options)
-{
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Counter>().Property(c => c.Id).UseIdentityAlwaysColumn();
-}
-
-internal sealed class IdentityByDefaultDb(DbContextOptions<IdentityByDefaultDb> options) : DbContext(options)
-{
-    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Counter>().Property(c => c.Id).UseIdentityByDefaultColumn();
-}
-
-public sealed class Counter : IAggregateRoot
-{
-    public long Id { get; private set; }
-}
-
-/// <summary>One child type reached from two roots: whose version covers it?</summary>
-internal sealed class SharedChildDb(DbContextOptions<SharedChildDb> options) : OrdersDb(options)
-{
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        base.OnModelCreating(modelBuilder);
-        modelBuilder.Entity<Basket>(e => e.HasMany(b => b.Lines).WithOne().HasForeignKey("basket_id"));
-    }
-}
-
-public sealed class Basket : IAggregateRoot
-{
-    public Guid Id { get; private set; }
-
-    public List<OrderLine> Lines { get; } = [];
-}
-
-/// <summary>A lookup with a collection of an aggregate's children: a reference, not an owner.</summary>
-internal sealed class LookupDb(DbContextOptions<LookupDb> options) : OrdersDb(options)
-{
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        base.OnModelCreating(modelBuilder);
-        modelBuilder.Entity<Shelf>(e => e.HasMany(s => s.Lines).WithOne().HasForeignKey("shelf_id"));
-    }
-}
-
-public sealed class Shelf
-{
-    public Guid Id { get; private set; }
-
-    public List<OrderLine> Lines { get; } = [];
-}
-
 /// <summary>An order whose tenant lives in a table of its own: an edit there is no write of the order's row.</summary>
 internal sealed class SplitOrdersDb(DbContextOptions<SplitOrdersDb> options) : OrdersDb(options)
 {
@@ -808,16 +902,100 @@ internal sealed class SplitOrdersDb(DbContextOptions<SplitOrdersDb> options) : O
     }
 }
 
-internal sealed class CompositeDb(DbContextOptions<CompositeDb> options) : DbContext(options)
+/// <summary>A crate's parts on its own row: in a JSON column, and on its table.</summary>
+internal sealed class OwnedOnTheRowDb(DbContextOptions<OwnedOnTheRowDb> options) : DbContext(options)
 {
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
 
-    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Ledger>().HasKey(l => new { l.Tenant, l.Number });
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Crate>(e =>
+    {
+        e.OwnsMany(c => c.Slats, s => s.ToJson());
+        e.OwnsOne(c => c.Lid);
+        e.Ignore(c => c.Next);
+        e.Ignore(c => c.Tags);
+    });
 }
 
-public sealed class Ledger : IAggregateRoot
+/// <summary>A crate's slats, each an entity on a table of its own.</summary>
+internal sealed class ChildTableDb(DbContextOptions<ChildTableDb> options) : DbContext(options)
 {
-    public string Tenant { get; private set; } = "";
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
 
-    public int Number { get; private set; }
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Crate>(e =>
+    {
+        e.HasMany(c => c.Slats).WithOne();
+        e.Ignore(c => c.Lid);
+        e.Ignore(c => c.Next);
+        e.Ignore(c => c.Tags);
+    });
+}
+
+/// <summary>A crate that navigates to another aggregate's root.</summary>
+internal sealed class RootReferenceDb(DbContextOptions<RootReferenceDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Crate>(e =>
+    {
+        e.HasOne(c => c.Next).WithMany();
+        e.Ignore(c => c.Slats);
+        e.Ignore(c => c.Lid);
+        e.Ignore(c => c.Tags);
+    });
+}
+
+/// <summary>A crate's slats owned, but on a table of their own (EF's default for OwnsMany).</summary>
+internal sealed class OwnedTableDb(DbContextOptions<OwnedTableDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Crate>(e =>
+    {
+        e.OwnsMany(c => c.Slats);
+        e.Ignore(c => c.Lid);
+        e.Ignore(c => c.Next);
+        e.Ignore(c => c.Tags);
+    });
+}
+
+/// <summary>A crate linked to tags many-to-many: the link is a row of a join table.</summary>
+internal sealed class LinkedDb(DbContextOptions<LinkedDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Crate>(e =>
+    {
+        e.HasMany(c => c.Tags).WithMany();
+        e.Ignore(c => c.Slats);
+        e.Ignore(c => c.Lid);
+        e.Ignore(c => c.Next);
+    });
+}
+
+public sealed class Crate : IAggregateRoot
+{
+    public Guid Id { get; private set; }
+
+    public List<Slat> Slats { get; private set; } = [];
+
+    public Lid? Lid { get; private set; }
+
+    public Crate? Next { get; private set; }
+
+    public List<CrateTag> Tags { get; private set; } = [];
+}
+
+public sealed class Slat
+{
+    public Guid Id { get; private set; }
+}
+
+public sealed class Lid
+{
+    public string Color { get; private set; } = "";
+}
+
+public sealed class CrateTag
+{
+    public Guid Id { get; private set; }
 }

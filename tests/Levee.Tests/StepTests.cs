@@ -108,4 +108,45 @@ public sealed class StepTests
         // Refused before it acts, so no token is issued that can't be recorded.
         Assert.Equal(refused ? 0 : 1, issued);
     }
+
+    [Fact]
+    public async Task A_step_writes_its_result_once()
+    {
+        var before = WrittenJson.Count;
+
+        await Run(new Recorded()).StepAsync("write", _ => Task.FromResult<Result<Written>>(new Written(1)), CancellationToken.None);
+
+        Assert.Equal(1, WrittenJson.Count - before);
+    }
+
+    [Fact]
+    public async Task A_step_that_answers_null_is_refused_and_recorded_nothing()
+    {
+        var recorded = new Recorded();
+
+        var step = await Record.ExceptionAsync(() => Run(recorded).StepAsync<string>("say", _ => Task.FromResult(Result<string>.Success(null!)), CancellationToken.None));
+
+        Assert.IsType<InvalidOperationException>(step);
+        Assert.Empty(recorded.Steps);
+    }
+}
+
+/// <summary>Counts every time it's written: what's written once is written by the wire alone.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(WrittenJson))]
+[ValueObject(typeof(int))]
+public sealed record Written(int Value);
+
+public sealed class WrittenJson : System.Text.Json.Serialization.JsonConverter<Written>
+{
+    private static int _count;
+
+    public static int Count => Volatile.Read(ref _count);
+
+    public override Written Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) => new(reader.GetInt32());
+
+    public override void Write(Utf8JsonWriter writer, Written value, JsonSerializerOptions options)
+    {
+        Interlocked.Increment(ref _count);
+        writer.WriteNumberValue(value.Value);
+    }
 }

@@ -793,7 +793,7 @@ an operation that names one has to write: a read can't be stale.
 public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation { ... }
 
 // Right: it writes, and its handler loads the root it changes, changes it through its own method, and saves
-[Operation("notes.edit", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["note.missing"])]
+[Operation("notes.edit", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["note.empty", "note.missing"])]
 public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;
@@ -803,8 +803,10 @@ internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote
 {
     public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
     {
+        var text = NoteText.From(operation.Text);   // the domain's own rule for a note's text
+        if (!text.IsSuccess) return text.Error;
         if (await notes.FindAsync(operation.Id, ct) is not { } note) return Error.NotFound("note.missing", "There's no such note.");
-        note.Edit(operation.Text);
+        note.Edit(text.Value);
         await notes.SaveAsync(ct);   // flushes, so the view carries the version just written
         return View(note);
     }

@@ -33,6 +33,17 @@ internal static class ContractWire
     /// <summary>The input as the wire carries it, refused here exactly as the platform would refuse it on reading it back.</summary>
     public static Result<JsonElement> WriteInput(OperationDescriptor descriptor, IOperation operation)
     {
+        var snapshot = Snapshot(descriptor, operation);
+        return snapshot.IsSuccess ? snapshot.Value.Wire : snapshot.Error;
+    }
+
+    /// <summary>
+    /// An input sent typed, taken once: written to the wire, and read back as the operation everything after reads (its
+    /// audit, its idempotency key, its handler), so what a value yields once (a sequence) or writes anew each time (a
+    /// converter) is the same to all of them, and the same as it would be sent as JSON.
+    /// </summary>
+    public static Result<(JsonElement Wire, IOperation Read)> Snapshot(OperationDescriptor descriptor, IOperation operation)
+    {
         JsonElement written;
         try
         {
@@ -43,7 +54,7 @@ internal static class ContractWire
             return Refused(descriptor, e, refused: null);
         }
         var read = ReadInput(descriptor, written);
-        return read.IsSuccess ? written : read.Error;
+        return read.IsSuccess ? (written, read.Value) : read.Error;
     }
 
     /// <summary>A result, or a stream's item, as the wire carries it.</summary>

@@ -34,6 +34,9 @@ public sealed class LeveeClientOptions
     /// caller the platform can't tell apart from anyone else's, so it holds no key: its writes are sent once, never retried.
     /// </summary>
     public bool IdempotencyKeys { get; set; } = true;
+
+    /// <summary>The clock its retries wait by and its window is measured on.</summary>
+    internal TimeProvider Time { get; set; } = TimeProvider.System;
 }
 
 /// <summary>
@@ -66,7 +69,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         var retries = descriptor.ReadOnly || key is not null && ((descriptor.Effects & Effects.External) == 0 || descriptor.Idempotency == Idempotency.Idempotent)
             ? _options.Retries
             : 0;
-        var answered = await WithRetriesAsync(retries, async () =>
+        var answered = await WithRetriesAsync<object?>(retries, async () =>
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, Path(descriptor.Name)) { Content = new ByteArrayContent(body) };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -111,21 +114,21 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             return found.Error;
         }
         var (descriptor, input) = found.Value;
-        var opened = await WithRetriesAsync(_options.Retries, async () =>
+        var opened = await WithRetriesAsync<HttpResponseMessage>(_options.Retries, async () =>
         {
             var response = await http.SendAsync(
                 new HttpRequestMessage(HttpMethod.Get, $"{Path(descriptor.Name)}/events?input={Uri.EscapeDataString(input.GetRawText())}"),
                 HttpCompletionOption.ResponseHeadersRead, ct);
             if (response.IsSuccessStatusCode && Is(response, "text/event-stream"))
             {
-                return Result<object?>.Success(response);
+                return Result<HttpResponseMessage>.Success(response);
             }
             using (response)
             {
                 return response.IsSuccessStatusCode ? NotThePlatform(response) : await FailureAsync(response, ct);
             }
         }, ct);
-        return opened.IsSuccess ? new LeveeSubscription<TItem>((HttpResponseMessage)opened.Value!, descriptor) : opened.Error;
+        return opened.IsSuccess ? new LeveeSubscription<TItem>(opened.Value, descriptor) : opened.Error;
     }
 
     /// <summary>The operation's contract and its input on the wire, refused as the platform would refuse it.</summary>
@@ -142,12 +145,13 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     private string Path(string name) => $"{_options.Prefix.TrimEnd('/')}/{name}";
 
     /// <summary>Sends, and sends again after a transient failure, never past <see cref="LeveeClientOptions.RetryWindow"/> from the first send.</summary>
-    private async Task<Result<object?>> WithRetriesAsync(int retries, Func<Task<Result<object?>>> send, CancellationToken ct)
+    private async Task<Result<T>> WithRetriesAsync<T>(int retries, Func<Task<Result<T>>> send, CancellationToken ct)
     {
-        var since = System.Diagnostics.Stopwatch.StartNew();
+        var time = _options.Time;
+        var since = time.GetTimestamp();
         for (var attempt = 0; ; attempt++)
         {
-            Result<object?> answered;
+            Result<T> answered;
             try
             {
                 answered = await send();
@@ -163,16 +167,21 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             }
             var delay = answered.IsSuccess ? TimeSpan.Zero : answered.Error.RetryAfter ?? _options.RetryDelay * Math.Pow(2, attempt);
             // A retry that would be sent past the window isn't waited for: the failure is the answer now.
-            if (answered.IsSuccess || !answered.Error.Transient || attempt >= retries || since.Elapsed + delay > _options.RetryWindow)
+            if (answered.IsSuccess || !answered.Error.Transient || attempt >= retries || time.GetElapsedTime(since) + delay > _options.RetryWindow)
             {
                 return answered;
             }
-            await Task.Delay(delay, ct);
+            await Task.Delay(delay, time, ct);
+            // And none is sent past it, however late the wait ended.
+            if (time.GetElapsedTime(since) > _options.RetryWindow)
+            {
+                return answered;
+            }
         }
     }
 
     /// <summary>The platform's problem, read back into its error; anything else (a proxy's page) is the platform out of reach.</summary>
-    private static async Task<Result<object?>> FailureAsync(HttpResponseMessage response, CancellationToken ct)
+    private static async Task<Error> FailureAsync(HttpResponseMessage response, CancellationToken ct)
     {
         if (Is(response, "application/problem+json"))
         {
@@ -246,7 +255,8 @@ public sealed class LeveeSubscription<TItem> : IAsyncEnumerable<TItem>, IAsyncDi
                 {
                     throw new OperationFailedException(LeveeClient.Unreachable($"{_descriptor.Name}'s stream broke off: {e.Message}"));
                 }
-                if (items.Current.EventType != "keepalive")
+                // An item is a message, the stream's end an error; any other event (a keepalive) carries neither.
+                if (items.Current.EventType is SseParser.EventTypeDefault or "error")
                 {
                     yield return Item(items.Current);
                 }

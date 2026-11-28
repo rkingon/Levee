@@ -62,6 +62,29 @@ public sealed class IdempotencyTests
     }
 
     [Fact]
+    public async Task A_kept_result_its_contract_now_marks_a_secret_is_refused_before_it_is_read()
+    {
+        await _dispatcher.SendAsync(new IssueToken("acme", "ci"), Ada, "key-1", CancellationToken.None);
+        // Kept by an earlier contract, in a shape the current one doesn't read.
+        var kept = _store.Keys.Single(k => k.Key.EndsWith("/key-1", StringComparison.Ordinal));
+        _store.Keys[kept.Key] = (kept.Value.Hash, """{"name":"ci","secret":"token-ci"}""");
+
+        var again = await _dispatcher.SendAsync(new IssueToken("acme", "ci"), Ada, "key-1", CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.IdempotencyReplayed, again.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_keyed_result_is_written_once()
+    {
+        var before = WrittenJson.Count;
+
+        await _dispatcher.SendAsync(new WriteOnce("acme"), Ada, "key-1", CancellationToken.None);
+
+        Assert.Equal(1, WrittenJson.Count - before);
+    }
+
+    [Fact]
     public async Task A_key_is_each_callers_own()
     {
         var name = Name();
@@ -166,6 +189,17 @@ internal sealed class IssueTokenHandler : IOperationHandler<IssueToken, IssuedTo
 {
     public Task<Result<IssuedToken>> HandleAsync(IssueToken operation, OperationContext context, CancellationToken ct) =>
         Task.FromResult<Result<IssuedToken>>(new IssuedToken(operation.Name, $"token-{operation.Name}"));
+}
+
+[Operation("probe.write_once", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record WriteOnce(string Tenant) : IOperation<Written>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class WriteOnceHandler : IOperationHandler<WriteOnce, Written>
+{
+    public Task<Result<Written>> HandleAsync(WriteOnce operation, OperationContext context, CancellationToken ct) => Task.FromResult<Result<Written>>(new Written(1));
 }
 
 [Operation("probe.tag", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]

@@ -98,8 +98,9 @@ the run.
 - **At least once.** A result is recorded after its step runs, so a run that dies in between runs it again: a vendor call
   takes an idempotency key.
 - **Names identify results.** Name a step for what it does, unique in the process; renaming it runs it again.
-- **Results travel on the contract wire** (`LeveeJson.Options`), kept with the job (Oxbow's `job_step`). A result
-  carrying a `[Secret]` is refused unless jobs seal their inputs, which seals step results too.
+- **Results travel on the contract wire** (`LeveeJson.Options`), kept with the job (Oxbow's `job_step`), and are never
+  null. A result whose type declares a `[Secret]` is refused before the step acts, unless jobs seal their inputs, which
+  seals step results too.
 - **A superseded run can't write.** An attempt that outlives its timeout or heartbeat can be rescued while it still runs.
   Every write a process sends takes Oxbow's attempt lock first, in the operation's own transaction, so a run the rescuer
   has taken over rolls back and ends there; its rescuer's run is the process now. A read takes no lock.

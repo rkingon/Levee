@@ -4,7 +4,10 @@ using Sample.Domain;
 
 namespace Sample.Application;
 
-/// <summary>Words a note may not hold. Which list applies is a setting: the port doesn't know where the words come from.</summary>
+/// <summary>
+/// Words this app's operations refuse in a note's text: a moderation policy of the app's, which list a setting picks, not an
+/// invariant of the note. The port doesn't know where the words come from.
+/// </summary>
 [Port(SelectedBy = "Sample:BannedWords")]
 public interface IBannedWords
 {
@@ -76,7 +79,7 @@ internal sealed class CreateNoteLaterHandler(IJobs jobs) : IOperationHandler<Cre
     }
 }
 
-/// <summary>A note's text as the domain holds it, and free of the words this app bans: which those are is a setting, not the note's.</summary>
+/// <summary>The text an operation sets on a note: the domain's own rule for it, then this app's policy on words.</summary>
 internal static class NoteTexts
 {
     public static Result<NoteText> Allowed(string text, IBannedWords banned)

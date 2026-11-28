@@ -65,6 +65,7 @@ public sealed class ProcessContext
     /// <param name="run">The step: an operation sent (<see cref="SendAsync{TResult}"/>), or a port's call.</param>
     /// <param name="ct">Passed to <paramref name="run"/>.</param>
     public async Task<Result<T>> StepAsync<T>(string name, Func<CancellationToken, Task<Result<T>>> run, CancellationToken ct)
+        where T : notnull
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(run);
@@ -86,26 +87,26 @@ public sealed class ProcessContext
                 {
                     throw new StepFailed(result.Error);
                 }
-                // Written once, then judged and read back from what was written: a value that enumerates once (a generator)
-                // is the same value throughout, and one its type can't read again (a choice's subtype it doesn't name) is
-                // refused here rather than recorded for good.
+                // Written once, then read back from what was written: one its type can't read again (a choice's subtype it
+                // doesn't name), or null, is refused here rather than recorded for good, and answered on every run.
                 var wire = JsonSerializer.SerializeToUtf8Bytes(result.Value, LeveeJson.Options);
-                var written = JsonSerializer.Deserialize<T>(wire, LeveeJson.Options);
-                if (!_sealed && written is not null && LeveeJson.FindSecretIn(written, typeof(T), LeveeJson.Options) is { } secret)
-                {
-                    throw new InvalidOperationException(Unsealed(name, secret));
-                }
+                _ = Read<T>(name, wire);
                 // Kept as the wire's bytes, not as JSON: Oxbow keeps a step's result as jsonb, which refuses some of what the wire
                 // writes (a \u0000 in a string).
                 return Convert.ToBase64String(wire);
             }, ct).ConfigureAwait(false);
-            return Result<T>.Success(JsonSerializer.Deserialize<T>(Convert.FromBase64String(recorded), LeveeJson.Options)!);
+            return Result<T>.Success(Read<T>(name, Convert.FromBase64String(recorded)));
         }
         catch (StepFailed failed)
         {
             return failed.Error;
         }
     }
+
+    private static T Read<T>(string step, byte[] wire)
+        where T : notnull =>
+        JsonSerializer.Deserialize<T>(wire, LeveeJson.Options)
+            ?? throw new InvalidOperationException($"Step {step} answered null, which a step never does: its result is what every later run reads.");
 
     private static string Unsealed(string step, string secret) =>
         $"Step {step}'s result {secret} is a secret, and a step's result is stored. Return a reference to it, "

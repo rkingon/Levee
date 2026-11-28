@@ -47,8 +47,9 @@ allow-list, not a blanket:
   the transaction's own time. No `insert`, `update` or `delete` of its own: the role can't change, remove or backdate a
   record;
 - idempotency keys (`levee_idempotency`): nothing of the table, only `levee_idempotency_claim` and
-  `levee_idempotency_complete`, which read the transaction's own scope, so a key is claimed, and its result replayed, only
-  where and for whom it was sent. An installation from before alpha.3 adds them as the owner, with
+  `levee_idempotency_complete`. They read the transaction's own scope, which only the unit of work sets; the subject is the
+  dispatcher's, the authenticated caller it passes them. So a key is claimed, and its result replayed, only where and for
+  whom it was sent. An installation from before alpha.3 adds them as the owner, with
   `migrationBuilder.UpgradeLeveeSchema()` (`LeveeSchema.Upgrade(schema)`), which grants the recorded role itself.
   `LeveeSchema.SweepExpiredKeys()` removes the keys past their lifetime, on a schedule of the owner's.
 
@@ -76,9 +77,9 @@ app has checked isn't seen until it restarts.
 2. `levee.scope` (the operation's scope key) and `levee.platform` (`on` for a platform operation), local to the transaction.
 3. With an idempotency key, for a write: the key claimed, or what its first request committed answered without running
    the handler again. An equal request still in flight is waited for, so equal requests at once make one write.
-4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. Every aggregate
-   root's version (`xmin`) is checked as it's written, and a changed child writes its root's; what the unit of work
-   doesn't see (raw SQL, a cascade, `ExecuteUpdate`) moves a row's `xmin` but no root's. A flush that fails fails
+4. The handler, with `IFlush` to make pending writes visible to a later query in the same transaction. An aggregate is
+   its root's row, parts included, and EF checks its version (`xmin`) as it writes it; a versioned operation is held to
+   the one aggregate whose version its saves moved. A flush that fails fails
    the operation: every later flush, and the commit, throws the same failure, however the handler caught it. A save of
    the context's own (`SaveChanges`, which LEVEE004 refuses), a callback's inside the unit of work's own save included, is
    refused inside an operation and fails it the same way.
@@ -89,8 +90,8 @@ Postgres's refusals come back classified: a write in a read-only transaction is 
 moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write
 changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
 set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count
-(it runs as it's called, past the change tracker: an update of a root's own table moves that root's `xmin` but isn't held
-to the version a caller saw, and one on a child's table is refused at commit, as any child written without its root is), a duplicate is `conflict`, any other constraint
+(it runs as it's called, past the change tracker: an update of a root's table moves that root's `xmin` but isn't held to
+the version a caller saw), a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 

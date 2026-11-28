@@ -216,7 +216,7 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
             return $"{name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
                 + $"DbContextOptions<{name}> in its constructor and configure it in AddDbContext, not OnConfiguring.";
         }
-        if (AggregateMap.Of(db.Model).Problem is { } aggregates)
+        if (AggregateLanguage.Problem(db.Model) is { } aggregates)
         {
             return $"{name}: {aggregates}";
         }
@@ -561,7 +561,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async Task CommitAsync(CancellationToken ct)
     {
         await Aggregates.SaveAsync(db, ct);
-        Aggregates.Verify(db);
+        await Aggregates.VerifyAsync(db, ct);
         // Last before COMMIT, so a key's lifetime starts as its write lands, not as its handler returned.
         if (_kept is var (key, result))
         {
