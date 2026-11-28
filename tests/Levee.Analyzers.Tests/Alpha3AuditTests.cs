@@ -218,6 +218,8 @@ public sealed class Alpha3AuditTests
             }
             """, "App.Domain", [GeneratorTests.Levee, GeneratorTests.Di, GeneratorTests.Configuration, shared.Compilation.ToMetadataReference()]);
 
-        Assert.Equal(["LEVEE007"], output.Ids.Distinct());
+        var found = Assert.Single(output.Errors);
+        Assert.Equal("LEVEE007", found.Id);
+        Assert.Equal("Line", found.Location.SourceTree!.GetText(TestContext.Current.CancellationToken).ToString(found.Location.SourceSpan));
     }
 }
