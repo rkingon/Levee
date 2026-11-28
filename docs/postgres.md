@@ -82,8 +82,8 @@ Postgres's refusals come back classified: a write in a read-only transaction is 
 moved outside the scope is `scope.violation`, an update or delete EF tracked that finds no row to change (another write
 changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
 set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count
-(it runs as it's called, past the change tracker, so it moves no aggregate's version: a set-based write to an aggregate's
-rows isn't held to concurrent edits of it), a duplicate is `conflict`, any other constraint
+(it runs as it's called, past the change tracker: one on a root's own table moves that root's `xmin`, but isn't held to
+the version a caller saw, and one on a child's table moves no root's version at all), a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 

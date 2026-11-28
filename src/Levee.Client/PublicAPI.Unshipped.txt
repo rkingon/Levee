@@ -13,3 +13,5 @@ Levee.Client.LeveeClientOptions.RetryDelay.get -> System.TimeSpan
 Levee.Client.LeveeClientOptions.RetryDelay.set -> void
 Levee.Client.LeveeClientServiceCollectionExtensions
 static Levee.Client.LeveeClientServiceCollectionExtensions.AddLeveeClient(this Microsoft.Extensions.DependencyInjection.IServiceCollection! services, Levee.OperationCatalog! catalog, System.Action<System.Net.Http.HttpClient!>! configure, System.Action<Levee.Client.LeveeClientOptions!>? options = null) -> Microsoft.Extensions.DependencyInjection.IHttpClientBuilder!
+Levee.Client.LeveeClientOptions.IdempotencyKeys.get -> bool
+Levee.Client.LeveeClientOptions.IdempotencyKeys.set -> void

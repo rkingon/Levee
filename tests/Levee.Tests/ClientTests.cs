@@ -31,7 +31,7 @@ public sealed class ClientTests : IAsyncDisposable
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
     /// <summary>The app's authentication, as a handler on the client; then whatever else stands between it and the platform.</summary>
-    private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null)
+    private LeveeClient Client(OperationCatalog? catalog = null, int retries = 2, DelegatingHandler? between = null, bool keys = true)
     {
         HttpMessageHandler handler = _app.GetTestServer().CreateHandler();
         if (between is not null)
@@ -40,7 +40,7 @@ public sealed class ClientTests : IAsyncDisposable
             handler = between;
         }
         var http = new HttpClient(new Bearer { InnerHandler = handler }) { BaseAddress = new Uri("http://platform") };
-        return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions { Retries = retries, RetryDelay = TimeSpan.Zero });
+        return new LeveeClient(http, catalog ?? LeveeComposition.Catalog, new LeveeClientOptions { Retries = retries, RetryDelay = TimeSpan.Zero, IdempotencyKeys = keys });
     }
 
     private sealed class Bearer : DelegatingHandler
@@ -177,6 +177,60 @@ public sealed class ClientTests : IAsyncDisposable
 
         Assert.Equal(LeveeErrors.Unreachable, sent.Error!.Code);
         Assert.Equal(LeveeErrors.Unreachable, opened.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_client_that_holds_no_keys_sends_a_write_once()
+    {
+        var lost = new LoseFirstAnswer();
+
+        var counted = await Client(between: lost, keys: false).SendAsync(new Count("acme", $"n{Guid.NewGuid():N}"), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, counted.Error!.Code);
+        Assert.Equal([null], lost.Keys);
+    }
+
+    /// <summary>Rewrites what every answer says it is: a media type in another case, or a stream whose item isn't the contract's.</summary>
+    private sealed class Rewrite(Func<HttpResponseMessage, HttpResponseMessage> answer) : DelegatingHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            answer(await base.SendAsync(request, cancellationToken));
+    }
+
+    [Fact]
+    public async Task A_media_type_is_read_whatever_its_case()
+    {
+        var shouted = new Rewrite(answer =>
+        {
+            answer.Content.Headers.ContentType = new("Application/JSON");
+            return answer;
+        });
+
+        var said = await Client(between: shouted).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal("hi", said.Value.Said);
+    }
+
+    [Fact]
+    public async Task A_stream_item_the_contract_doesnt_read_ends_the_stream_as_a_failure()
+    {
+        var garbled = new Rewrite(answer =>
+        {
+            answer.Dispose();
+            var stream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("data: {\"number\":\n\n") };
+            stream.Content.Headers.ContentType = new("text/event-stream");
+            return stream;
+        });
+        var opened = await Client(between: garbled).SubscribeAsync(new Ticks(1), Ct);
+
+        var failed = await Assert.ThrowsAsync<OperationFailedException>(async () =>
+        {
+            await foreach (var _ in opened.Value.WithCancellation(Ct))
+            {
+            }
+        });
+
+        Assert.Equal(LeveeErrors.Unreachable, failed.Error.Code);
     }
 
     [Fact]

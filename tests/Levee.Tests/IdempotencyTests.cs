@@ -93,6 +93,19 @@ public sealed class IdempotencyTests
     }
 
     [Fact]
+    public async Task Entries_that_differ_only_in_case_are_entries_of_their_own()
+    {
+        var name = Name();
+        var cased = new Dictionary<string, int> { ["ABC"] = 1, ["abc"] = 2 };
+
+        var first = await _dispatcher.SendAsync(new Tag("acme", name, cased), Ada, "key-1", CancellationToken.None);
+        var again = await _dispatcher.SendAsync(new Tag("acme", name, new Dictionary<string, int> { ["abc"] = 2, ["ABC"] = 1 }), Ada, "key-1", CancellationToken.None);
+
+        Assert.True(first.IsSuccess, first.Error?.Message);
+        Assert.Equal(first.Value, again.Value);
+    }
+
+    [Fact]
     public async Task A_read_ignores_its_key()
     {
         var said = await _dispatcher.SendAsync(new Echo("hi"), Ada, "", CancellationToken.None);

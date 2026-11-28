@@ -14,19 +14,23 @@
   sent with other input is 409 `idempotency.mismatch`. The key and its result commit with the write, so a request that
   rolled back left nothing to replay. A result carrying a `[Secret]` isn't kept: its repeat is 409
   `idempotency.replayed`, since a secret is shown once. A key holds for `LeveeOptions.IdempotencyKeyLifetime` (24 hours)
-  from its write's commit; a read ignores it. Inputs are compared as the wire carries them, a dictionary's entries in any
+  from its write's commit (stamped after its last write and its audit, just before COMMIT); a read ignores it. Inputs are compared as the wire carries them, a dictionary's entries in any
   order. An anonymous caller's key is refused (`idempotency.invalid_key`): every anonymous caller is one subject.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its result is recorded under its name once it
   succeeds, and every later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process
-  written from the top resumes where it was. A failure records nothing; a result carrying a `[Secret]` is refused, before
-  the step acts, unless jobs seal their inputs. Every write a process's run sends, through its context or a helper it hands
+  written from the top resumes where it was. A failure records nothing; a result carrying a `[Secret]` is refused unless
+  jobs seal their inputs: before the step acts when its declared type carries one, and after, unrecorded, when only the
+  value does (a step declared `object`). Every write a process's run sends, through its context or a helper it hands
   its principal to, takes its attempt's lock first, in the operation's own transaction, so a run the rescuer has taken
   over can't commit.
 
 ### Levee.Oxbow
 - **Breaking:** needs Oxbow 0.2.0-alpha.5 and its schema version 3 (`job_step`), with its grants: apply Oxbow's migrations
-  and run `dotnet levee db grants <role> --jobs` again. Step results are Oxbow's job steps. With
-  `AddLeveeJobs(sealSecrets: true)` every process is sealed, its steps' results with its input.
+  and run `dotnet levee db grants <role> --jobs` again. Step results are Oxbow's job steps.
+- **Breaking:** with `AddLeveeJobs(sealSecrets: true)` every process is sealed (`levee_process_sealed`), its steps'
+  results with its input. A process started `Unique` then needs Oxbow's `ArgsEncryptionOptions.UniqueKeySecret`, as a
+  sealed operation does; and a unique process queued as the plaintext kind before the upgrade doesn't block its sealed
+  twin, so let those drain (or cancel them) before starting the same input again.
 
 ### Levee.EntityFrameworkCore
 - **Breaking:** every aggregate root has a version. `configurationBuilder.AddLeveeConventions()`, from the app's context's
@@ -36,7 +40,12 @@
   moved or removed (an owned type, or an entity its root navigates to) writes its root's version too (both roots, for a
   move), so the root's version covers the whole aggregate; one changed without its root loaded is a bug. A context whose
   roots aren't versioned by `xmin` fails before the first operation, naming the call to add: a token of the app's own,
-  which nothing but the app moves, isn't one. A set-based `ExecuteUpdate` or `ExecuteDelete` moves no version. In the context itself, so every model of it (the host's, a Tool's, a
+  which nothing but the app moves, isn't one. An aggregate is mapped in a small language Levee can hold to one version,
+  and anything else fails before the first operation with its fix: a root is a class of its own on one table (no
+  inheritance), with a key a write may set (not an identity always, not computed); a child is reached from one root's
+  aggregate by the navigations it holds, and belongs to that one only. An entity no root reaches (a lookup) is in no
+  aggregate. A set-based `ExecuteUpdate` or `ExecuteDelete` isn't held to an expected version, and on a child's table
+  moves no root's. In the context itself, so every model of it (the host's, a Tool's, a
   migration's) is the same.
 
 - **Upgrading:** idempotency keys live in `levee_idempotency`, which an installation from before alpha.3 adds as its owner:
@@ -52,7 +61,8 @@
   `platform.unreachable`. A write carries an idempotency key of its own across its retries, so a retry after a lost
   answer is written once; transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait
   or a doubling delay, except a write acting outside the platform (`Effects.External`) that doesn't declare a repeat
-  safe (`Idempotent`), whose outside effect a rollback doesn't undo. `SubscribeAsync` streams a subscription's items, ended by the
+  safe (`Idempotent`), whose outside effect a rollback doesn't undo. `LeveeClientOptions.IdempotencyKeys = false` is for a
+  client that sends as no one: its writes carry no key and are sent once. `SubscribeAsync` streams a subscription's items, ended by the
   platform's last failure as `OperationFailedException`. `AddLeveeClient(catalog, http => ...)` registers it through
   `IHttpClientFactory`; the app's authentication is a handler on what it returns. The core roles can't reference it
   (LEVEE008).

@@ -636,7 +636,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 var kept = result.Value is null || LeveeJson.FindSecretIn(result.Value, descriptor.ResultType, LeveeJson.Options) is null
                     ? JsonSerializer.Serialize(result.Value, descriptor.ResultType, LeveeJson.Options)
                     : null;
-                await unit.CompleteAsync(claimed, kept, ct);
+                unit.Keep(claimed, kept);
             }
             if (answer is not null)
             {
@@ -713,15 +713,39 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     /// </summary>
     private static byte[] Hash(IOperation operation, OperationDescriptor descriptor)
     {
-        static JsonNode? Canonical(JsonNode? node) => node switch
+        // From the element, not a JsonObject: members that differ only in case ("ABC", "abc") are two members on the wire.
+        static void Write(Utf8JsonWriter writer, JsonElement element)
         {
-            JsonObject members => new JsonObject(members.OrderBy(m => m.Key, StringComparer.Ordinal)
-                .Select(m => KeyValuePair.Create(m.Key, Canonical(m.Value)))),
-            JsonArray items => new JsonArray([.. items.Select(Canonical)]),
-            _ => node?.DeepClone(),
-        };
-        var input = JsonSerializer.SerializeToNode(operation, descriptor.InputType, LeveeJson.Options);
-        return System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Canonical(input)?.ToJsonString() ?? "null"));
+            switch (element.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    writer.WriteStartObject();
+                    foreach (var member in element.EnumerateObject().OrderBy(m => m.Name, StringComparer.Ordinal))
+                    {
+                        writer.WritePropertyName(member.Name);
+                        Write(writer, member.Value);
+                    }
+                    writer.WriteEndObject();
+                    break;
+                case JsonValueKind.Array:
+                    writer.WriteStartArray();
+                    foreach (var item in element.EnumerateArray())
+                    {
+                        Write(writer, item);
+                    }
+                    writer.WriteEndArray();
+                    break;
+                default:
+                    element.WriteTo(writer);
+                    break;
+            }
+        }
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            Write(writer, JsonSerializer.SerializeToElement(operation, descriptor.InputType, LeveeJson.Options));
+        }
+        return System.Security.Cryptography.SHA256.HashData(buffer.WrittenSpan);
     }
 
     /// <summary>The input as the audit keeps it: every [Secret] and [Personal] value replaced, at any depth.</summary>

@@ -169,6 +169,92 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_save_refused_as_stale_stays_refused_however_often_it_is_tried()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        var stale = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture) - 1;
+
+        var added = await dispatcher.SendAsync(new AddLineVersioned(tenant, order, stale, "after a failed save"), ada, Ct);
+
+        Assert.Equal(LeveeErrors.Stale, added.Error!.Code);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+    }
+
+    [Fact]
+    public async Task The_same_root_loaded_again_is_the_same_aggregate()
+    {
+        await OrdersAsync();
+        using var host = Build<OrdersDb>();
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (tenant, ada) = NewTenant();
+        var order = Guid.CreateVersion7();
+        Assert.True((await dispatcher.SendAsync(new OpenOrder(tenant, order), ada, Ct)).IsSuccess);
+        var version = uint.Parse(await postgres.TextAsync("select xmin::text from orders where id = $1", order), System.Globalization.CultureInfo.InvariantCulture);
+
+        var added = await dispatcher.SendAsync(new AddLineVersioned(tenant, order, version, "reloaded"), ada, Ct);
+
+        Assert.True(added.IsSuccess, added.Error?.Message);
+        Assert.Equal(2, await postgres.CountAsync("select count(*) from order_lines where order_id = $1", order));
+    }
+
+    public static TheoryData<string, string?> Mappings() => new()
+    {
+        { nameof(OrdersDb), null },
+        { nameof(TptOrdersDb), "aggregate root in an inheritance hierarchy" },
+        { nameof(DerivedRootDb), "aggregate root in an inheritance hierarchy" },
+        { nameof(IdentityAlwaysDb), "is one Postgres won't let a write set" },
+        { nameof(IdentityByDefaultDb), null },
+        { nameof(SharedChildDb), "is a child of both" },
+    };
+
+    [Theory]
+    [MemberData(nameof(Mappings))]
+    public void An_aggregate_is_mapped_in_the_shapes_one_version_can_cover(string context, string? refused)
+    {
+        using var db = context switch
+        {
+            nameof(OrdersDb) => (DbContext)Model<OrdersDb>(),
+            nameof(TptOrdersDb) => Model<TptOrdersDb>(),
+            nameof(DerivedRootDb) => Model<DerivedRootDb>(),
+            nameof(IdentityAlwaysDb) => Model<IdentityAlwaysDb>(),
+            nameof(IdentityByDefaultDb) => Model<IdentityByDefaultDb>(),
+            _ => Model<SharedChildDb>(),
+        };
+
+        var problem = Levee.EntityFrameworkCore.AggregateMap.Of(db.Model).Problem;
+
+        if (refused is null)
+        {
+            Assert.Null(problem);
+        }
+        else
+        {
+            Assert.Contains(refused, problem, StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>A context's model alone, built without a database.</summary>
+    private static TContext Model<TContext>()
+        where TContext : DbContext =>
+        (TContext)Activator.CreateInstance(typeof(TContext), new DbContextOptionsBuilder<TContext>().UseNpgsql("Host=unused").Options)!;
+
+    [Fact]
+    public void A_lookup_that_navigates_to_a_child_isnt_part_of_its_aggregate()
+    {
+        using var db = Model<LookupDb>();
+        var map = Levee.EntityFrameworkCore.AggregateMap.Of(db.Model);
+
+        Assert.Null(map.Problem);
+        Assert.Empty(map.ParentsOf(db.Model.FindEntityType(typeof(Shelf))!));
+        Assert.Single(map.ParentsOf(db.Model.FindEntityType(typeof(OrderLine))!), fk => fk.PrincipalEntityType.ClrType == typeof(Order));
+    }
+
+    [Fact]
     public void The_version_is_Postgres_s_own_and_no_migration_creates_it()
     {
         using var db = new SampleDbContext(new DbContextOptionsBuilder<SampleDbContext>().UseNpgsql("Host=unused").Options);
@@ -379,14 +465,57 @@ public interface IOrders : IRepository<Order>
     void Add(Order order);
 
     Task<Order> FindAsync(Guid id, CancellationToken ct);
+
+    Task SaveAsync(CancellationToken ct);
+
+    /// <summary>Lets go of what's loaded, as a repository that reads afresh would.</summary>
+    void Forget();
 }
 
 [Adapter]
-internal sealed class EfOrders(OrdersDb db) : IOrders
+internal sealed class EfOrders(OrdersDb db, IFlush flush) : IOrders
 {
     public void Add(Order order) => db.Add(order);
 
     public Task<Order> FindAsync(Guid id, CancellationToken ct) => db.Set<Order>().Include(o => o.Lines).SingleAsync(o => o.Id == id, ct);
+
+    public Task SaveAsync(CancellationToken ct) => flush.FlushAsync(ct);
+
+    public void Forget() => db.ChangeTracker.Clear();
+}
+
+/// <summary>Held to a version, adds a line and saves; then, as <see cref="Again"/> says, saves again after a failed save, or reloads and adds another.</summary>
+[Operation("probe.order_add_line_versioned", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record AddLineVersioned(string Tenant, Guid Order, uint Version, string Again) : IOperation<Unit>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+
+internal sealed class AddLineVersionedHandler(IOrders orders) : IOperationHandler<AddLineVersioned, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(AddLineVersioned operation, OperationContext context, CancellationToken ct)
+    {
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 1);
+        if (operation.Again == "after a failed save")
+        {
+            try
+            {
+                await orders.SaveAsync(ct);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Saved again by the commit: it must be refused as this one was.
+            }
+            return Unit.Value;
+        }
+        await orders.SaveAsync(ct);
+        orders.Forget();
+        (await orders.FindAsync(operation.Order, ct)).Add(context.NewId(), 2);
+        await orders.SaveAsync(ct);
+        return Unit.Value;
+    }
 }
 
 internal sealed class OpenOrderHandler(IOrders orders) : IOperationHandler<OpenOrder, Unit>
@@ -407,4 +536,94 @@ internal sealed class AddLineHeldHandler(IOrders orders) : IOperationHandler<Add
         order.Add(context.NewId(), operation.Amount);
         return Unit.Value;
     }
+}
+
+/// <summary>An order split across a table per type: one version can't cover two rows.</summary>
+internal sealed class TptOrdersDb(DbContextOptions<TptOrdersDb> options) : OrdersDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Order2>().ToTable("orders2");
+        modelBuilder.Entity<RushOrder>().ToTable("rush_orders");
+    }
+}
+
+public sealed class RushOrder : Order2;
+
+public class Order2 : IAggregateRoot
+{
+    public Guid Id { get; private set; }
+}
+
+internal sealed class DerivedRootDb(DbContextOptions<DerivedRootDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Plain>();
+        modelBuilder.Entity<RootOfPlain>();
+    }
+}
+
+public class Plain
+{
+    public Guid Id { get; private set; }
+}
+
+/// <summary>Only the derived type is a root, its base a plain entity sharing its table.</summary>
+public sealed class RootOfPlain : Plain, IAggregateRoot;
+
+internal sealed class IdentityAlwaysDb(DbContextOptions<IdentityAlwaysDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Counter>().Property(c => c.Id).UseIdentityAlwaysColumn();
+}
+
+internal sealed class IdentityByDefaultDb(DbContextOptions<IdentityByDefaultDb> options) : DbContext(options)
+{
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.Entity<Counter>().Property(c => c.Id).UseIdentityByDefaultColumn();
+}
+
+public sealed class Counter : IAggregateRoot
+{
+    public long Id { get; private set; }
+}
+
+/// <summary>One child type reached from two roots: whose version covers it?</summary>
+internal sealed class SharedChildDb(DbContextOptions<SharedChildDb> options) : OrdersDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Basket>(e => e.HasMany(b => b.Lines).WithOne().HasForeignKey("basket_id"));
+    }
+}
+
+public sealed class Basket : IAggregateRoot
+{
+    public Guid Id { get; private set; }
+
+    public List<OrderLine> Lines { get; } = [];
+}
+
+/// <summary>A lookup with a collection of an aggregate's children: a reference, not an owner.</summary>
+internal sealed class LookupDb(DbContextOptions<LookupDb> options) : OrdersDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Shelf>(e => e.HasMany(s => s.Lines).WithOne().HasForeignKey("shelf_id"));
+    }
+}
+
+public sealed class Shelf
+{
+    public Guid Id { get; private set; }
+
+    public List<OrderLine> Lines { get; } = [];
 }

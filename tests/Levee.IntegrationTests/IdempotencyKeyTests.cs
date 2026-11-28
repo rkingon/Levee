@@ -14,12 +14,19 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
 {
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    private IHost Build(string bannedWords = "none")
+    private IHost Build(string bannedWords = "none", TimeSpan? slowSave = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Configuration["Sample:BannedWords"] = bannedWords;
         builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(postgres.App));
-        builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
+        builder.Services.AddDbContext<SampleDbContext>((sp, o) =>
+        {
+            o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>());
+            if (slowSave is { } takes)
+            {
+                o.AddInterceptors(new SlowSave(takes));
+            }
+        });
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
         builder.Services.AddLeveeOxbow();
@@ -130,19 +137,34 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
         Assert.Equal(1, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.issue_key'", tenant));
     }
 
-    [Fact]
-    public async Task A_keys_lifetime_counts_from_its_commit_not_its_start()
+    [Theory]
+    [InlineData(800, 0)]
+    [InlineData(0, 800)]
+    public async Task A_keys_lifetime_counts_from_its_commit_not_its_start(int handler, int save)
     {
-        using var host = Build();
+        using var host = Build(slowSave: TimeSpan.FromMilliseconds(save));
         host.Services.GetRequiredService<LeveeOptions>().IdempotencyKeyLifetime = TimeSpan.FromMilliseconds(500);
         var dispatcher = host.Services.GetRequiredService<Dispatcher>();
         var (tenant, ada) = NewTenant();
 
-        Assert.True((await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(800)), ada, "retry-1", Ct)).IsSuccess);
-        var again = await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(800)), ada, "retry-1", Ct);
+        // Slow before its handler returns, or after: either way the key holds from its commit.
+        Assert.True((await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(handler)), ada, "retry-1", Ct)).IsSuccess);
+        var again = await dispatcher.SendAsync(new SlowIssue(tenant, TimeSpan.FromMilliseconds(handler)), ada, "retry-1", Ct);
 
         Assert.True(again.IsSuccess);
         Assert.Equal(1, await postgres.CountAsync("select count(*) from levee_audit where scope = $1 and operation = 'probe.slow_issue'", tenant));
+    }
+
+    /// <summary>A save that takes its time: the last writes before the commit, after the handler has returned.</summary>
+    private sealed class SlowSave(TimeSpan takes) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+    {
+        public override async ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+            Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData, Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(takes, cancellationToken);
+            return result;
+        }
     }
 
     [Fact]

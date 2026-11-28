@@ -21,6 +21,12 @@ public sealed class LeveeClientOptions
 
     /// <summary>The wait before the first retry, doubled each time, unless the failure says when to come back.</summary>
     public TimeSpan RetryDelay { get; set; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>
+    /// Whether each write carries an idempotency key. Off for a client that sends as no one (what anyone may do), whose
+    /// caller the platform can't tell apart from anyone else's, so it holds no key: its writes are sent once, never retried.
+    /// </summary>
+    public bool IdempotencyKeys { get; set; } = true;
 }
 
 /// <summary>
@@ -49,8 +55,8 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog this client was given.");
         }
         var body = JsonSerializer.SerializeToUtf8Bytes(operation, descriptor.InputType, LeveeJson.Options);
-        var key = descriptor.ReadOnly ? null : Guid.CreateVersion7().ToString();
-        var retries = descriptor.ReadOnly || (descriptor.Effects & Effects.External) == 0 || descriptor.Idempotency == Idempotency.Idempotent
+        var key = descriptor.ReadOnly || !_options.IdempotencyKeys ? null : Guid.CreateVersion7().ToString();
+        var retries = descriptor.ReadOnly || key is not null && ((descriptor.Effects & Effects.External) == 0 || descriptor.Idempotency == Idempotency.Idempotent)
             ? _options.Retries
             : 0;
         var answered = await WithRetriesAsync(retries, async () =>
@@ -66,7 +72,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
             {
                 return await FailureAsync(response, ct);
             }
-            if (response.Content.Headers.ContentType?.MediaType != "application/json")
+            if (!Is(response, "application/json"))
             {
                 return NotThePlatform(response);
             }
@@ -96,7 +102,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         {
             var response = await http.SendAsync(new HttpRequestMessage(HttpMethod.Get, $"{Path(descriptor.Name)}/events?input={input}"),
                 HttpCompletionOption.ResponseHeadersRead, ct);
-            if (response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "text/event-stream")
+            if (response.IsSuccessStatusCode && Is(response, "text/event-stream"))
             {
                 return Result<object?>.Success(response);
             }
@@ -131,16 +137,26 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
                     throw new OperationFailedException(Error.Unavailable(LeveeErrors.Unreachable, $"{descriptor.Name}'s stream broke off: {e.Message}"));
                 }
                 var item = items.Current;
-                switch (item.EventType)
+                if (item.EventType == "keepalive")
                 {
-                    case "keepalive":
-                        continue;
-                    case "error":
-                        throw new OperationFailedException(Error.FromProblem(JsonSerializer.Deserialize<ProblemView>(item.Data, LeveeJson.Options)!, null));
-                    default:
-                        yield return (TItem)JsonSerializer.Deserialize(item.Data, descriptor.ResultType, LeveeJson.Options)!;
-                        break;
+                    continue;
                 }
+                object? read;
+                try
+                {
+                    read = item.EventType == "error"
+                        ? JsonSerializer.Deserialize<ProblemView>(item.Data, LeveeJson.Options)
+                        : JsonSerializer.Deserialize(item.Data, descriptor.ResultType, LeveeJson.Options);
+                }
+                catch (JsonException e)
+                {
+                    throw new OperationFailedException(Error.Unavailable(LeveeErrors.Unreachable, $"{descriptor.Name}'s stream sent what its contract doesn't read: {e.Message}"));
+                }
+                if (read is ProblemView problem && item.EventType == "error")
+                {
+                    throw new OperationFailedException(Error.FromProblem(problem, null));
+                }
+                yield return (TItem)read!;
             }
         }
     }
@@ -176,7 +192,7 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
     /// <summary>The platform's problem, read back into its error; anything else (a proxy's page) is the platform out of reach.</summary>
     private static async Task<Result<object?>> FailureAsync(HttpResponseMessage response, CancellationToken ct)
     {
-        if (response.Content.Headers.ContentType?.MediaType == "application/problem+json")
+        if (Is(response, "application/problem+json"))
         {
             try
             {
@@ -192,6 +208,10 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
         }
         return Error.Unavailable(LeveeErrors.Unreachable, $"The platform answered {(int)response.StatusCode} with no problem of its own.");
     }
+
+    /// <summary>Whether the response is <paramref name="mediaType"/>: media types aren't case-sensitive.</summary>
+    private static bool Is(HttpResponseMessage response, string mediaType) =>
+        string.Equals(response.Content.Headers.ContentType?.MediaType, mediaType, StringComparison.OrdinalIgnoreCase);
 
     private static Error NotThePlatform(HttpResponseMessage response) =>
         Error.Unavailable(LeveeErrors.Unreachable,

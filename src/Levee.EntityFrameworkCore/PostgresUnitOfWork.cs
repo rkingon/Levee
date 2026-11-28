@@ -216,12 +216,9 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
             return $"{name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
                 + $"DbContextOptions<{name}> in its constructor and configure it in AddDbContext, not OnConfiguring.";
         }
-        if (Aggregates.Unversioned(db.Model) is { } root)
+        if (AggregateMap.Of(db.Model).Problem is { } aggregates)
         {
-            return $"{root} is an aggregate root without a version, so two operations changing it at once would both commit and one change "
-                + $"would be lost. Fix: in {name}, override ConfigureConventions(ModelConfigurationBuilder configurationBuilder) and call "
-                + "configurationBuilder.AddLeveeConventions(), which maps every root's version to xmin (declare uint Version { get; private set; } "
-                + "on the root to read it).";
+            return $"{name}: {aggregates}";
         }
         return db.Database.CreateExecutionStrategy().RetriesOnFailure
             ? $"{name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: remove it; a "
@@ -545,13 +542,9 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
         };
     }
 
-    public async Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct)
-    {
-        ArgumentNullException.ThrowIfNull(key);
-        await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
-            $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb, {{4}})",
-            key.Subject, key.Operation, key.Key, new NpgsqlParameter<string?>("result", NpgsqlTypes.NpgsqlDbType.Text) { TypedValue = result }, key.Lifetime), ct);
-    }
+    private (IdempotencyKey Key, string? Result)? _kept;
+
+    public void Keep(IdempotencyKey key, string? result) => _kept = (key, result);
 
     /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>
     public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
@@ -567,6 +560,13 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     {
         await db.SaveChangesAsync(ct);
         Aggregates.Verify(db);
+        // Last before COMMIT, so a key's lifetime starts as its write lands, not as its handler returned.
+        if (_kept is var (key, result))
+        {
+            await db.Database.ExecuteSqlAsync(System.Runtime.CompilerServices.FormattableStringFactory.Create(
+                $"select {Schema}.levee_idempotency_complete({{0}}, {{1}}, {{2}}, {{3}}::jsonb, {{4}})",
+                key.Subject, key.Operation, key.Key, new NpgsqlParameter<string?>("result", NpgsqlTypes.NpgsqlDbType.Text) { TypedValue = result }, key.Lifetime), ct);
+        }
         await tx.CommitAsync(ct);
         _committed = true;
     }

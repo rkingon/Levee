@@ -77,12 +77,11 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
             : new IdempotencyClaim(IdempotencyState.Kept, held.Result));
     }
 
-    public Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct)
+    public void Keep(IdempotencyKey key, string? result)
     {
         var id = $"{scope.Key}/{key.Subject}/{key.Operation}/{key.Key}";
         var at = _claims.FindIndex(c => c.Key == id);
         _claims[at] = _claims[at] with { Result = result };
-        return Task.CompletedTask;
     }
 
     public Task AuditAsync(AuditEntry entry, CancellationToken ct)

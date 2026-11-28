@@ -216,8 +216,11 @@ internal interface IUnitOfWork : IAsyncDisposable
     /// </summary>
     Task<IdempotencyClaim> ClaimAsync(IdempotencyKey key, CancellationToken ct);
 
-    /// <summary>Keeps the claimed key's result, as JSON, to replay; null when it isn't kept.</summary>
-    Task CompleteAsync(IdempotencyKey key, string? result, CancellationToken ct);
+    /// <summary>
+    /// Keeps the claimed key's result, as JSON, to replay (null when it isn't kept), written as the unit of work commits,
+    /// after its last write and its audit: the key's lifetime runs from there.
+    /// </summary>
+    void Keep(IdempotencyKey key, string? result);
 
     Task CommitAsync(CancellationToken ct);
 }
