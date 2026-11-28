@@ -138,19 +138,34 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
     }
 
     [Fact]
-    public async Task A_kept_result_that_may_not_be_replayed_is_never_read_back()
+    public async Task A_kept_result_that_may_not_be_replayed_is_answered_without_it()
     {
         using var host = Build();
         var (tenant, ada) = NewTenant();
         Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new SayNul(tenant), ada, "retry-1", Ct)).IsSuccess);
         var hash = await postgres.TextAsync("select encode(input_hash, 'hex') from levee_idempotency where scope = $1", tenant);
+        await using var app = NpgsqlDataSource.Create(postgres.App);
 
-        Task<string> Claim(bool replayable) => postgres.TextAsync(
-            "select levee_idempotency_claim($2, 'probe.say_nul', 'retry-1', decode($3, 'hex'), $4)::text from (select set_config('levee.scope', $1, false)) s",
-            tenant, ada.Subject, hash, replayable);
+        // As the runtime role, in a transaction of the scope's own, rolled back: what the unit of work does.
+        async Task<string> Claim(string scope, bool replayable)
+        {
+            await using var connection = await app.OpenConnectionAsync(Ct);
+            await using var tx = await connection.BeginTransactionAsync(Ct);
+            await using (var scoped = new NpgsqlCommand("select set_config('levee.scope', $1, true)", connection, tx) { Parameters = { new() { Value = scope } } })
+            {
+                await scoped.ExecuteScalarAsync(Ct);
+            }
+            await using var claim = new NpgsqlCommand("select levee_idempotency_claim($1, 'probe.say_nul', 'retry-1', decode($2, 'hex'), $3)::text", connection, tx)
+            {
+                Parameters = { new() { Value = ada.Subject }, new() { Value = hash }, new() { Value = replayable } },
+            };
+            return (string)(await claim.ExecuteScalarAsync(Ct))!;
+        }
 
-        Assert.Contains("\"kept\"", await Claim(replayable: true), StringComparison.Ordinal);
-        Assert.Equal("""{"state": "replayed"}""", await Claim(replayable: false));
+        Assert.Contains("\"kept\"", await Claim(tenant, replayable: true), StringComparison.Ordinal);
+        Assert.Equal("""{"state": "replayed"}""", await Claim(tenant, replayable: false));
+        // The same subject and key in another scope is another key.
+        Assert.Equal("""{"state": "claimed"}""", await Claim($"t{Guid.CreateVersion7():N}", replayable: true));
     }
 
     [Fact]

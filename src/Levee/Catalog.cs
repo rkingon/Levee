@@ -279,7 +279,9 @@ public sealed class OperationCatalog
             // Every member is a parameter of its one constructor (the compiler's copy constructor aside), a public one the wire
             // can call, and nothing else.
             var constructors = type.GetConstructors(Instance).Where(c => !(c.GetParameters() is [var only] && only.ParameterType == type)).ToList();
-            if (constructors is not [{ IsPublic: true }] || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider)))
+            // A public field the serializer doesn't write is a value the wire loses.
+            if (constructors is not [{ IsPublic: true }] || info.Properties.Any(p => p.AssociatedParameter is null || JsonMember(p.AttributeProvider))
+                || type.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public).Length > 0)
             {
                 return $"{type.Name} has a member or constructor besides its parameters, or a JSON attribute on one." + Language;
             }

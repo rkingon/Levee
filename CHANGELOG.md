@@ -27,12 +27,14 @@ Writes that hold under retries and races.
   input as it was received. A typed input is taken once (written, and read back as what its key, its handler and its
   audit's redaction read), whether it's sent, subscribed to, enqueued as a job or starts a process, so a sequence read
   once is the same to all of them; a converter that writes anew each time still writes anew for the audit. A member sent
-  twice, in any case, is `input.invalid`, and so is an input whose converter throws, whatever it throws. Whether a result
+  twice, in any case, is `input.invalid`, and so is an input whose converter throws, whatever it throws; a typed send or
+  subscription refused that way is told as an outcome. Whether a result
   may be replayed is judged by its contract's type and told to the claim, which never reads what was kept when it may not.
 - `ProcessContext.StepAsync(name, run, ct)`: a process's durable step. Its success is recorded under its name, and every
   later run (a retry, a snooze, a rescue) gets it back instead of running it again, so a process written from the top
-  resumes where it was. A failure records nothing. A step's result type is held to the contract language before the step
-  acts, so what's recorded reads back, and is never null (`where T : notnull`; a null answered is refused, unrecorded); a
+  resumes where it was. A failure records nothing. A step's result type, and a process's input, are held to the contract
+  language before the step acts or the process starts (a public constructor the wire calls, no public field it doesn't
+  write), so what's recorded reads back; a step's result is never null (`where T : notnull`; a null answered is refused, unrecorded); a
   result whose type declares a `[Secret]` is refused before the step acts, unless jobs seal their inputs. Every write a process's run
   sends, through its context or a helper it hands its principal to, takes its attempt's lock first, so a run the rescuer
   has taken over can't commit.
@@ -47,8 +49,9 @@ Writes that hold under retries and races.
     or an owned type on the root's table or in a JSON column of it. A change anywhere in it is a write of that row, which
     EF holds to the version it was read at. An entity of its own is an aggregate of its own, referenced by its id. A root
     in an inheritance hierarchy, split across tables, without the version, or holding a part off its row (a navigation to
-    another entity, an owned type on a table of its own or split onto one, a many-to-many link) fails before the first
-    operation, with its fix.
+    another entity, an owned type on a table of its own or split onto one, a many-to-many link), or referred to by another
+    root with a key whose delete writes it (a cascade, EF's default for a required one, or `SetNull`), fails before the
+    first operation, with its fix.
   - One aggregate per operation is the convention, held for an `IVersionedOperation`: told by whose version its saves
     actually moved (a callback's change counted, and a root a callback began tracking refused), it changes one aggregate,
     which it doesn't create, at the version its caller saw. An unversioned operation may change
@@ -82,8 +85,9 @@ Writes that hold under retries and races.
   `SendAsync(operation, ct)` answers `Result<TResult>`; an input refused as the platform would refuse it is
   `input.invalid` before anything is sent; a failure reads back as the platform's own `Error` when its problem agrees
   with its status; anything else (a connection refused, a body cut off, a sign-in page, what the contract doesn't read,
-  null where it promises a value, a problem of a kind the platform doesn't name, a body that stalls past the
-  `HttpClient`'s timeout) is `Unavailable` `platform.unreachable`.
+  null where it promises a value, a problem whose kind isn't one of the kinds by its name, a body that stalls past the
+  `HttpClient`'s timeout, a stream's refusal included) is `Unavailable` `platform.unreachable`, with the `Retry-After` of
+  whatever answered (a gateway's too).
 - A write carries an idempotency key across its retries, so a retry after a lost answer finds the first result.
   Transient failures are retried (`LeveeClientOptions.Retries`, 2) after the failure's own wait (`Retry-After`, as a
   delay or a date) or a doubling delay, and never past `RetryWindow` (30 seconds) from the first send, however late a
@@ -101,8 +105,8 @@ Writes that hold under retries and races.
 - LEVEE114: an `IVersionedOperation` declares `Effects.Write`. That it changes the one root it loads is held at run time.
 - LEVEE104 refuses an operation that declares more than one contract (`IOperation<int>` and `IOperation<string>`): a
   caller sending it as one would read the result of the other.
-- LEVEE004 also refuses app SQL that runs the idempotency key functions (`select`, `perform`, `call`); text that only names
-  them, as a call or not (a message), is fine.
+- LEVEE004 also refuses app SQL that calls the idempotency key functions (text that begins as a statement does: `select`,
+  `with`, a `DO` block); a message that only names them, as a call or not, is fine.
 
 ### Levee.Cli
 - `dotnet levee new` scaffolds the context with `AddLeveeConventions()`.

@@ -109,6 +109,11 @@ internal sealed class OxbowJobs(IOxbowClient client, Dispatcher dispatcher, Curr
         {
             throw new InvalidOperationException($"{context.Descriptor.Name} declares only reads, and starting a process is an effect.");
         }
+        // Stored and read back on every run: held to the contract language, as a step's result is, so what's read is what was stored.
+        if (OperationCatalog.Unreadable(typeof(TInput)) is { } unreadable)
+        {
+            throw new InvalidOperationException($"{typeof(TInput).Name} can't start a process: it isn't one the job can store and read back: {unreadable}");
+        }
         // Taken once, written and read back: what's judged for secrets is what's stored, a sequence read once included.
         var stored = JsonSerializer.SerializeToElement(input, LeveeJson.Options);
         var secret = LeveeJson.FindSecretIn(stored.Deserialize<TInput>(LeveeJson.Options)!, typeof(TInput), LeveeJson.Options);

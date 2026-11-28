@@ -103,8 +103,7 @@ internal static class ContractWire
     {
         ArgumentNullException.ThrowIfNull(problem);
         ArgumentNullException.ThrowIfNull(unread);
-        // A kind the platform names (enum names read as flags would combine two into one it doesn't).
-        var agrees = Enum.IsDefined(problem.Kind) && problem.Status == status && problem.Status == ProblemView.StatusOf(problem.Kind)
+        var agrees = problem.Status == status && problem.Status == ProblemView.StatusOf(problem.Kind)
             && problem.Transient == (problem.Kind is ErrorKind.Unavailable or ErrorKind.Internal);
         return agrees
             ? Error.FromProblem(problem, retryAfter)

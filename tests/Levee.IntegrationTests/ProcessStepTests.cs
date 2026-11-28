@@ -52,6 +52,18 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_process_whose_input_the_job_cant_read_back_isnt_started()
+    {
+        using var host = Build();
+        var (tenant, ada) = NewTenant();
+
+        var started = await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartLoose(tenant), ada, Ct);
+
+        Assert.Equal(ErrorKind.Internal, started.Error!.Kind);
+        Assert.Equal(0, await postgres.CountAsync("select count(*) from oxbow_job where args::text like '%' || $1 || '%'", tenant));
+    }
+
+    [Fact]
     public async Task A_process_resumes_through_its_steps_and_does_none_twice()
     {
         using var host = Build();
@@ -377,5 +389,27 @@ internal sealed class QueueTallyHandler(IJobs jobs) : IOperationHandler<QueueTal
         }
         var queued = await jobs.EnqueueAsync(new TallyNumbers(operation.Tenant, new OnceNumbers([7])), null, ct);
         return queued.IsSuccess ? Unit.Value : queued.Error;
+    }
+}
+
+public sealed record LooseInput(string Tenant, object Payload);
+
+internal sealed class LooseProcess : IProcess<LooseInput>
+{
+    public Task RunAsync(LooseInput input, ProcessContext context, CancellationToken ct) => Task.CompletedTask;
+}
+
+[Operation("probe.start_loose", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartLoose(string Tenant) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StartLooseHandler(IJobs jobs) : IOperationHandler<StartLoose, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartLoose operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new LooseInput(operation.Tenant, new { Pin = "1234" }), null, ct);
+        return Unit.Value;
     }
 }

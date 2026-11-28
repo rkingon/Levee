@@ -349,6 +349,8 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
         { nameof(OwnedTableDb), "on a table of its own" },
         { nameof(OwnedSplitDb), "on a table of its own" },
         { nameof(LinkedDb), "many-to-many link" },
+        { nameof(CascadingDb), "by a key whose delete deletes it" },
+        { nameof(RestrictedDb), null },
     };
 
     [Theory]
@@ -366,6 +368,8 @@ public sealed class ConcurrencyTests(PostgresFixture postgres) : IClassFixture<P
             nameof(RootReferenceDb) => Model<RootReferenceDb>(),
             nameof(OwnedTableDb) => Model<OwnedTableDb>(),
             nameof(OwnedSplitDb) => Model<OwnedSplitDb>(),
+            nameof(CascadingDb) => Model<CascadingDb>(),
+            nameof(RestrictedDb) => Model<RestrictedDb>(),
             _ => Model<LinkedDb>(),
         };
 
@@ -976,6 +980,50 @@ internal sealed class OwnedSplitDb(DbContextOptions<OwnedSplitDb> options) : DbC
         e.Ignore(c => c.Next);
         e.Ignore(c => c.Tags);
     });
+}
+
+/// <summary>A crate that refers to the shelf it's on by its id, with EF's default for a required key: deleting the shelf deletes it.</summary>
+internal class CascadingDb : DbContext
+{
+    public CascadingDb(DbContextOptions<CascadingDb> options)
+        : base(options)
+    {
+    }
+
+    protected CascadingDb(DbContextOptions options)
+        : base(options)
+    {
+    }
+
+    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Rack>();
+        modelBuilder.Entity<Shelved>().HasOne<Rack>().WithMany().HasForeignKey(c => c.Rack);
+    }
+}
+
+/// <summary>The same reference, restricted: a shelf with crates on it isn't deleted.</summary>
+internal sealed class RestrictedDb(DbContextOptions<RestrictedDb> options) : CascadingDb(options)
+{
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<Shelved>().HasOne<Rack>().WithMany().HasForeignKey(c => c.Rack).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class Rack : IAggregateRoot
+{
+    public Guid Id { get; private set; }
+}
+
+public sealed class Shelved : IAggregateRoot
+{
+    public Guid Id { get; private set; }
+
+    public Guid Rack { get; private set; }
 }
 
 /// <summary>A crate linked to tags many-to-many: the link is a row of a join table.</summary>

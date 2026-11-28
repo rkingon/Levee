@@ -126,13 +126,13 @@ public static class LeveeSchema
                   if found then
                     return jsonb_build_object('state', 'claimed');
                   end if;
-                  select i.input_hash, i.kept into r from {schema}.{IdempotencyTable} i
+                  -- One read of the row: its result only when it may be replayed.
+                  select i.input_hash, i.kept, case when p_replayable then i.result end as result into r from {schema}.{IdempotencyTable} i
                     where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key;
                   if found then
                     return case when r.input_hash <> p_hash then jsonb_build_object('state', 'mismatch')
                                 when not r.kept or not p_replayable then jsonb_build_object('state', 'replayed')
-                                else jsonb_build_object('state', 'kept', 'result', (select i.result from {schema}.{IdempotencyTable} i
-                                  where i.scope = v_scope and i.subject = p_subject and i.operation = p_operation and i.key = p_key)) end;
+                                else jsonb_build_object('state', 'kept', 'result', r.result) end;
                   end if;
                 end loop;
               end $$;

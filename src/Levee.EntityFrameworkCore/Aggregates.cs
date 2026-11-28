@@ -66,7 +66,19 @@ internal static class AggregateLanguage
 
     private static string? Find(IModel model) =>
         model.GetEntityTypes().Where(Aggregates.IsRoot).OrderBy(e => e.Name, StringComparer.Ordinal)
-            .Select(root => Unsupported(root) ?? OffTheRow(root, root)).FirstOrDefault(p => p is not null);
+            .Select(root => Unsupported(root) ?? OffTheRow(root, root) ?? Reaching(root)).FirstOrDefault(p => p is not null);
+
+    /// <summary>
+    /// Another aggregate referring to <paramref name="root"/> by its id with a key whose delete writes it (EF's default for a
+    /// required one is a cascade): deleting this aggregate would change that one too, unseen and unversioned.
+    /// </summary>
+    private static string? Reaching(IEntityType root) =>
+        root.GetReferencingForeignKeys().FirstOrDefault(k => Aggregates.IsRoot(k.DeclaringEntityType)
+            && k.DeleteBehavior is DeleteBehavior.Cascade or DeleteBehavior.SetNull) is { } reaching
+            ? $"{reaching.DeclaringEntityType.ClrType.Name} refers to {root.ClrType.Name} by a key whose delete {(reaching.DeleteBehavior == DeleteBehavior.Cascade ? "deletes" : "changes")} "
+                + "it: deleting one aggregate would write another, which no version covers. Fix: OnDelete(DeleteBehavior.Restrict) on that key; "
+                + "what follows from the delete is an operation on the other aggregate of its own."
+            : null;
 
     private static string? Unsupported(IEntityType root)
     {

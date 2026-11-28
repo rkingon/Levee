@@ -342,6 +342,41 @@ public sealed class ClientTests : IAsyncDisposable
         Assert.Equal(LeveeErrors.Unreachable, said.Error!.Code);
     }
 
+    [Fact]
+    public async Task A_stream_whose_refusal_stalls_is_the_platform_out_of_reach_within_the_timeout()
+    {
+        var stalled = new Rewrite(answer =>
+        {
+            answer.Dispose();
+            var refused = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StreamContent(new Stalled()) };
+            refused.Content.Headers.ContentType = new("application/problem+json");
+            return refused;
+        });
+
+        var opened = await Client(retries: 0, between: stalled, timeout: TimeSpan.FromMilliseconds(500)).SubscribeAsync(new Ticks(1), Ct)
+            .WaitAsync(TimeSpan.FromSeconds(10), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, opened.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_gateways_retry_after_is_kept_as_the_platform_out_of_reach()
+    {
+        var sent = 0;
+        var maintenance = new Rewrite(answer =>
+        {
+            Interlocked.Increment(ref sent);
+            answer.Dispose();
+            var down = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("down for maintenance") };
+            down.Headers.RetryAfter = new(TimeSpan.FromHours(1));
+            return down;
+        });
+
+        var said = await Client(between: maintenance).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal((LeveeErrors.Unreachable, TimeSpan.FromHours(1), 1), (said.Error!.Code, said.Error.RetryAfter, sent));
+    }
+
     /// <summary>A body that never sends a byte.</summary>
     private sealed class Stalled : MemoryStream
     {
@@ -355,12 +390,14 @@ public sealed class ClientTests : IAsyncDisposable
             ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 
-    [Fact]
-    public async Task A_problem_of_a_kind_the_platform_doesnt_name_isnt_the_platforms()
+    [Theory]
+    [InlineData(500, "conflict, unavailable", false)]
+    [InlineData(503, "notFound, forbidden", true)]
+    public async Task A_problem_of_a_kind_the_platform_doesnt_name_isnt_the_platforms(int status, string kind, bool transient)
     {
-        var problem = """{"title":"x","status":500,"detail":"x","code":"x.y","kind":"conflict, unavailable","transient":false,"trace":"t","errors":null}""";
+        var problem = $$"""{"title":"x","status":{{status}},"detail":"x","code":"x.y","kind":"{{kind}}","transient":{{(transient ? "true" : "false")}},"trace":"t","errors":null}""";
 
-        var read = await Client(retries: 0, between: Answering(HttpStatusCode.InternalServerError, "application/problem+json", problem)).SendAsync(new Echo("hi"), Ct);
+        var read = await Client(retries: 0, between: Answering((HttpStatusCode)status, "application/problem+json", problem)).SendAsync(new Echo("hi"), Ct);
 
         Assert.Equal(LeveeErrors.Unreachable, read.Error!.Code);
     }

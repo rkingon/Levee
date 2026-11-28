@@ -68,6 +68,8 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         var snapshot = ContractWire.Snapshot(descriptor, subscription);
         if (!snapshot.IsSuccess)
         {
+            // Refused as a typed send's input is, and told as one.
+            await RecordOutcomeAsync(new OperationOutcome(descriptor, SafeRedact(subscription), null, principal, snapshot.Error), ct);
             return snapshot.Error;
         }
         var opened = await OpenAsync(descriptor, snapshot.Value.Read, principal, ct);

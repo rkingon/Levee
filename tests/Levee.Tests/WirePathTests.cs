@@ -53,6 +53,18 @@ public sealed class WirePathTests
     }
 
     [Fact]
+    public async Task A_typed_subscription_refused_for_its_input_is_told()
+    {
+        var outcomes = new Outcomes();
+        var dispatcher = DispatcherTests.Services(new Store(), outcomes).GetRequiredService<Dispatcher>();
+
+        var opened = await dispatcher.SubscribeAsync(new RunningSum(null!), Ada, Ct);
+
+        Assert.Equal(LeveeErrors.InvalidInput, opened.Error!.Code);
+        Assert.Contains(outcomes.Seen, o => o.Operation.Name == "probe.running_sum");
+    }
+
+    [Fact]
     public async Task An_input_whose_converter_throws_a_cancellation_is_refused_and_told()
     {
         var outcomes = new Outcomes();

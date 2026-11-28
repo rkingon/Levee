@@ -98,6 +98,25 @@ public sealed class StepTests
         Assert.Equal(0, ran);
     }
 
+    [Fact]
+    public async Task A_step_whose_result_holds_a_field_the_wire_doesnt_write_is_refused_before_it_acts()
+    {
+        var ran = 0;
+
+        var step = await Record.ExceptionAsync(() => Run(new Recorded()).StepAsync<Receipt>("pay",
+            _ => Task.FromResult<Result<Receipt>>(new Receipt(++ran) { Confirmation = "c-1" }), CancellationToken.None));
+
+        Assert.IsType<InvalidOperationException>(step);
+        Assert.Equal(0, ran);
+    }
+
+#pragma warning disable CA1051 // The shape under test: a public field the serializer doesn't write.
+    public sealed record Receipt(int Number)
+    {
+        public string? Confirmation;
+    }
+#pragma warning restore CA1051
+
     /// <summary>Made only by its own factory: the wire has no constructor to call.</summary>
     public sealed record Sealed
     {

@@ -83,7 +83,7 @@ internal static partial class NewApp
                     <PackageVersion Include="Levee.EntityFrameworkCore" Version="{{version}}" />
                     <PackageVersion Include="Levee.Oxbow" Version="{{version}}" />
                     <PackageVersion Include="Levee.AspNetCore" Version="{{version}}" />
-                    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+                    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.4" />
 
                     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
                     <PackageVersion Include="xunit.v3" Version="3.2.2" />

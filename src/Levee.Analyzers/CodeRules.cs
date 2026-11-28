@@ -254,21 +254,22 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// A call of one of the functions the runtime role writes the audit or a key through, however its name is put together,
-    /// by a statement that runs it: what can do harm is the call, since the role holds no privilege on the tables themselves.
-    /// Text that only names one, or writes it as a call in prose (a message), runs nothing.
+    /// A statement that calls one of the functions the runtime role writes the audit or a key through, however its name is
+    /// put together: what can do harm is the call, since the role holds no privilege on the tables themselves. SQL is text
+    /// that begins as a statement does (a query, a CTE, a DO block), wherever it's written (a helper's, a constant); a
+    /// message that names one, as a call or not, doesn't begin that way.
     /// </summary>
     private static bool CallsLevee(string text)
     {
         var clean = SqlComment.Replace(text, " ");
-        return Runs.IsMatch(clean)
+        return Statement.IsMatch(clean)
             && LeveeCall.IsMatch(new string(clean.ToLowerInvariant().Where(c => !char.IsWhiteSpace(c) && c is not ('\'' or '"' or '|' or '+')).ToArray()));
     }
 
     private static readonly Regex LeveeCall = new(@"levee_(?:audit_write|idempotency_[a-z_]+)\(", RegexOptions.CultureInvariant);
 
-    // What runs a function in SQL: a query of it, a PL/pgSQL PERFORM, a procedure's CALL.
-    private static readonly Regex Runs = new(@"\b(?:select|perform|call)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    // How a statement that calls a function begins: a query, a CTE, or a DO block (whose body PERFORMs it).
+    private static readonly Regex Statement = new(@"^\s*(?:(?:select|with)\b|do\s*[$'])", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     // pg_settings is the view set_config writes through.
     private static readonly Regex PgSettingsWrite = new(@"\bupdate\s+(?:pg_catalog\s*\.\s*)?pg_settings\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);

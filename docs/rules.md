@@ -110,8 +110,9 @@ Raw SQL is held to the same rule: a constant or interpolated statement that begi
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
 savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
 spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them, and only it runs the idempotency key functions (`levee_idempotency_*`,
-called by a `select`, `perform` or `call`); text that only names one, even as a call (a message), is fine. A setting's bare name is allowed only where it's read: passed with SQL
+tenant's rows. Only the unit of work sets them, and only it calls the idempotency key functions (`levee_idempotency_*`)
+and `levee_audit_write`: SQL that does (text that begins as a statement does, `select`, `with` or a `DO` block, wherever
+it's written) is refused; a message that names one, even as a call, is fine. A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
