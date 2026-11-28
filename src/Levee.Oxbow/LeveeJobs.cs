@@ -241,7 +241,7 @@ internal sealed class SealedProcessJobWorker(IServiceScopeFactory scopes, Dispat
 
 /// <summary>A process's job attempt: its steps, recorded by Oxbow, and the lock that holds a write to it.</summary>
 internal sealed record Attempt(
-    Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>> Step,
+    Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>> Step,
     Func<System.Data.Common.DbTransaction, CancellationToken, Task> Lock,
     bool Sealed);
 

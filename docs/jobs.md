@@ -104,7 +104,9 @@ the run.
   Every write a process sends takes Oxbow's attempt lock first, in the operation's own transaction, so a run the rescuer
   has taken over rolls back and ends there; its rescuer's run is the process now. A read takes no lock.
 
-Needs Oxbow's schema version 3 (0.2.0-alpha.5) and its grants: `dotnet levee db schema --jobs` and `db grants --jobs`.
+Needs Oxbow's schema version 3 (0.2.0-alpha.5). A fresh installation gets it from `dotnet levee db schema --jobs`; one
+from before alpha.3 applies only Oxbow's pending migrations (`OxbowSchema.GetMigrations(fromVersion: 2)`), then runs
+`dotnet levee db grants <role> --jobs` again.
 
 A process started in a scope (or in none) stays there: every step runs in that scope, whatever the step declares (its
 input's, its caller's, the platform's), even when the access policy would let its caller elsewhere. Its principal is

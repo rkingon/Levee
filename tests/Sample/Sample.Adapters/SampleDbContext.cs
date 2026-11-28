@@ -14,6 +14,7 @@ public sealed class SampleDbContext(DbContextOptions<SampleDbContext> options) :
     public static string Sql { get; } = $"""
         create table {NotesTable} (id uuid primary key, tenant text not null, text text not null, created_at timestamptz not null);
         {LeveeSchema.Isolation(NotesTable, "tenant")}
+        {LeveeSchema.AggregateRoot(NotesTable, "id")}
         """;
 
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();

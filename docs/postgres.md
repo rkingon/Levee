@@ -14,7 +14,14 @@ dotnet levee db grants app_role [--jobs]       # what the runtime role needs
 ```
 
 or the same from a migration: `migrationBuilder.AddLeveeSchema()`, `EnableScopeIsolation("notes", "tenant_id", "uuid")`,
-`ShareAcrossScopes("plans")`.
+`ShareAcrossScopes("plans")`. Each aggregate's tables get their triggers in the migration that creates them:
+`MakeAggregateRoot("orders", "id")` for a root's, `MakeAggregateChild("order_lines", "orders", "order_id")` for each child's.
+The root's trigger names the aggregate a transaction writes and refuses a second; a child's, at commit, refuses a change
+to a child whose root the transaction didn't write. Outside an operation (the owner's own work, a Tool) neither holds.
+
+An installation from before alpha.3 is brought up to date by `migrationBuilder.UpgradeLeveeSchema()`
+(`LeveeSchema.Upgrade(schema)`), safe to run again, then a migration adding each aggregate table's trigger, then Levee's
+grants once more. Not `dotnet levee db schema`, which prints a fresh installation.
 `LeveeSchema.Create(schema)` and `Grants(role, schema)` put Levee's objects in a schema other than `public` (Oxbow's tables
 stay in `public`), each qualified by it, so they hold whatever a role's `search_path` is. For `Isolation`, `Shared` and
 their migration helpers, `schema` names where Levee's functions are, not the table: pass the table qualified
@@ -46,7 +53,7 @@ allow-list, not a blanket:
 - idempotency keys (`levee_idempotency`): nothing of the table, only `levee_idempotency_claim` and
   `levee_idempotency_complete`, which read the transaction's own scope, so a key is claimed, and its result replayed, only
   where and for whom it was sent. An installation from before alpha.3 adds them as the owner, with
-  `migrationBuilder.AddLeveeIdempotency()` (`LeveeSchema.Idempotency(schema)`), which grants the recorded role itself.
+  `migrationBuilder.UpgradeLeveeSchema()` (`LeveeSchema.Upgrade(schema)`), which grants the recorded role itself.
   `LeveeSchema.SweepExpiredKeys()` removes the keys past their lifetime, on a schedule of the owner's.
 
 Run Levee's grants first, then anything the app grants itself (Oxbow's, `dotnet levee db grants <role> --jobs` prints
@@ -85,8 +92,7 @@ moved outside the scope is `scope.violation`, an update or delete EF tracked tha
 changed it first, or row-level security hides it from this scope: EF's concurrency exception) is `store.stale`; a
 set-based `ExecuteUpdate` or `ExecuteDelete` returns how many rows it changed, and a handler that needs one checks the count
 (it runs as it's called, past the change tracker: an update of a root's own table moves that root's `xmin` but isn't held
-to the version a caller saw, a delete of it leaves no version to see, and one on a child's table moves no root's version
-at all), a duplicate is `conflict`, any other constraint
+to the version a caller saw, and one on a child's table is refused at commit, as any child written without its root is), a duplicate is `conflict`, any other constraint
 or trigger refusal is `store.constraint`, a value its column's type refuses (a scope key that isn't the policy's uuid) is
 `store.invalid_value`, and contention or an unreachable database is `Unavailable` (so jobs retry it).
 

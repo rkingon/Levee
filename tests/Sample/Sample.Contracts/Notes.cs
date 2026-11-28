@@ -26,7 +26,7 @@ public sealed record CreateNoteLater(string Tenant, string Text) : IOperation<Un
 
 /// <summary>Held to the version its caller saw: an edit made on a note someone else has changed since is refused, not lost.</summary>
 [Operation("notes.edit", "member", Summary = "Rewrites a note.", Effects = Effects.Write, Idempotency = Idempotency.Idempotent,
-    Errors = ["note.empty", "note.missing"])]
+    Errors = ["note.empty", "note.banned", "note.missing"])]
 public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
 {
     string IScopedOperation.ScopeKey => Tenant;

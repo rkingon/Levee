@@ -183,22 +183,25 @@ internal sealed record AuditEntry(DateTimeOffset At, string? Scope, string Subje
 /// <summary>A retried write's key: one request, by who sent it, what to, and the hash of its input.</summary>
 internal sealed record IdempotencyKey(string Subject, string Operation, string Key, byte[] InputHash, TimeSpan Lifetime);
 
-internal enum IdempotencyState
+/// <summary>What claiming a key found: one of four, and only a kept result carries the wire it answered.</summary>
+internal abstract record IdempotencyClaim
 {
+    private IdempotencyClaim()
+    {
+    }
+
     /// <summary>This request holds the key: it runs.</summary>
-    Claimed,
+    public sealed record Claimed : IdempotencyClaim;
 
     /// <summary>The key was used with other input.</summary>
-    Mismatch,
+    public sealed record Mismatch : IdempotencyClaim;
 
     /// <summary>Done already, and its result isn't kept.</summary>
-    Replayed,
+    public sealed record Replayed : IdempotencyClaim;
 
-    /// <summary>Done already: <see cref="IdempotencyClaim.Result"/> is what it answered.</summary>
-    Kept,
+    /// <summary>Done already: <paramref name="Result"/> is the wire it answered.</summary>
+    public sealed record Kept(string Result) : IdempotencyClaim;
 }
-
-internal sealed record IdempotencyClaim(IdempotencyState State, string? Result = null);
 
 /// <summary>One operation's transaction. Opened scoped and read-only as its contract says; committed only by the dispatcher.</summary>
 internal interface IUnitOfWork : IAsyncDisposable

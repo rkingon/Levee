@@ -368,7 +368,9 @@ public sealed class OperationGenerator : IIncrementalGenerator
             + (op.Metadata.Count == 0 ? "" : $", metadata: new global::System.Attribute[] {{ {string.Join(", ", op.Metadata)} }}")
             + (op.Errors.Count == 0 || op.Streams ? "" : $", errors: new string[] {{ {string.Join(", ", op.Errors.Select(Literal))} }}")
             + (op.CallerScoped ? ", callerScoped: true" : "")
-            + (op.Unscoped ? ", unscoped: true" : "");
+            + (op.Unscoped ? ", unscoped: true" : "")
+            // A reference type's nullability is the contract's, lost to the type at run time: carried, so every side reads it.
+            + (op.Result is { IsReferenceType: true, NullableAnnotation: not NullableAnnotation.NotAnnotated } ? ", resultNullable: true" : "");
         return op.Streams
             ? $"global::Levee.OperationDescriptor.CreateSubscription<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, {flags})"
             : $"global::Levee.OperationDescriptor.Create<{types}>({Literal(op.Name)}, {Literal(op.Summary)}, {Literal(op.Access)}, "

@@ -22,13 +22,13 @@ public interface IProcess<in TInput>
 public sealed class ProcessContext
 {
     private readonly Func<IOperation, CancellationToken, Task<Result<object?>>> _send;
-    private readonly Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>> _step;
+    private readonly Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>> _step;
     private readonly bool _sealed;
 
     // step: runs a step whose result is recorded under its name, or answers the one recorded (the job's own); sealedResults:
     // whether what it records is sealed at rest, as a sealed process's input is.
     internal ProcessContext(Principal principal, string? scope, int attempt, Func<IOperation, CancellationToken, Task<Result<object?>>> send,
-        Func<string, Func<CancellationToken, Task<JsonElement>>, CancellationToken, Task<JsonElement>>? step = null, bool sealedResults = false)
+        Func<string, Func<CancellationToken, Task<string>>, CancellationToken, Task<string>>? step = null, bool sealedResults = false)
     {
         Principal = principal;
         Scope = scope;
@@ -86,17 +86,20 @@ public sealed class ProcessContext
                 {
                     throw new StepFailed(result.Error);
                 }
-                if (!_sealed && result.Value is { } value && LeveeJson.FindSecretIn(value, typeof(T), LeveeJson.Options) is { } secret)
+                // Written once, then judged and read back from what was written: a value that enumerates once (a generator)
+                // is the same value throughout, and one its type can't read again (a choice's subtype it doesn't name) is
+                // refused here rather than recorded for good.
+                var wire = JsonSerializer.SerializeToUtf8Bytes(result.Value, LeveeJson.Options);
+                var written = JsonSerializer.Deserialize<T>(wire, LeveeJson.Options);
+                if (!_sealed && written is not null && LeveeJson.FindSecretIn(written, typeof(T), LeveeJson.Options) is { } secret)
                 {
                     throw new InvalidOperationException(Unsealed(name, secret));
                 }
-                var written = JsonSerializer.SerializeToElement(result.Value, LeveeJson.Options);
-                // Read back before it's recorded: a value the language allows can still be one its type doesn't read (a choice's
-                // subtype it doesn't name), and a record no run can read would stand for good.
-                written.Deserialize<T>(LeveeJson.Options);
-                return written;
+                // Kept as the wire's bytes, not as JSON: Oxbow keeps a step's result as jsonb, which refuses some of what the wire
+                // writes (a \u0000 in a string).
+                return Convert.ToBase64String(wire);
             }, ct).ConfigureAwait(false);
-            return Result<T>.Success(recorded.Deserialize<T>(LeveeJson.Options)!);
+            return Result<T>.Success(JsonSerializer.Deserialize<T>(Convert.FromBase64String(recorded), LeveeJson.Options)!);
         }
         catch (StepFailed failed)
         {

@@ -28,13 +28,9 @@ internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned) : IOp
 {
     public async Task<Result<NoteView>> HandleAsync(CreateNote operation, OperationContext context, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(operation.Text))
+        if (NoteText.Refusal(operation.Text, banned) is { } refused)
         {
-            return Error.Validation("note.empty", "A note needs text.");
-        }
-        if (banned.Contains(operation.Text))
-        {
-            return Error.Validation("note.banned", "That note holds a banned word.");
+            return refused;
         }
         var note = Note.Create(operation.Id, operation.Tenant, operation.Text, context.Now);
         notes.Add(note);
@@ -45,13 +41,13 @@ internal sealed class CreateNoteHandler(INotes notes, IBannedWords banned) : IOp
     internal static NoteView View(Note note) => new(note.Id, note.Text, note.CreatedAt, note.Version);
 }
 
-internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote, NoteView>
+internal sealed class EditNoteHandler(INotes notes, IBannedWords banned) : IOperationHandler<EditNote, NoteView>
 {
     public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(operation.Text))
+        if (NoteText.Refusal(operation.Text, banned) is { } refused)
         {
-            return Error.Validation("note.empty", "A note needs text.");
+            return refused;
         }
         if (await notes.FindAsync(operation.Id, ct) is not { } note)
         {
@@ -76,4 +72,13 @@ internal sealed class CreateNoteLaterHandler(IJobs jobs) : IOperationHandler<Cre
         var queued = await jobs.EnqueueAsync(new CreateNote(context.NewId(), operation.Tenant, operation.Text), null, ct);
         return queued.IsSuccess ? Unit.Value : queued.Error;
     }
+}
+
+/// <summary>What a note's text must be, written once and held alike wherever text is set: a note is never written as one that isn't.</summary>
+internal static class NoteText
+{
+    public static Error? Refusal(string text, IBannedWords banned) =>
+        string.IsNullOrWhiteSpace(text) ? Error.Validation("note.empty", "A note needs text.")
+        : banned.Contains(text) ? Error.Validation("note.banned", "That note holds a banned word.")
+        : null;
 }

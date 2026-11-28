@@ -70,11 +70,11 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
         if (!store.Keys.TryGetValue(id, out var held))
         {
             _claims.Add((id, key.InputHash, null));
-            return Task.FromResult(new IdempotencyClaim(IdempotencyState.Claimed));
+            return Task.FromResult<IdempotencyClaim>(new IdempotencyClaim.Claimed());
         }
-        return Task.FromResult(!held.Hash.AsSpan().SequenceEqual(key.InputHash) ? new IdempotencyClaim(IdempotencyState.Mismatch)
-            : held.Result is null ? new IdempotencyClaim(IdempotencyState.Replayed)
-            : new IdempotencyClaim(IdempotencyState.Kept, held.Result));
+        return Task.FromResult<IdempotencyClaim>(!held.Hash.AsSpan().SequenceEqual(key.InputHash) ? new IdempotencyClaim.Mismatch()
+            : held.Result is null ? new IdempotencyClaim.Replayed()
+            : new IdempotencyClaim.Kept(held.Result));
     }
 
     public void Keep(IdempotencyKey key, string? result)

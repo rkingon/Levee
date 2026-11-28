@@ -48,6 +48,19 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
     }
 
     [Fact]
+    public async Task A_note_is_held_to_its_text_however_its_text_is_set()
+    {
+        using var host = Build(bannedWords: "list");
+        var dispatcher = host.Services.GetRequiredService<Dispatcher>();
+        var (acme, ada) = NewTenant();
+        var note = (await dispatcher.SendAsync(new CreateNote(Guid.CreateVersion7(), acme, "fine"), ada, Ct)).Value;
+
+        var edited = await dispatcher.SendAsync(new EditNote(note.Id, acme, "spam", note.Version), ada, Ct);
+
+        Assert.Equal("note.banned", edited.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_signal_reaches_its_scopes_subscriptions_when_its_operation_commits_and_never_when_it_rolls_back()
     {
         using var host = Build();

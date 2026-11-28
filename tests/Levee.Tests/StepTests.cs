@@ -7,9 +7,9 @@ public sealed class StepTests
     /// <summary>What Oxbow keeps of a job's steps: each one's result, recorded under its name once it returns.</summary>
     private sealed class Recorded
     {
-        public Dictionary<string, JsonElement> Steps { get; } = [];
+        public Dictionary<string, string> Steps { get; } = [];
 
-        public async Task<JsonElement> StepAsync(string name, Func<CancellationToken, Task<JsonElement>> run, CancellationToken ct)
+        public async Task<string> StepAsync(string name, Func<CancellationToken, Task<string>> run, CancellationToken ct)
         {
             if (Steps.TryGetValue(name, out var recorded))
             {
@@ -48,6 +48,26 @@ public sealed class StepTests
 
         Assert.Equal("probe.busy", failed.Error!.Code);
         Assert.Equal(2, retried.Value);
+    }
+
+    /// <summary>A sequence that can be read once: read again, it's empty.</summary>
+    private sealed class Once(params int[] items) : IEnumerable<int>
+    {
+        private int _read;
+
+        public IEnumerator<int> GetEnumerator() =>
+            Interlocked.Exchange(ref _read, 1) == 0 ? ((IEnumerable<int>)items).GetEnumerator() : Enumerable.Empty<int>().GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
+    [Fact]
+    public async Task A_result_that_enumerates_once_is_recorded_as_it_was_written()
+    {
+        var counted = await Run(new Recorded()).StepAsync<IEnumerable<int>>("count",
+            _ => Task.FromResult(Result<IEnumerable<int>>.Success(new Once(42))), CancellationToken.None);
+
+        Assert.Equal([42], counted.Value);
     }
 
     [Fact]

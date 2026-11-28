@@ -91,6 +91,18 @@ public sealed class HttpTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task A_keyed_write_answers_the_wire_it_kept_however_its_converters_write()
+    {
+        var body = $$"""{"tenant":"acme","name":"{{Guid.NewGuid():N}}"}""";
+
+        var first = await PostKeyed("probe.stamp", body, "k1");
+        var again = await PostKeyed("probe.stamp", body, "k1");
+
+        Assert.Equal(HttpStatusCode.OK, first.Status);
+        Assert.Equal(first, again);
+    }
+
+    [Fact]
     public async Task A_failure_is_a_problem_with_its_code_kind_and_trace()
     {
         var (response, problem) = await Post("probe.refuse", "{}");
@@ -205,4 +217,33 @@ public sealed class HttpTests : IAsyncDisposable
         Assert.Equal("""{"said":"hi"}""", await ok.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
         Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
     }
+}
+
+/// <summary>Written by a converter that never writes the same twice: a write's wire is what it was written as, once.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(StampJson))]
+[ValueObject(typeof(int))]
+public sealed record Stamp(int Value);
+
+public sealed class StampJson : System.Text.Json.Serialization.JsonConverter<Stamp>
+{
+    private static int _written;
+
+    public override Stamp Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options) => new(reader.GetInt32());
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, Stamp value, System.Text.Json.JsonSerializerOptions options) =>
+        writer.WriteNumberValue(Interlocked.Increment(ref _written));
+}
+
+public sealed record Stamped(Stamp Stamp);
+
+[Operation("probe.stamp", "member", Effects = Effects.Write, Idempotency = Idempotency.None)]
+public sealed record StampIt(string Tenant, string Name) : IOperation<Stamped>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+internal sealed class StampItHandler : IOperationHandler<StampIt, Stamped>
+{
+    public Task<Result<Stamped>> HandleAsync(StampIt operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<Stamped>>(new Stamped(new Stamp(0)));
 }

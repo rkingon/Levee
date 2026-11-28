@@ -111,11 +111,11 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
     [Fact]
     public async Task A_fresh_install_with_both_migrations_creates_the_keys_once()
     {
-        // An app's alpha.2 migration (AddLeveeSchema, now with keys) and its alpha.3 one (AddLeveeIdempotency), on an empty database.
+        // An app's alpha.2 migration (AddLeveeSchema, now with alpha.3's objects) and its alpha.3 one (UpgradeLeveeSchema), on an empty database.
         await postgres.ExecuteAsync($"""
             create schema fresh_keys;
             {LeveeSchema.Create("fresh_keys")}
-            {LeveeSchema.Idempotency("fresh_keys")}
+            {LeveeSchema.Upgrade("fresh_keys")}
             """);
 
         Assert.Equal(1, await postgres.CountAsync("select count(*) from pg_policy where polrelid = 'fresh_keys.levee_idempotency'::regclass"));
@@ -192,14 +192,17 @@ public sealed class IdempotencyKeyTests(PostgresFixture postgres) : IClassFixtur
             drop function legacy_keys.levee_idempotency_claim(text, text, text, bytea);
             drop function legacy_keys.levee_idempotency_complete(text, text, text, text, interval);
             drop table legacy_keys.levee_idempotency;
+            drop function legacy_keys.levee_aggregate_root_written();
+            drop function legacy_keys.levee_aggregate_child_written();
             {LeveeSchema.Grants("legacy_app", "legacy_keys")}
             """);
 
-        await postgres.ExecuteAsync(LeveeSchema.Idempotency("legacy_keys"));
+        await postgres.ExecuteAsync(LeveeSchema.Upgrade("legacy_keys"));
 
         Assert.Equal("True", await postgres.TextAsync(
             "select has_function_privilege('legacy_app', 'legacy_keys.levee_idempotency_claim(text, text, text, bytea)', 'execute')"));
         Assert.Equal("False", await postgres.TextAsync("select has_table_privilege('legacy_app', 'legacy_keys.levee_idempotency', 'select')"));
+        Assert.Equal("True", await postgres.TextAsync("select to_regprocedure('legacy_keys.levee_aggregate_root_written()') is not null"));
     }
 }
 

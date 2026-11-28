@@ -160,9 +160,10 @@ public sealed class CodeRules : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// SQL that sets the settings row-level security trusts (<c>levee.scope</c>, <c>levee.platform</c>), or writes the audit
-    /// by hand: however the string is put together (a literal, a concatenation, an interpolation, SQL's own concatenation),
-    /// it would move the operation into another tenant's rows, or forge its record. Reading them is fine. A setting's bare
+    /// SQL that sets the settings row-level security and the aggregate triggers trust (<c>levee.scope</c>, <c>levee.platform</c>,
+    /// <c>levee.aggregate</c>), or writes the audit or an idempotency key by hand: however the string is put together (a
+    /// literal, a concatenation, an interpolation, SQL's own concatenation), it would move the operation into another tenant's
+    /// rows, past its aggregate's version, or forge its record. Reading them is fine. A setting's bare
     /// name is judged where it's used: by the SQL it's passed with.
     /// </summary>
     private static void OnScopeSetting(OperationAnalysisContext context)
@@ -184,8 +185,9 @@ public sealed class CodeRules : DiagnosticAnalyzer
         }
         var flat = Flat(text);
         var names = flat.Contains("levee.scope") || flat.Contains("levee.plat") || flat.Contains("leveescope") || flat.Contains("leveeplatform")
-            || flat.Contains("levee." + Hole);
-        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write") || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
+            || flat.Contains("levee.aggr") || flat.Contains("leveeaggregate") || flat.Contains("levee." + Hole);
+        var refused = (names && Sets(text)) || flat.Contains("levee_audit_write") || flat.Contains("levee_idempotency")
+            || PgSettingsWrite.IsMatch(SqlComment.Replace(text, " "))
             || (flat is "levee.scope" or "levee.platform" && !ReadOnly(operation));
         if (refused)
         {

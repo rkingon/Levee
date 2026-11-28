@@ -37,7 +37,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        var result = await RunAsync(descriptor, operation, principal, answer: null, pinned: null, idempotencyKey, ct);
+        var result = await RunAsync(descriptor, operation, principal, json: false, pinned: null, idempotencyKey, ct);
         return result.IsSuccess ? Result<TResult>.Success((TResult)result.Value!) : result.Error;
     }
 
@@ -93,7 +93,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -154,7 +154,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.AnswersOnce, $"{descriptor.Name} answers once: send it.");
         }
-        var subscription = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var subscription = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!subscription.IsSuccess)
         {
             return subscription.Error;
@@ -172,7 +172,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             JsonElement json;
             try
             {
-                json = JsonSerializer.SerializeToElement(item, descriptor.ResultType, LeveeJson.Options);
+                json = ContractWire.WriteResult(descriptor, item);
             }
             catch (Exception e) when (e is not OperationCanceledException)
             {
@@ -271,14 +271,12 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.Validation(LeveeErrors.Streams, $"{descriptor.Name} streams: subscribe to it.");
         }
-        var operation = OperationCatalog.Deserialize(descriptor, input, LeveeJson.Options, e => LogInputRefused(log, e, descriptor.Name));
+        var operation = ContractWire.ReadInput(descriptor, input, e => LogInputRefused(log, e, descriptor.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
         }
-        // Serialized before the commit: a result that can't be is a bug the write rolls back with, not one the caller meets after.
-        var result = await RunAsync(descriptor, operation.Value, principal,
-            value => JsonSerializer.SerializeToElement(value, descriptor.ResultType, LeveeJson.Options), pinned, key, ct);
+        var result = await RunAsync(descriptor, operation.Value, principal, json: true, pinned, key, ct);
         return result.IsSuccess ? (JsonElement)result.Value! : result.Error;
     }
 
@@ -312,7 +310,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return Error.NotFound(LeveeErrors.UnknownOperation, $"{operation.GetType().Name} isn't in the catalog.");
         }
-        return await RunAsync(descriptor, operation, principal, answer: null, pinned: null, key: null, ct);
+        return await RunAsync(descriptor, operation, principal, json: false, pinned: null, key: null, ct);
     }
 
     private static Result<WorkScope> Confine(Result<WorkScope> scoped, OperationDescriptor descriptor, Principal principal) =>
@@ -323,7 +321,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             : scoped;
 
     private async Task<Result<object?>> RunAsync(OperationDescriptor descriptor, IOperation operation, Principal principal,
-        Func<object?, object?>? answer, string? pinned, string? key, CancellationToken ct)
+        bool json, string? pinned, string? key, CancellationToken ct)
     {
         var enlist = Attempts.TryGetValue(principal, out var attempt) ? attempt : null;
         using var activity = Source.StartActivity(descriptor.Name);
@@ -363,7 +361,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         Result<object?> result;
         try
         {
-            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, answer, key, enlist, ct) : scoped.Error);
+            result = refused ?? (scoped.IsSuccess ? await RunCoreAsync(descriptor, operation, input, principal, scoped.Value, json, key, enlist, ct) : scoped.Error);
         }
         catch (AttemptSuperseded)
         {
@@ -437,7 +435,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         {
             return found.Error;
         }
-        var operation = OperationCatalog.Deserialize(found.Value, input, LeveeJson.Options, e => LogInputRefused(log, e, found.Value.Name));
+        var operation = ContractWire.ReadInput(found.Value, input, e => LogInputRefused(log, e, found.Value.Name));
         if (!operation.IsSuccess)
         {
             return operation.Error;
@@ -557,7 +555,7 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
     private static bool IsKey(string key) => key.Length is > 0 and <= 255 && !key.Any(char.IsControl);
 
     private async Task<Result<object?>> RunCoreAsync(OperationDescriptor descriptor, IOperation operation, string? input, Principal principal, WorkScope scope,
-        Func<object?, object?>? answer, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
+        bool json, string? key, Func<IServiceProvider, CancellationToken, Task>? enlist, CancellationToken ct)
     {
         if (await AuthorizeAsync(descriptor, operation, principal, scope, ct) is { } denied)
         {
@@ -594,18 +592,20 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 : null;
             if (claimed is not null)
             {
-                var claim = await unit.ClaimAsync(claimed, ct);
-                switch (claim.State)
+                var replayed = Error.Conflict(LeveeErrors.IdempotencyReplayed,
+                    $"{descriptor.Name} was done already with this idempotency key, and its result isn't kept: it carries a secret, shown once.");
+                switch (await unit.ClaimAsync(claimed, ct))
                 {
-                    case IdempotencyState.Mismatch:
+                    case IdempotencyClaim.Mismatch:
                         return Error.Conflict(LeveeErrors.IdempotencyMismatch, $"{descriptor.Name} was sent with this idempotency key and other input: a key names one request.");
-                    case IdempotencyState.Replayed:
-                        return Error.Conflict(LeveeErrors.IdempotencyReplayed,
-                            $"{descriptor.Name} was done already with this idempotency key, and its result isn't kept: it carries a secret, shown once.");
-                    case IdempotencyState.Kept:
-                        // Done already: its first result, and nothing written again, nothing audited again.
-                        var first = JsonSerializer.Deserialize(claim.Result!, descriptor.ResultType, LeveeJson.Options);
-                        return Result<object?>.Success(answer is null ? first : answer(first));
+                    case IdempotencyClaim.Replayed:
+                        return replayed;
+                    case IdempotencyClaim.Kept kept:
+                        // Done already: its first answer, the wire it was kept as, and nothing written or audited again. A secret is
+                        // shown once, whatever was kept before the contract said so.
+                        var first = Parse(kept.Result);
+                        var read = Read(descriptor, first);
+                        return Secret(descriptor, read) ? replayed : Result<object?>.Success(json ? first : read);
                 }
             }
             var result = await descriptor.InvokeAsync(services.ServiceProvider, operation, context, ct);
@@ -630,17 +630,23 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
                 }
                 return result;
             }
-            if (claimed is not null)
+            // Written once, before the commit: a result that can't be is a bug the write rolls back with. A keyed write's first
+            // answer and every replay are that one wire, however the handler's result enumerates or its converters write.
+            if (!json && claimed is null)
             {
-                // Written once and read back: the first answer and every replay are the same wire, however the handler's
-                // result enumerates. A secret is shown once: a result that carries one is never kept to show again.
-                var wire = JsonSerializer.Serialize(result.Value, descriptor.ResultType, LeveeJson.Options);
-                result = Result<object?>.Success(JsonSerializer.Deserialize(wire, descriptor.ResultType, LeveeJson.Options));
-                unit.Keep(claimed, result.Value is null || LeveeJson.FindSecretIn(result.Value, descriptor.ResultType, LeveeJson.Options) is null ? wire : null);
+                ContractWire.Check(descriptor, result.Value);
             }
-            if (answer is not null)
+            else
             {
-                result = Result<object?>.Success(answer(result.Value));
+                var wire = ContractWire.WriteResult(descriptor, result.Value);
+                var answered = (object?)wire;
+                if (claimed is not null)
+                {
+                    var copy = Read(descriptor, wire);
+                    unit.Keep(claimed, Secret(descriptor, copy) ? null : wire.GetRawText());
+                    answered = json ? wire : copy;
+                }
+                result = Result<object?>.Success(answered);
             }
             if (descriptor.Audited)
             {
@@ -706,6 +712,19 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
             LogOutcomeFailed(log, e, outcome.Operation.Name, recorder);
         }
     }
+
+    private static JsonElement Parse(string wire)
+    {
+        using var document = JsonDocument.Parse(wire);
+        return document.RootElement.Clone();
+    }
+
+    /// <summary>A result Levee wrote itself, read back: one its own contract can't read is a bug.</summary>
+    private static object? Read(OperationDescriptor descriptor, JsonElement wire) =>
+        ContractWire.ReadResult(descriptor, wire, problem => throw new InvalidOperationException(problem)).Value;
+
+    private static bool Secret(OperationDescriptor descriptor, object? result) =>
+        result is not null && LeveeJson.FindSecretIn(result, descriptor.ResultType, LeveeJson.Options) is not null;
 
     /// <summary>
     /// The input as the wire carries it, its objects' members in one order (a dictionary's entries in any order are the same

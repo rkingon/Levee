@@ -108,9 +108,10 @@ internal sealed class EfNotes(AppDbContext db, IFlush flush) : INotes
 
 Raw SQL is held to the same rule: a constant or interpolated statement that begins, commits, rolls back or shapes a
 transaction (`ExecuteSqlRaw("commit; begin")`, a command's `CommandText`) is refused, and so is `TransactionScope` and a
-savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, however it's
-spelled (`set_config`, `SET`, an update of `pg_settings`): set by code of the app's, they'd move the operation into another
-tenant's rows. Only the unit of work sets them. A setting's bare name is allowed only where it's read: passed with SQL
+savepoint. So is SQL that sets `levee.scope` or `levee.platform`, the settings row-level security trusts, or
+`levee.aggregate`, the aggregate the triggers hold the transaction to, however it's spelled (`set_config`, `SET`, an update
+of `pg_settings`): set by code of the app's, they'd move the operation into another tenant's rows, or past its aggregate's
+version. Only the unit of work sets them, and only it calls the idempotency key functions (`levee_idempotency_*`). A setting's bare name is allowed only where it's read: passed with SQL
 that reads it (`current_setting`) and sets nothing, or held in a `const` or a local used only that way. Anywhere else (a
 `static readonly` field, a parameter's value, a format string's argument) it's refused. An EF migration's SQL is the
 owner's, run at migrate and never inside an operation, so it may write the audit (a backfill from an old one): the SQL
@@ -813,5 +814,5 @@ internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote
 How the handler reaches the root (its repository, or a helper of Application's that holds it) is the build's to leave
 alone: it's held at run time. The one root the operation changes is held to the version (refused as 409 `store.stale`
 when it moved on); one it loaded but didn't change is compared as it was read. A versioned operation that loads no root,
-creates one, or changes more than one aggregate, across however many flushes, is a bug, answered `internal`: one version
-names one aggregate, and what follows in another is an operation of its own.
+or creates one, is a bug, answered `internal`. Any operation changes one aggregate, which Postgres holds whatever writes
+it: what follows in another aggregate is an operation of its own, enqueued as a job.

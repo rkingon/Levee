@@ -75,6 +75,21 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     [Fact]
+    public async Task A_step_records_whatever_the_wire_writes_and_replays_it()
+    {
+        using var host = Build();
+        await host.StartAsync(Ct);
+        var (tenant, ada) = NewTenant();
+
+        Assert.True((await host.Services.GetRequiredService<Dispatcher>().SendAsync(new StartNulSteps(tenant), ada, Ct)).IsSuccess);
+
+        // jsonb refuses \u0000: a step's record isn't jsonb's to refuse.
+        Assert.Equal("a\u0000b", await NulStepProcess.Replayed.GetOrAdd(tenant, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).Task
+            .WaitAsync(TimeSpan.FromSeconds(10), Ct));
+        await host.StopAsync(Ct);
+    }
+
+    [Fact]
     public async Task A_sealed_process_replays_a_secret_step_it_keeps_only_as_ciphertext()
     {
         using var host = Build(seal: true);
@@ -110,6 +125,41 @@ public sealed class ProcessStepTests(PostgresFixture postgres) : IClassFixture<P
         Assert.Equal("read; write refused", await run.Outcome.Task.WaitAsync(TimeSpan.FromSeconds(10), Ct));
         Assert.Equal(0, await postgres.CountAsync("select count(*) from notes where tenant = $1", tenant));
         await host.StopAsync(Ct);
+    }
+}
+
+[Operation("probe.start_nul_steps", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent)]
+public sealed record StartNulSteps(string Tenant) : IOperation<Unit>, IScopedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+}
+
+public sealed record NulStepsInput(string Tenant);
+
+internal sealed class StartNulStepsHandler(IJobs jobs) : IOperationHandler<StartNulSteps, Unit>
+{
+    public async Task<Result<Unit>> HandleAsync(StartNulSteps operation, OperationContext context, CancellationToken ct)
+    {
+        await jobs.StartAsync(new NulStepsInput(operation.Tenant), null, ct);
+        return Unit.Value;
+    }
+}
+
+/// <summary>Steps on a string holding \u0000, snoozes, and on its next run reads it back from the step's record.</summary>
+internal sealed class NulStepProcess : IProcess<NulStepsInput>
+{
+    public static ConcurrentDictionary<string, TaskCompletionSource<string>> Replayed { get; } = new();
+
+    private static readonly ConcurrentDictionary<string, bool> Ran = new();
+
+    public async Task RunAsync(NulStepsInput input, ProcessContext context, CancellationToken ct)
+    {
+        var said = await context.StepAsync("say", _ => Task.FromResult<Result<string>>("a\u0000b"), ct);
+        if (Ran.TryAdd(input.Tenant, true))
+        {
+            context.Snooze(TimeSpan.FromMilliseconds(50));
+        }
+        Replayed.GetOrAdd(input.Tenant, _ => new(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult(said.Value);
     }
 }
 

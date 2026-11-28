@@ -49,6 +49,19 @@ public sealed class IdempotencyTests
     }
 
     [Fact]
+    public async Task A_result_kept_before_its_contract_marked_a_secret_is_never_shown_again()
+    {
+        await _dispatcher.SendAsync(new IssueToken("acme", "ci"), Ada, "key-1", CancellationToken.None);
+        // What a key kept before the token was marked [Secret]: the result, in plain.
+        var kept = _store.Keys.Single(k => k.Key.EndsWith("/key-1", StringComparison.Ordinal));
+        _store.Keys[kept.Key] = (kept.Value.Hash, """{"name":"ci","token":"token-ci"}""");
+
+        var again = await _dispatcher.SendAsync(new IssueToken("acme", "ci"), Ada, "key-1", CancellationToken.None);
+
+        Assert.Equal(LeveeErrors.IdempotencyReplayed, again.Error!.Code);
+    }
+
+    [Fact]
     public async Task A_key_is_each_callers_own()
     {
         var name = Name();

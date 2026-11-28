@@ -283,6 +283,78 @@ public sealed class ClientTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task An_input_is_refused_as_the_platform_would_refuse_it()
+    {
+        var lost = new LoseFirstAnswer();
+        var client = Client(between: lost);
+
+        var empty = await client.SendAsync(new Strict(new RequiredText("")), Ct);
+        var unwritable = await client.SendAsync(new Computed(new Mailbox("local")), Ct);
+
+        Assert.Equal(LeveeErrors.InvalidInput, empty.Error!.Code);
+        Assert.Equal(LeveeErrors.InvalidInput, unwritable.Error!.Code);
+        Assert.Empty(lost.Keys);
+    }
+
+    private static Rewrite Answering(HttpStatusCode status, string mediaType, string body) => new(answer =>
+    {
+        answer.Dispose();
+        var rewritten = new HttpResponseMessage(status) { Content = new StringContent(body) };
+        rewritten.Content.Headers.ContentType = new(mediaType);
+        return rewritten;
+    });
+
+    [Theory]
+    [InlineData("""{"text":""}""")]
+    [InlineData("null")]
+    public async Task An_answer_its_contract_doesnt_read_is_the_platform_out_of_reach(string body)
+    {
+        var read = await Client(retries: 0, between: Answering(HttpStatusCode.OK, "application/json", body)).SendAsync(new SayRequired(), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, read.Error!.Code);
+    }
+
+    [Fact]
+    public async Task A_problem_that_disagrees_with_its_status_isnt_the_platforms()
+    {
+        var problem = """{"title":"Conflict","status":409,"detail":"x","code":"x.y","kind":"validation","transient":true,"trace":"t","errors":null}""";
+
+        var read = await Client(retries: 0, between: Answering(HttpStatusCode.BadGateway, "application/problem+json", problem)).SendAsync(new Echo("hi"), Ct);
+
+        Assert.Equal(LeveeErrors.Unreachable, read.Error!.Code);
+    }
+
+    /// <summary>Tells whether the body it holds was let go of.</summary>
+    private sealed class Watched : MemoryStream
+    {
+        public bool Closed { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            Closed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    [Fact]
+    public async Task A_stream_disposed_unread_is_closed()
+    {
+        var body = new Watched();
+        var watched = new Rewrite(answer =>
+        {
+            answer.Dispose();
+            var stream = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(body) };
+            stream.Content.Headers.ContentType = new("text/event-stream");
+            return stream;
+        });
+
+        var opened = await Client(between: watched).SubscribeAsync(new Ticks(1), Ct);
+        await opened.Value.DisposeAsync();
+
+        Assert.True(body.Closed);
+    }
+
+    [Fact]
     public async Task A_platform_out_of_reach_is_unavailable_once_its_retries_run_out()
     {
         var gone = await Client(retries: 1, between: new Unreachable()).SendAsync(new Echo("hi"), Ct);
@@ -344,4 +416,15 @@ internal sealed class ChargeHandler : IOperationHandler<Charge, Unit>
         Counted.Runs.AddOrUpdate(operation.Reference, 1, (_, n) => n + 1);
         throw new InvalidOperationException("the charge went through, and then this broke");
     }
+}
+
+public sealed record RequiredView(RequiredText Text);
+
+[Operation("probe.say_required", "member", Platform = true)]
+public sealed record SayRequired : IOperation<RequiredView>;
+
+internal sealed class SayRequiredHandler : IOperationHandler<SayRequired, RequiredView>
+{
+    public Task<Result<RequiredView>> HandleAsync(SayRequired operation, OperationContext context, CancellationToken ct) =>
+        Task.FromResult<Result<RequiredView>>(new RequiredView(new RequiredText("said")));
 }
