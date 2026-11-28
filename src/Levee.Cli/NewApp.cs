@@ -207,6 +207,9 @@ internal static partial class NewApp
                 /// <summary>Each operation's unit of work: one instance per operation, one transaction, committed by the pipeline.</summary>
                 public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
                 {
+                    /// <summary>Every aggregate root's version is Postgres's xmin, so overlapping edits of one aggregate can't both commit.</summary>
+                    protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder) => configurationBuilder.AddLeveeConventions();
+
                     protected override void OnModelCreating(ModelBuilder modelBuilder) => modelBuilder.AddLeveeAudit();
                 }
 

@@ -17,5 +17,10 @@ public sealed class Note : IAggregateRoot
     public string Text { get; private set; }
     public DateTimeOffset CreatedAt { get; private set; }
 
+    /// <summary>The store's, as of the last write: what an edit names to be held to what its caller saw.</summary>
+    public uint Version { get; private set; }
+
     public static Note Create(Guid id, string tenant, string text, DateTimeOffset now) => new(id, tenant, text.Trim(), now);
+
+    public void Edit(string text) => Text = text.Trim();
 }

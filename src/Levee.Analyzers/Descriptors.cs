@@ -194,6 +194,10 @@ internal static class Descriptors
         "LEVEE113", "An access policy decides by scope",
         "{0} authorizes without reading request.Scope.Key, but an input-scoped operation runs in whatever scope its input names, so a caller it grants in one tenant is granted every tenant's rows; asking only whether the scope is the platform's (Scope.Platform) doesn't tell one tenant from another. Fix: grant a tenant's operation only where request.Scope.Key is what the caller may reach (request.Principal is Member m && request.Scope.Key == m.Tenant), and, as a separate case, grant platform scope (request.Scope.Platform) only to the platform's operators");
 
+    public static readonly DiagnosticDescriptor VersionedLoadsNoRoot = Rule(
+        "LEVEE114", "A versioned operation changes the root it loads",
+        "{0} {1}, so there's no aggregate the version its caller saw could be held to. Fix: an IVersionedOperation names the version of the one aggregate it changes: declare Effects = Effects.Write, and handle it with a handler that takes the root's repository (an IRepository<T> port), loads the root, changes it through its own method, and saves");
+
     /// <summary>Every rule's id, for LEVEE006's check of what the build configuration weakens.</summary>
     public static readonly string[] Ids =
     [
@@ -201,6 +205,6 @@ internal static class Descriptors
         "LEVEE010", "LEVEE011", "LEVEE012", "LEVEE013", "LEVEE014", "LEVEE015", "LEVEE016", "LEVEE017", "LEVEE018", "LEVEE019", "LEVEE020",
         "LEVEE021", "LEVEE022",
         "LEVEE101", "LEVEE102", "LEVEE103", "LEVEE104", "LEVEE105", "LEVEE106", "LEVEE107", "LEVEE108", "LEVEE109", "LEVEE110", "LEVEE111",
-        "LEVEE112", "LEVEE113",
+        "LEVEE112", "LEVEE113", "LEVEE114",
     ];
 }

@@ -181,6 +181,11 @@ app.MapLeveeOperations(http => MyAuth.PrincipalAsync(http)); // a lookup if need
   `AddArgsEncryption()`. Without it they're refused.
 - `OperationContext.Now` is the handler's one time, at Postgres's microseconds. The audit's own time is the database's
   `now()`, so a caller can't backdate it.
+- Every aggregate root has a version, Postgres's `xmin`, mapped by `configurationBuilder.AddLeveeConventions()` in the
+  context's `ConfigureConventions`: two operations changing one aggregate at once can't both commit (409 `store.stale`),
+  and a change to a child is a change to its root. An edit held to what its caller saw is an `IVersionedOperation`:
+  its `ExpectedVersion` (a view's `Version`, read from `uint Version { get; private set; }` on the root) is compared as
+  the root is written. A repository whose `Save` flushes gives the view the version just written.
 - Only the dispatcher commits, but an adapter may flush: `IFlush` sends pending writes inside the open transaction, so a
   later query or set-based statement sees them, and refuses outside an operation. `SaveChanges` stays banned (LEVEE004).
 - Jobs run for whoever enqueued them: register an `IJobPrincipals` to turn that subject back into the app's own principal.
@@ -304,6 +309,7 @@ build output alone is enough to write it right. [docs/rules.md](docs/rules.md) i
 | LEVEE111 | An access policy or admission refuses only with the codes its `[Refuses]` declares; the catalog lists them once. |
 | LEVEE112 | Every process input has one `IProcess<TInput>` across the composed app (checked where the catalog is built). |
 | LEVEE113 | An access policy reads the key of the scope it authorizes (`AccessRequest.Scope.Key`), not only whether it's the platform's: it decides who may act in which tenant. |
+| LEVEE114 | An `IVersionedOperation` writes, and its handler takes the repository of the root it changes. |
 
 ## Decisions
 

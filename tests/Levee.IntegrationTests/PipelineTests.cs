@@ -736,6 +736,8 @@ public sealed class PipelineTests(PostgresFixture postgres) : IClassFixture<Post
         builder.Services.AddDbContext<SampleDbContext>((sp, o) => o.UseNpgsql(sp.GetRequiredService<NpgsqlDataSource>()));
         builder.Services.AddLeveeOperations(builder.Configuration);
         builder.Services.AddLeveePostgres<SampleDbContext>();
+        // Oxbow's tables are in the fixture's database: without it, the isolation check rightly finds them unprotected.
+        builder.Services.AddLeveeOxbow();
         builder.Services.AddSingleton<IAccessPolicy, TenantAccess>();
         using var host = builder.Build();
         var (tenant, ada) = NewTenant();

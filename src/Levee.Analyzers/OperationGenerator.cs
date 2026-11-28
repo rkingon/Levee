@@ -62,6 +62,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
             Role.Test or Role.TestSupport => own.Where(Known.IsNamedAdapter).SelectMany(t => Adapted(t, context)).ToList(),
             _ => [],
         };
+        foreach (var h in handlers.Where(h => h.Operation.AllInterfaces.Any(i => Known.Is(i, "IVersionedOperation", 0)) && !TakesRepository(h.Handler)))
+        {
+            context.ReportDiagnostic(Diagnostic.Create(Descriptors.VersionedLoadsNoRoot, h.Handler.Locations.FirstOrDefault(), h.Handler.Name,
+                $"handles {h.Operation.Name}, which is held to the version its caller saw (IVersionedOperation), but takes no repository"));
+        }
         var registration = "LeveeRegistration_" + Identifier(compilation.AssemblyName ?? "App");
         var registers = handlers.Count > 0 || adapters.Count > 0 || processes.Count > 0 || helpers.Count > 0;
         var refusals = Refusals(own, context);
@@ -540,6 +545,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
         if ((effects & ~1) != 0 && idempotency == 0)
         {
             context?.ReportDiagnostic(Diagnostic.Create(Descriptors.WriteIdempotency, location, name, EffectsText(effects)));
+        }
+        if (type.AllInterfaces.Any(i => Known.Is(i, "IVersionedOperation", 0)) && (effects & 2) == 0)
+        {
+            context?.ReportDiagnostic(Diagnostic.Create(Descriptors.VersionedLoadsNoRoot, location, name,
+                "is held to the version its caller saw (IVersionedOperation) but declares no write"));
         }
         var scoped = type.AllInterfaces.Any(i => Known.Is(i, "IScopedOperation", 0));
         var scopes = (scoped ? 1 : 0) + (platform ? 1 : 0) + (callerScoped ? 1 : 0) + (unscoped ? 1 : 0);
@@ -1035,6 +1045,11 @@ public sealed class OperationGenerator : IIncrementalGenerator
         }
         return [.. found.OrderBy(t => t.ToDisplayString(), StringComparer.Ordinal)];
     }
+
+    /// <summary>Whether the handler's widest constructor takes a repository, the one way it loads an aggregate root.</summary>
+    private static bool TakesRepository(INamedTypeSymbol handler) =>
+        handler.InstanceConstructors.Where(c => c.DeclaredAccessibility is not Accessibility.Private).OrderByDescending(c => c.Parameters.Length).FirstOrDefault() is { } constructor
+        && constructor.Parameters.Any(p => p.Type is INamedTypeSymbol type && (Known.Is(type, "IRepository", 1) || type.AllInterfaces.Any(i => Known.Is(i, "IRepository", 1))));
 
     /// <summary>A type the container can construct as named: no type parameter left open in it or in a type it's nested in.</summary>
     private static bool Closed(ITypeSymbol type) => type switch

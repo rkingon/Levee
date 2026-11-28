@@ -779,3 +779,40 @@ own code: a helper of its own that takes the scope and reads `Key` counts, one e
 `Scope.Platform` doesn't count. A policy that grants nothing (every path returns one of `Error`'s refusals, or throws)
 needn't read it. Reading it is the build's to see; comparing it rightly is the policy's, and the access
 tests'.
+
+## LEVEE114: A versioned operation changes the root it loads
+
+An edit made against what its caller saw (`IVersionedOperation`) is held to the version of one aggregate: the one root
+it loads and changes. The version is compared as that root is written (Postgres's own `xmin` in the update's `where`), so
+an operation that names one has to write, and has to reach the root the only way the application does, through its
+repository. A read can't be stale, and a handler that takes no repository loads no root to compare.
+
+```csharp
+// Wrong: a version held to nothing
+[Operation("notes.edit", "member")]
+public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation { ... }
+internal sealed class EditNoteHandler(IBannedWords banned) : IOperationHandler<EditNote, NoteView> { ... }
+
+// Right: it writes, and loads the root it changes through the root's repository
+[Operation("notes.edit", "member", Effects = Effects.Write, Idempotency = Idempotency.Idempotent, Errors = ["note.missing"])]
+public sealed record EditNote(Guid Id, string Tenant, string Text, uint Version) : IOperation<NoteView>, IScopedOperation, IVersionedOperation
+{
+    string IScopedOperation.ScopeKey => Tenant;
+    uint IVersionedOperation.ExpectedVersion => Version;
+}
+internal sealed class EditNoteHandler(INotes notes) : IOperationHandler<EditNote, NoteView>
+{
+    public async Task<Result<NoteView>> HandleAsync(EditNote operation, OperationContext context, CancellationToken ct)
+    {
+        if (await notes.FindAsync(operation.Id, ct) is not { } note) return Error.NotFound("note.missing", "There's no such note.");
+        note.Edit(operation.Text);
+        await notes.SaveAsync(ct);   // flushes, so the view carries the version just written
+        return View(note);
+    }
+}
+```
+
+At run time, the one root the operation changes is held to the version (refused as 409 `store.stale` when it moved on);
+one it loaded but didn't change is compared as it was read. A versioned operation that loads no root, or changes more
+than one aggregate, is a bug, answered `internal`: one version names one aggregate, and what follows in another is an
+operation of its own.

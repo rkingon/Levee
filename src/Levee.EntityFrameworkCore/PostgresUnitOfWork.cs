@@ -27,7 +27,7 @@ public static class LeveePostgresServiceCollectionExtensions
         services.AddScoped<IAmbientTransaction>(provider => provider.GetRequiredService<AmbientTransaction>());
         services.AddSingleton<SignalHub<TContext>>();
         services.AddScoped<IChangeSignals, PostgresSignals<TContext>>();
-        services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance));
+        services.ConfigureDbContext<TContext>(o => o.AddInterceptors(OutsideOperationGuard.Instance, Aggregates.Instance));
         // The guard is on TContext alone: a second context would reach the database around every operation.
         services.AddSingleton<IValidateOptions<OneContext>>(provider =>
             new OneContextValidation(services, typeof(TContext), provider.GetRequiredService<IServiceScopeFactory>()));
@@ -211,10 +211,17 @@ internal sealed class OneContextValidation(IServiceCollection services, Type con
     {
         var name = db.GetType().Name;
         var interceptors = db.GetService<IDbContextOptions>().FindExtension<CoreOptionsExtension>()?.Interceptors;
-        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true)
+        if (interceptors?.Contains(OutsideOperationGuard.Instance) != true || !interceptors.Contains(Aggregates.Instance))
         {
             return $"{name} doesn't carry Levee's guard, so it would run commands outside every operation. Fix: take "
                 + $"DbContextOptions<{name}> in its constructor and configure it in AddDbContext, not OnConfiguring.";
+        }
+        if (Aggregates.Unversioned(db.Model) is { } root)
+        {
+            return $"{root} is an aggregate root without a version, so two operations changing it at once would both commit and one change "
+                + $"would be lost. Fix: in {name}, override ConfigureConventions(ModelConfigurationBuilder configurationBuilder) and call "
+                + "configurationBuilder.AddLeveeConventions(), which maps every root's version to xmin (declare uint Version { get; private set; } "
+                + "on the root to read it).";
         }
         return db.Database.CreateExecutionStrategy().RetriesOnFailure
             ? $"{name} retries on failure (EnableRetryOnFailure), which can't run a transaction the caller began. Fix: remove it; a "
@@ -518,6 +525,8 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
 
     public WorkScope Scope => scope;
 
+    public void Expect(uint version) => Aggregates.Expect(db, version);
+
     /// <summary>Through <c>levee_audit_write</c>, the one way the runtime role may add to the audit, in this transaction, at its time.</summary>
     public async Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {
@@ -531,6 +540,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async Task CommitAsync(CancellationToken ct)
     {
         await db.SaveChangesAsync(ct);
+        Aggregates.Verify(db);
         await tx.CommitAsync(ct);
         _committed = true;
     }
@@ -538,6 +548,7 @@ internal sealed class PostgresUnitOfWork(DbContext db, IDbContextTransaction tx,
     public async ValueTask DisposeAsync()
     {
         ambient.Current = null;
+        Aggregates.Forget(db);
         LeveeTransactions.Remove(tx.GetDbTransaction());
         if (!_committed)
         {

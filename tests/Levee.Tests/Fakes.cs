@@ -37,6 +37,7 @@ internal sealed class Store
 {
     public List<WorkScope> Begun { get; } = [];
     public List<AuditEntry> Audited { get; } = [];
+    public List<uint> Expected { get; } = [];
     public int Commits { get; set; }
     public int Disposed { get; set; }
 }
@@ -57,6 +58,8 @@ internal sealed class FakeUnitOfWork(Store store, WorkScope scope) : IUnitOfWork
     private readonly List<AuditEntry> _pending = [];
 
     public WorkScope Scope => scope;
+
+    public void Expect(uint version) => store.Expected.Add(version);
 
     public Task AuditAsync(AuditEntry entry, CancellationToken ct)
     {

@@ -1,1 +1,3 @@
 #nullable enable
+Levee.EntityFrameworkCore.LeveeConventionsExtensions
+static Levee.EntityFrameworkCore.LeveeConventionsExtensions.AddLeveeConventions(this Microsoft.EntityFrameworkCore.ModelConfigurationBuilder! configurationBuilder) -> Microsoft.EntityFrameworkCore.ModelConfigurationBuilder!

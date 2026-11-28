@@ -21,6 +21,18 @@ public interface IScopedOperation
     string ScopeKey { get; }
 }
 
+/// <summary>
+/// An edit made against the version of an aggregate its caller saw: it commits only if the root is still at that version,
+/// and is refused as <see cref="LeveeErrors.Stale"/> otherwise, so an edit made on what someone else has since changed
+/// never overwrites it. Implemented explicitly over a positional parameter, as <see cref="IScopedOperation"/> is; its
+/// handler loads the one root it changes through a repository (LEVEE114).
+/// </summary>
+public interface IVersionedOperation
+{
+    /// <summary>The root's version as the caller read it: a view's <c>Version</c>.</summary>
+    uint ExpectedVersion { get; }
+}
+
 [Flags]
 public enum Effects
 {

@@ -1,1 +1,3 @@
 #nullable enable
+Levee.IVersionedOperation
+Levee.IVersionedOperation.ExpectedVersion.get -> uint

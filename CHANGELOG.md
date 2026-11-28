@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.0.1-alpha.3 (unreleased)
+
+### Levee
+- `IVersionedOperation`: an edit held to the version of the aggregate its caller saw (`ExpectedVersion`, implemented
+  explicitly over a positional parameter, as `IScopedOperation` is). It commits only if the one root it changes is still
+  at that version, and is refused as 409 `store.stale` otherwise; a root it loaded but didn't change is compared as read.
+  One that loads no root, or changes more than one aggregate, is a bug, answered `internal`.
+
+### Levee.EntityFrameworkCore
+- **Breaking:** every aggregate root has a version. `configurationBuilder.AddLeveeConventions()`, from the app's context's
+  `ConfigureConventions`, maps each root's version to Postgres's `xmin`, a concurrency token no migration creates: two
+  operations changing one aggregate at once can't both commit, the second refused as 409 `store.stale`. A root that
+  declares `uint Version { get; private set; }` reads it there; otherwise it's a shadow property. A child added, changed
+  or removed (an owned type, or an entity its root navigates to) is a change to its root, so the root's version covers
+  the whole aggregate; one changed without its root loaded is a bug. A context whose roots aren't versioned fails before
+  the first operation, naming the call to add. In the context itself, so every model of it (the host's, a Tool's, a
+  migration's) is the same.
+
+### Generator and analyzers
+- LEVEE114: an `IVersionedOperation` declares `Effects.Write`, and its handler takes a repository (an `IRepository<T>`
+  port), so it loads the root its version names.
+
+### Levee.Cli
+- `dotnet levee new` scaffolds the context with `AddLeveeConventions()`.
+
 ## 0.0.1-alpha.2 (2026-11-27)
 
 ### Levee

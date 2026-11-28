@@ -184,6 +184,9 @@ internal interface IUnitOfWork : IAsyncDisposable
 {
     WorkScope Scope { get; }
 
+    /// <summary>Holds the one aggregate root the operation changes to <paramref name="version"/>: the version its caller saw.</summary>
+    void Expect(uint version);
+
     /// <summary>Records the entry in this transaction: it commits or rolls back with the operation.</summary>
     Task AuditAsync(AuditEntry entry, CancellationToken ct);
 

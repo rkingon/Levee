@@ -524,6 +524,10 @@ public sealed partial class Dispatcher(IServiceScopeFactory scopes, OperationCat
         try
         {
             await using var unit = await factory.BeginAsync(scope, ct);
+            if (operation is IVersionedOperation versioned)
+            {
+                unit.Expect(versioned.ExpectedVersion);
+            }
             var context = new OperationContext(principal, descriptor, scope, Now());
             services.ServiceProvider.GetRequiredService<CurrentOperation>().Context = context;
             foreach (var admission in services.ServiceProvider.GetServices<IAdmission>())
