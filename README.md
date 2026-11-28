@@ -4,7 +4,7 @@ A .NET framework for platforms whose rules hold by construction: wrong code fail
 The platform is a catalog of declared operations, and every call, from every client and every job, goes through one
 pipeline: authorize, scope, open the unit of work, run the handler, audit, commit. See [docs/principles.md](docs/principles.md) for why.
 
-> **0.0.1-alpha.1.** Out for feedback from the apps migrating onto it. Everything may change.
+> **0.0.1-alpha.3.** Out for feedback from the apps migrating onto it. Everything may change.
 
 ## Packages
 
