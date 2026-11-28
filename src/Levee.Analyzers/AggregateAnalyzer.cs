@@ -76,12 +76,14 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
     }
 
     /// <summary>
-    /// What a caller outside the part reaches: a public or internal member (and of a property, its public or internal
-    /// accessors). A protected one is the part's own and its subclasses'.
+    /// What a caller outside the part reaches: a public or internal member (protected internal is internal too), and of a
+    /// property, such accessors. A protected one is the part's own and its subclasses'.
     /// </summary>
-    private static bool Outside(ISymbol member) => member.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
+    private static bool Outside(ISymbol member) => Reached(member.DeclaredAccessibility);
 
-    private static bool Exposed(IMethodSymbol? accessor) => accessor?.DeclaredAccessibility is Accessibility.Public or Accessibility.Internal;
+    private static bool Exposed(IMethodSymbol? accessor) => accessor is not null && Reached(accessor.DeclaredAccessibility);
+
+    private static bool Reached(Accessibility accessibility) => accessibility is Accessibility.Public or Accessibility.Internal or Accessibility.ProtectedOrInternal;
 
     /// <summary>A member that hands out a mutable collection: shared, even from a copy.</summary>
     private static bool Shared(ISymbol member) => member switch
@@ -127,11 +129,11 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
             }).OfType<ITypeSymbol>();
             foreach (var reached in shown)
             {
-                var value = reached is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : reached;
-                var held = value is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
+                var value = Unwrapped(reached);
+                var held = Unwrapped(value is INamedTypeSymbol { SpecialType: not SpecialType.System_String } named
                     && named.AllInterfaces.Concat(named.TypeKind == TypeKind.Interface ? [named] : []).FirstOrDefault(i => i.OriginalDefinition.SpecialType == SpecialType.System_Collections_Generic_IEnumerable_T) is { } items
                     ? items.TypeArguments[0]
-                    : value;
+                    : value);
                 if (held is INamedTypeSymbol { TypeKind: TypeKind.Class or TypeKind.Struct or TypeKind.Interface } part
                     && SymbolEqualityComparer.Default.Equals(part.ContainingAssembly, compilation.Assembly)
                     && !part.AllInterfaces.Contains(root, SymbolEqualityComparer.Default) && seen.Add(part))
@@ -142,6 +144,10 @@ public sealed class AggregateAnalyzer : DiagnosticAnalyzer
             }
         }
     }
+
+    /// <summary>A nullable struct's value type: what a caller reaches through it.</summary>
+    private static ITypeSymbol Unwrapped(ITypeSymbol type) =>
+        type is INamedTypeSymbol { OriginalDefinition.SpecialType: SpecialType.System_Nullable_T } nullable ? nullable.TypeArguments[0] : type;
 
     private static readonly ImmutableHashSet<string> MutableCollections = ImmutableHashSet.Create(
         "System.Collections.Generic.List<T>", "System.Collections.Generic.Dictionary<TKey, TValue>", "System.Collections.Generic.HashSet<T>",

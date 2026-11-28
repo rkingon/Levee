@@ -53,7 +53,8 @@ public sealed class LeveeClient(HttpClient http, OperationCatalog catalog, Levee
 
     /// <summary>
     /// Sends <paramref name="operation"/> and answers its result, or its failure. A write carries an idempotency key of its
-    /// own, kept across its retries, so it's written once however many times it's sent within <see cref="LeveeClientOptions.RetryWindow"/>.
+    /// own, kept across its retries, so what it commits in its own transaction is written once however many times it's sent
+    /// within <see cref="LeveeClientOptions.RetryWindow"/>; an operation it sends that commits on its own isn't held by that key.
     /// </summary>
     public async Task<Result<TResult>> SendAsync<TResult>(IOperation<TResult> operation, CancellationToken ct)
     {
